@@ -420,7 +420,6 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 										<Trans>, selected</Trans>
 									</span>
 								)}
-								{/* (SNOOZE-BADGE-LEAF) */}
 								{sectionState === "snoozed" && (
 									<SnoozeRemainingBadge
 										snoozeUntil={workspace.snoozeUntil}

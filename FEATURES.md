@@ -532,7 +532,6 @@ createSharedTicker(30_000)	apps/desktop/src/renderer/lib/shared-ticker/tickers.t
 (SNOOZE-WAKE-TICK)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useSnoozeWake/useSnoozeWake.ts
 (SNOOZE-WAKE-TICK)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts
 (SNOOZE-BADGE-LEAF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/components/SnoozeRemainingBadge/SnoozeRemainingBadge.tsx
-(SNOOZE-BADGE-LEAF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
 createSharedTicker(60_000)	apps/desktop/src/renderer/lib/shared-ticker/tickers.ts
 snoozeTicker.subscribe	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useSnoozeWake/useSnoozeWake.ts
 snoozeTicker.subscribe	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/components/SnoozeRemainingBadge/SnoozeRemainingBadge.tsx

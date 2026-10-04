@@ -430,8 +430,7 @@ export function useDashboardSidebarData() {
 		[hostsByMachineId, rawSidebarWorkspaces, workspaceTransactionsById],
 	);
 
-	// (SNOOZE-WAKE-TICK) this hook renders on the shared snooze ticker only when a
-	// deadline is due; nowMs is re-read on that tick and on any row change.
+	// (SNOOZE-WAKE-TICK)
 	const wakeEpoch = useSnoozeWake(rawSidebarWorkspaces);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-read the clock on row change and on a due tick
 	const nowMs = useMemo(() => Date.now(), [rawSidebarWorkspaces, wakeEpoch]);

@@ -1,9 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { snoozeTicker } from "renderer/lib/shared-ticker";
+import { noopSubscribe, snoozeTicker } from "renderer/lib/shared-ticker";
 import { formatSnoozeRemaining } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
-
-const noop = () => () => {};
-const zero = () => 0;
 
 interface SnoozeRemainingBadgeProps {
 	snoozeUntil: number | null | undefined;
@@ -18,13 +15,13 @@ export function SnoozeRemainingBadge({
 }: SnoozeRemainingBadgeProps) {
 	const timed = typeof snoozeUntil === "number";
 	useSyncExternalStore(
-		timed ? snoozeTicker.subscribe : noop,
-		timed ? snoozeTicker.getSnapshot : zero,
+		timed ? snoozeTicker.subscribe : noopSubscribe,
+		snoozeTicker.getSnapshot,
 	);
 	const label = formatSnoozeRemaining(
 		snoozeUntil,
 		snoozeLaunchId,
-		timed ? Math.min(Date.now(), snoozeUntil - 1) : Date.now(),
+		timed ? Math.min(Date.now(), snoozeUntil - 1) : undefined,
 	);
 	if (label === "") return null;
 	return (

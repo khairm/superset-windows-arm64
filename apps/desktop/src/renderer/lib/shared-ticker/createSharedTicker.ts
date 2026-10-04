@@ -29,3 +29,5 @@ export function createSharedTicker(ms: number): SharedTicker {
 
 	return { subscribe, getSnapshot };
 }
+
+export const noopSubscribe = (): (() => void) => () => {};
