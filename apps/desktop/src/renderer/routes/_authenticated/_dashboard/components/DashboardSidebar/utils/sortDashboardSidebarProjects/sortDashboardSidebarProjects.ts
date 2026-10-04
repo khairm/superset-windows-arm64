@@ -1,3 +1,4 @@
+import type { WorkspaceActivityById } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 import type { SidebarProjectSortMode } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import type {
 	DashboardSidebarProject,
@@ -24,8 +25,6 @@ function rankTime(time: number): number {
 	return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
 }
 
-export type SidebarWorkspaceActivityById = ReadonlyMap<string, number | null>;
-
 function newest(times: number[]): number {
 	const known = times.filter((time) => !Number.isNaN(time));
 	return known.length > 0 ? Math.max(...known) : Number.NaN;
@@ -41,7 +40,7 @@ function newest(times: number[]): number {
  */
 export function getWorkspaceActivityTime(
 	workspace: DashboardSidebarWorkspace,
-	activityById: SidebarWorkspaceActivityById | null,
+	activityById: WorkspaceActivityById | null,
 ): number {
 	const activity = activityById?.get(workspace.id);
 	if (typeof activity === "number" && Number.isFinite(activity)) {
@@ -67,7 +66,7 @@ function makeStableComparator<Item>(
 function getWorkspaceTimestamp(
 	workspace: DashboardSidebarWorkspace,
 	mode: SidebarProjectSortMode,
-	activityById: SidebarWorkspaceActivityById | null,
+	activityById: WorkspaceActivityById | null,
 ): number {
 	return mode === "created"
 		? toTime(workspace.createdAt)
@@ -80,7 +79,7 @@ function getWorkspaceTimestamp(
 function getChildTimestamp(
 	child: DashboardSidebarProjectChild,
 	mode: SidebarProjectSortMode,
-	activityById: SidebarWorkspaceActivityById | null,
+	activityById: WorkspaceActivityById | null,
 ): number {
 	if (child.type === "workspace") {
 		return getWorkspaceTimestamp(child.workspace, mode, activityById);
@@ -111,7 +110,7 @@ function haveSameItems<Item>(left: Item[], right: Item[]): boolean {
 export function sortDashboardSidebarProjectChildren(
 	children: DashboardSidebarProjectChild[],
 	mode: SidebarProjectSortMode,
-	activityById: SidebarWorkspaceActivityById | null,
+	activityById: WorkspaceActivityById | null,
 ): DashboardSidebarProjectChild[] {
 	if (mode === "manual") return children;
 
@@ -151,7 +150,7 @@ export function sortDashboardSidebarProjectChildren(
 export function sortDashboardSidebarProjects(
 	projects: DashboardSidebarProject[],
 	mode: SidebarProjectSortMode,
-	activityById: SidebarWorkspaceActivityById | null,
+	activityById: WorkspaceActivityById | null,
 ): DashboardSidebarProject[] {
 	if (mode === "manual") return projects;
 

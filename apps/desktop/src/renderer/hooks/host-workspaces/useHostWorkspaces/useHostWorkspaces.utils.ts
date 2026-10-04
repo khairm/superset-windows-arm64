@@ -6,6 +6,7 @@ import type {
 	WorkspaceSnapshotPayload,
 } from "@superset/workspace-client";
 import { get as idbGet, set as idbSet } from "idb-keyval";
+import { shallow } from "zustand/shallow";
 
 /**
  * The frozen cloud row shape, widened for host-only capabilities the cloud
@@ -324,6 +325,8 @@ export interface HostWorkspacesHostResult {
 	reachable: boolean;
 }
 
+export type WorkspaceActivityById = ReadonlyMap<string, number | null>;
+
 /**
  * Merge per-host results. A host that answered is authoritative for its
  * rows — a deleted row must not resurrect.
@@ -332,20 +335,20 @@ export function mergeHostWorkspaces({
 	hostResults,
 }: {
 	hostResults: HostWorkspacesHostResult[];
-}): HostWorkspaceItem[] {
+}): { items: HostWorkspaceItem[]; activityById: WorkspaceActivityById } {
 	const items: HostWorkspaceItem[] = [];
-	const seenIds = new Set<string>();
+	const activityById = new Map<string, number | null>();
 
 	for (const result of hostResults) {
 		if (!result.rows) continue;
 		for (const row of result.rows) {
-			if (seenIds.has(row.id)) continue;
-			seenIds.add(row.id);
+			if (activityById.has(row.id)) continue;
+			activityById.set(row.id, row.lastActivityAt ?? null);
 			items.push(toHostWorkspaceItem(row, result.reachable));
 		}
 	}
 
-	return items;
+	return { items, activityById };
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -395,35 +398,12 @@ export function reuseUnchangedWorkspaceItems(
 		const previous = prevById.get(item.id);
 		return previous && hasSameFields(previous, item) ? previous : item;
 	});
-	return reused.length === prev.length &&
-		reused.every((item, index) => item === prev[index])
-		? prev
-		: reused;
-}
-
-export type WorkspaceActivityById = ReadonlyMap<string, number | null>;
-
-export function collectWorkspaceActivity(
-	hostResults: HostWorkspacesHostResult[],
-): WorkspaceActivityById {
-	const activityById = new Map<string, number | null>();
-	for (const result of hostResults) {
-		if (!result.rows) continue;
-		for (const row of result.rows) {
-			if (activityById.has(row.id)) continue;
-			activityById.set(row.id, row.lastActivityAt ?? null);
-		}
-	}
-	return activityById;
+	return shallow(reused, prev) ? prev : reused;
 }
 
 export function reuseUnchangedActivity(
 	prev: WorkspaceActivityById,
 	next: WorkspaceActivityById,
 ): WorkspaceActivityById {
-	if (prev.size !== next.size) return next;
-	for (const [id, activity] of next) {
-		if (!prev.has(id) || !Object.is(prev.get(id), activity)) return next;
-	}
-	return prev;
+	return shallow(prev, next) ? prev : next;
 }

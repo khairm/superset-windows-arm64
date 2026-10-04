@@ -1,6 +1,7 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toQueryStates } from "renderer/hooks/host-projects/utils/toQueryStates";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { authClient } from "renderer/lib/auth-client";
@@ -11,7 +12,6 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
 import { useSandboxAccess } from "renderer/routes/_authenticated/providers/SandboxAccessProvider";
 import {
 	applyWorkspaceChangedEvent,
-	collectWorkspaceActivity,
 	deriveHostWorkspacesQueryTargets,
 	getHostWorkspacesQueryKey,
 	type HostWorkspaceItem,
@@ -284,6 +284,8 @@ export function useHostWorkspacesSourceWithActivity(
 				return rows;
 			},
 		})),
+		// Stable result identity lets the hostResults memo below hit.
+		combine: toQueryStates,
 	});
 
 	// Archived tombstones, opt-in, own query key: the shared live list (and
@@ -311,6 +313,7 @@ export function useHostWorkspacesSourceWithActivity(
 					.map(normalizeServedWorkspaceRow);
 			},
 		})),
+		combine: toQueryStates,
 	});
 
 	const busEverOpenedRef = useRef<Set<string>>(new Set());
@@ -435,12 +438,15 @@ export function useHostWorkspacesSourceWithActivity(
 		[targets, queries, snapshots],
 	);
 
+	const merged = useMemo(
+		() => mergeHostWorkspaces({ hostResults }),
+		[hostResults],
+	);
 	const mergedWorkspaces = useMemo(() => {
-		const merged = mergeHostWorkspaces({ hostResults });
-		if (!includeArchived) return merged;
+		if (!includeArchived) return merged.items;
 		// Tombstones append after live rows; consumers dedupe by id, so a row
 		// mid-unarchive can't render twice.
-		const liveIds = new Set(merged.map((row) => row.id));
+		const liveIds = new Set(merged.items.map((row) => row.id));
 		const archived: HostWorkspaceItem[] = targets.flatMap((_target, index) => {
 			const query = archivedQueries[index];
 			const rows = query?.data ?? [];
@@ -452,8 +458,8 @@ export function useHostWorkspacesSourceWithActivity(
 					.map((row) => toHostWorkspaceItem(row, !query?.isError))
 			);
 		});
-		return [...merged, ...archived];
-	}, [targets, hostResults, includeArchived, archivedQueries]);
+		return [...merged.items, ...archived];
+	}, [targets, merged, includeArchived, archivedQueries]);
 
 	// (STABLE-WORKSPACE-ROWS) Unchanged items and activity keep identity, so a
 	// refetch or an activity-only event re-renders no consumer.
@@ -470,11 +476,11 @@ export function useHostWorkspacesSourceWithActivity(
 	const activityById = useMemo(() => {
 		const reused = reuseUnchangedActivity(
 			prevActivityRef.current,
-			collectWorkspaceActivity(hostResults),
+			merged.activityById,
 		);
 		prevActivityRef.current = reused;
 		return reused;
-	}, [hostResults]);
+	}, [merged]);
 
 	// Readiness reflects host-query settlement only. A scoped host that
 	// hasn't resolved to a target yet is still loading. Known-hosts

@@ -1,7 +1,4 @@
-export type {
-	UseHostWorkspacesResult,
-	UseHostWorkspacesSourceWithActivityResult,
-} from "./useHostWorkspaces";
+export type { UseHostWorkspacesResult } from "./useHostWorkspaces";
 export {
 	useHostWorkspacesSource,
 	useHostWorkspacesSourceWithActivity,

@@ -1,8 +1,8 @@
 import { useCallback, useRef, useSyncExternalStore } from "react";
+import type { WorkspaceActivityById } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 import type { SidebarProjectSortMode } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 // Not the barrel: other test files mock it process-wide.
 import { useHostWorkspaceActivityStore } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider/hostWorkspaceActivityStoreContext";
-import type { WorkspaceActivityMap } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider/utils/createWorkspaceActivityStore";
 import type { DashboardSidebarProject } from "../../types";
 import {
 	sortDashboardSidebarProjects,
@@ -10,7 +10,7 @@ import {
 } from "../../utils/sortDashboardSidebarProjects";
 
 interface SortedProjectsCache {
-	activityById: WorkspaceActivityMap | null;
+	activityById: WorkspaceActivityById | null;
 	orderedGroups: DashboardSidebarProject[];
 	sortMode: SidebarProjectSortMode;
 	result: DashboardSidebarProject[];

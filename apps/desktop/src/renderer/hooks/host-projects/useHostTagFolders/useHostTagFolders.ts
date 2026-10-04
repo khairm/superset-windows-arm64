@@ -1,8 +1,4 @@
-import {
-	type UseQueryResult,
-	useQueries,
-	useQueryClient,
-} from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { env } from "renderer/env.renderer";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
@@ -12,6 +8,7 @@ import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { MOCK_ORG_ID } from "shared/constants";
 import { deriveHostProjectsQueryTargets } from "../useHostProjects/useHostProjects.utils";
+import { toQueryStates } from "../utils/toQueryStates";
 import {
 	type HostTagFolderSetting,
 	type HostTagFoldersResult,
@@ -19,16 +16,6 @@ import {
 } from "./useHostTagFolders.utils";
 
 const TAG_FOLDERS_FALLBACK_REFETCH_INTERVAL_MS = 60_000;
-
-// (STABLE-HOST-QUERIES) Module-level so `combine` keeps one reference: the
-// combined result then keeps its identity until a field read here changes.
-function toQueryStates(results: UseQueryResult<HostTagFolderSetting[]>[]) {
-	return results.map((result) => ({
-		data: result.data,
-		isSuccess: result.isSuccess,
-		isError: result.isError,
-	}));
-}
 
 export interface UseHostTagFoldersResult {
 	tagFolders: HostTagFolderSetting[];
@@ -99,6 +86,8 @@ export function useHostTagFolders(): UseHostTagFoldersResult {
 				return (await client.tagFolders.list.query()) as HostTagFolderSetting[];
 			},
 		})),
+		// (STABLE-HOST-QUERIES) One module-level reference keeps the combined
+		// result stable until a field it reads changes.
 		combine: toQueryStates,
 	});
 

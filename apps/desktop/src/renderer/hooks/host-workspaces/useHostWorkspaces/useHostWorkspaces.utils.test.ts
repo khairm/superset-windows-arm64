@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import type { WorkspaceSnapshotPayload } from "@superset/workspace-client";
 import {
 	applyWorkspaceChangedEvent,
-	collectWorkspaceActivity,
 	type HostWorkspaceRow,
+	type HostWorkspacesHostResult,
 	isEventBusReopen,
 	mergeHostWorkspaces,
 	reuseUnchangedActivity,
@@ -13,6 +13,10 @@ import {
 
 const HOST = { organizationId: "org-1", machineId: "machine-1" };
 const TARGET = { ...HOST, hostUrl: "http://localhost:1", isLocal: true };
+
+function activityOf(hostResults: HostWorkspacesHostResult[]) {
+	return mergeHostWorkspaces({ hostResults }).activityById;
+}
 
 function makeSnapshot(
 	overrides: Partial<WorkspaceSnapshotPayload> & { id: string },
@@ -227,7 +231,7 @@ describe("toHostWorkspaceItem", () => {
 			hostResults: [
 				{ target: TARGET, rows: [cachedBeforeColumn], reachable: false },
 			],
-		});
+		}).items;
 		expect(item).toEqual(toHostWorkspaceItem(cachedBeforeColumn, false));
 		expect(item).toMatchObject({
 			id: "w1",
@@ -238,7 +242,7 @@ describe("toHostWorkspaceItem", () => {
 	});
 });
 
-describe("collectWorkspaceActivity", () => {
+describe("mergeHostWorkspaces activity", () => {
 	const [row] =
 		applyWorkspaceChangedEvent(
 			undefined,
@@ -250,7 +254,7 @@ describe("collectWorkspaceActivity", () => {
 	if (!row) throw new Error("expected a row");
 
 	it("keeps a served stamp", () => {
-		const activity = collectWorkspaceActivity([
+		const activity = activityOf([
 			{ target: TARGET, rows: [row], reachable: true },
 		]);
 		expect(activity.get("w1")).toBe(1_700_000_050_000);
@@ -258,7 +262,7 @@ describe("collectWorkspaceActivity", () => {
 
 	it("normalizes a row cached before the column existed to null", () => {
 		const { lastActivityAt: _omitted, ...cachedBeforeColumn } = row;
-		const activity = collectWorkspaceActivity([
+		const activity = activityOf([
 			{ target: TARGET, rows: [cachedBeforeColumn], reachable: true },
 		]);
 		expect(activity.has("w1")).toBe(true);
@@ -266,7 +270,7 @@ describe("collectWorkspaceActivity", () => {
 	});
 
 	it("keeps the first-seen row for an id", () => {
-		const activity = collectWorkspaceActivity([
+		const activity = activityOf([
 			{ target: TARGET, rows: [row], reachable: true },
 			{
 				target: { ...TARGET, machineId: "machine-2" },
@@ -308,11 +312,11 @@ function makeListRow(
 function mergeRows(rows: HostWorkspaceRow[]) {
 	return mergeHostWorkspaces({
 		hostResults: [{ target: TARGET, rows, reachable: true }],
-	});
+	}).items;
 }
 
 function collectRows(rows: HostWorkspaceRow[]) {
-	return collectWorkspaceActivity([{ target: TARGET, rows, reachable: true }]);
+	return activityOf([{ target: TARGET, rows, reachable: true }]);
 }
 
 describe("reuseUnchangedWorkspaceItems", () => {

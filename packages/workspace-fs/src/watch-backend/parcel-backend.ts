@@ -1,11 +1,10 @@
 import { watch as probeNativeWatch } from "node:fs";
 import { createIgnoreMatcher } from "./ignore-matcher";
-import { nativeIgnoreForWindows } from "./native-ignore-split";
-import type {
-	NativeWatchBackend,
-	NativeWatchRequest,
-	NativeWatchSubscription,
-} from "./types";
+import {
+	nativeIgnoreForWindows,
+	watchGenerationSentinel,
+} from "./native-ignore-split";
+import type { NativeWatchBackend, NativeWatchRequest } from "./types";
 
 // Linux: @parcel/watcher's inotify backend starts on a thread and the caller
 // blocks until that thread signals it started. When inotify_init fails
@@ -27,55 +26,49 @@ function assertNativeWatchAvailable(dir: string): void {
 	probe.close();
 }
 
-// (WATCHER-NO-NATIVE-GLOBS) Windows: native gets plain dirs only (see
-// native-ignore-split.ts); globs are filtered here in JS.
-async function subscribeWithoutNativeGlobs({
+function planIgnore({
 	rootPath,
 	ignore,
 	generation,
-	onEvents,
-	onError,
-}: NativeWatchRequest): Promise<NativeWatchSubscription> {
-	const { nativeDirs, jsGlobs } = nativeIgnoreForWindows(
-		ignore,
-		generation,
-		rootPath,
-	);
-	const isIgnored = createIgnoreMatcher(rootPath, jsGlobs);
-	const { subscribe: subscribeToFilesystem } = await import("@parcel/watcher");
-	const subscription = await subscribeToFilesystem(
-		rootPath,
-		(error, events) => {
-			if (error) onError(error);
-			const kept = events.filter((event) => !isIgnored(event.path, false));
-			if (kept.length > 0) onEvents(kept);
-		},
-		{ ignore: nativeDirs },
-	);
-	return { unsubscribe: () => subscription.unsubscribe() };
+}: Pick<NativeWatchRequest, "rootPath" | "ignore" | "generation">): {
+	nativeIgnore: string[];
+	isIgnored: ReturnType<typeof createIgnoreMatcher> | null;
+} {
+	if (process.platform === "win32") {
+		// (WATCHER-NO-NATIVE-GLOBS) Windows: native gets plain dirs only (see
+		// native-ignore-split.ts); globs are filtered here in JS.
+		const { nativeDirs, jsGlobs } = nativeIgnoreForWindows(
+			ignore,
+			generation,
+			rootPath,
+		);
+		return {
+			nativeIgnore: nativeDirs,
+			isIgnored: createIgnoreMatcher(rootPath, jsGlobs),
+		};
+	}
+	// parcel dedupes native backends by (dir, ignore-set); a wedged backend
+	// from a dead stream (its unsubscribe can hang) would be silently
+	// joined and never deliver. The pattern matches nothing real — it only
+	// forces a distinct backend identity per re-attach.
+	return {
+		nativeIgnore:
+			generation === 1
+				? ignore
+				: [...ignore, `**/${watchGenerationSentinel(generation)}/**`],
+		isIgnored: null,
+	};
 }
 
 export const parcelWatchBackend: NativeWatchBackend = {
 	name: "parcel",
 	async subscribe({ rootPath, ignore, generation, onEvents, onError }) {
 		assertNativeWatchAvailable(rootPath);
-		if (process.platform === "win32") {
-			return subscribeWithoutNativeGlobs({
-				rootPath,
-				ignore,
-				generation,
-				onEvents,
-				onError,
-			});
-		}
-		// parcel dedupes native backends by (dir, ignore-set); a wedged backend
-		// from a dead stream (its unsubscribe can hang) would be silently
-		// joined and never deliver. The pattern matches nothing real — it only
-		// forces a distinct backend identity per re-attach.
-		const uniqueIgnore =
-			generation === 1
-				? ignore
-				: [...ignore, `**/.superset-watch-generation-${generation}/**`];
+		const { nativeIgnore, isIgnored } = planIgnore({
+			rootPath,
+			ignore,
+			generation,
+		});
 		// Loaded on first use so a platform on another backend never maps the
 		// native addon into the process.
 		const { subscribe: subscribeToFilesystem } = await import(
@@ -87,9 +80,12 @@ export const parcelWatchBackend: NativeWatchBackend = {
 				// Log the error, then process whatever events arrived alongside
 				// it. Mirrors VS Code's parcelWatcher.ts:373-378.
 				if (error) onError(error);
-				if (events.length > 0) onEvents(events);
+				const kept = isIgnored
+					? events.filter((event) => !isIgnored(event.path, false))
+					: events;
+				if (kept.length > 0) onEvents(kept);
 			},
-			{ ignore: uniqueIgnore },
+			{ ignore: nativeIgnore },
 		);
 		return { unsubscribe: () => subscription.unsubscribe() };
 	},

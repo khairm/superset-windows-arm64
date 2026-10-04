@@ -38,6 +38,10 @@ import {
 	usagePaceLevel,
 	WEEKLY_WINDOW_MS,
 } from "../../../../utils/claudeUsagePace";
+import {
+	formatClock,
+	scheduleTargetLabel,
+} from "../../utils/claudeScheduleFormat";
 
 function PctSpan({
 	percent,
@@ -238,18 +242,6 @@ const SCHEDULE_FAILURE_REASONS: Record<ClaudeScheduleFailure, string> = {
 
 const DISABLED_SUB_TRIGGER_CLASS = "data-[disabled]:opacity-50";
 
-function scheduleTargetLabel(target: ClaudeScheduleTarget): string {
-	return target.kind === "default" ? "Default (tray)" : target.slug;
-}
-
-function formatClock(ms: number): string {
-	return formatDateTime(ms, {
-		hour: "2-digit",
-		minute: "2-digit",
-		hourCycle: "h23",
-	});
-}
-
 function formatDayClock(ms: number): string {
 	return formatDateTime(ms, {
 		weekday: "short",
@@ -322,50 +314,38 @@ function ScheduleStatusRows({
 	onClear: (scheduleId: string) => void;
 }) {
 	const summary = `${scheduleTargetLabel(schedule.target)} at ${formatDayClock(schedule.fireAt)}`;
-	if (schedule.status === "pending") {
-		return (
-			<>
-				<ContextMenuItem inset disabled>
-					{`Scheduled: ${summary}`}
-				</ContextMenuItem>
-				<ContextMenuItem
-					inset
-					disabled={isClearing}
-					onSelect={() => onClear(schedule.scheduleId)}
-				>
-					Cancel scheduled switch
-				</ContextMenuItem>
-			</>
-		);
-	}
+	const failed = schedule.status === "failed";
 	return (
 		<>
 			<ContextMenuItem
 				inset
 				disabled
-				title={schedule.lastError ?? undefined}
-				className="text-destructive data-[disabled]:pointer-events-auto"
+				title={failed ? (schedule.lastError ?? undefined) : undefined}
+				className={
+					failed
+						? "text-destructive data-[disabled]:pointer-events-auto"
+						: undefined
+				}
 			>
-				{`Scheduled switch to ${summary} failed: ${SCHEDULE_FAILURE_REASONS[schedule.failure]}`}
+				{failed
+					? `Scheduled switch to ${summary} failed: ${SCHEDULE_FAILURE_REASONS[schedule.failure]}`
+					: `Scheduled: ${summary}`}
 			</ContextMenuItem>
 			<ContextMenuItem
 				inset
 				disabled={isClearing}
 				onSelect={() => onClear(schedule.scheduleId)}
 			>
-				Dismiss
+				{failed ? "Dismiss" : "Cancel scheduled switch"}
 			</ContextMenuItem>
 		</>
 	);
 }
 
-function accountsUnavailableLabel(
-	configured: boolean,
-	roster: ClaudeAccountRoster | undefined,
-): string {
-	return !configured && roster === undefined
-		? "Account credentials unavailable"
-		: "Accounts unavailable";
+function accountsUnavailableLabel(configured: boolean): string {
+	return configured
+		? "Accounts unavailable"
+		: "Account credentials unavailable";
 }
 
 export function ClaudeAccountMenu({
@@ -424,7 +404,7 @@ export function ClaudeAccountMenu({
 			<ContextMenuSubContent className="w-[30rem] max-h-[min(32rem,calc(100vh-2rem))] overflow-y-auto">
 				{roster === undefined ? (
 					<DisabledAccountItem>
-						{accountsUnavailableLabel(configured, roster)}
+						{accountsUnavailableLabel(configured)}
 					</DisabledAccountItem>
 				) : (
 					<>
@@ -542,7 +522,9 @@ export function ClaudeAccountPicker({
 	if (state.data === undefined) {
 		return (
 			<DisabledAccountItem>
-				{accountsUnavailableLabel(capability.data.configured, roster.data)}
+				{accountsUnavailableLabel(
+					capability.data.configured || roster.data !== undefined,
+				)}
 			</DisabledAccountItem>
 		);
 	}

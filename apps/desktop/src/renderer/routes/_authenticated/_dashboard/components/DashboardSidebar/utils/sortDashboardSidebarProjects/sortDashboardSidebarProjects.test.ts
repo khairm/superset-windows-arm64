@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { WorkspaceActivityById } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 import type {
 	DashboardSidebarProject,
 	DashboardSidebarProjectChild,
@@ -10,7 +11,6 @@ import {
 } from "../testProjectFixtures";
 import {
 	getWorkspaceActivityTime,
-	type SidebarWorkspaceActivityById,
 	sortDashboardSidebarProjectChildren,
 	sortDashboardSidebarProjects,
 	stabiliseSortedProjects,
@@ -20,7 +20,7 @@ const at = (iso: string) => new Date(iso).getTime();
 
 const activity = (
 	entries: Array<[string, number | null]>,
-): SidebarWorkspaceActivityById => new Map(entries);
+): WorkspaceActivityById => new Map(entries);
 
 const childIds = (children: DashboardSidebarProjectChild[]) =>
 	children.map((c) => (c.type === "workspace" ? c.workspace.id : c.section.id));

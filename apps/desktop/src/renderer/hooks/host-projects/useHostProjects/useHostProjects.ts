@@ -1,8 +1,4 @@
-import {
-	type UseQueryResult,
-	useQueries,
-	useQueryClient,
-} from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { env } from "renderer/env.renderer";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
@@ -11,6 +7,7 @@ import { getHostEventBus } from "renderer/lib/host-event-bus";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+import { toQueryStates } from "../utils/toQueryStates";
 import {
 	applyProjectChangedEvent,
 	deriveHostProjectsQueryTargets,
@@ -32,16 +29,6 @@ export type {
 } from "./useHostProjects.utils";
 
 const PROJECTS_FALLBACK_REFETCH_INTERVAL_MS = 30_000;
-
-// (STABLE-HOST-QUERIES) Module-level so `combine` keeps one reference: the
-// combined result then keeps its identity until a field read here changes.
-function toQueryStates(results: UseQueryResult<HostProjectRow[]>[]) {
-	return results.map((result) => ({
-		data: result.data,
-		isSuccess: result.isSuccess,
-		isError: result.isError,
-	}));
-}
 
 export interface UseHostProjectsResult {
 	projects: HostProjectItem[];
@@ -138,6 +125,8 @@ export function useHostProjects(): UseHostProjectsResult {
 				return rows;
 			},
 		})),
+		// (STABLE-HOST-QUERIES) One module-level reference keeps the combined
+		// result stable until a field it reads changes.
 		combine: toQueryStates,
 	});
 

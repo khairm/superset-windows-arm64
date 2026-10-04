@@ -65,6 +65,16 @@ export const DEFAULT_IGNORE_PATTERNS = [
 	"**/*.tsbuildinfo",
 ];
 
+export function anyDepthDirNames(
+	patterns: readonly string[],
+): ReadonlySet<string> {
+	return new Set(
+		patterns
+			.map((pattern) => /^\*\*\/([^/*]+)\/\*\*$/.exec(pattern)?.[1])
+			.filter((name): name is string => name !== undefined),
+	);
+}
+
 /**
  * Directory basenames the nested-repo discovery scan (watch.ts) prunes as it
  * walks, so it never descends into the heavy ignored trees (node_modules, .git,
@@ -73,10 +83,8 @@ export const DEFAULT_IGNORE_PATTERNS = [
  * intentionally excluded: the scan still traverses `.claude/` and discovers the
  * worktrees generically by their `.git` marker.
  */
-export const DEFAULT_IGNORE_DIR_NAMES: ReadonlySet<string> = new Set(
-	DEFAULT_IGNORE_PATTERNS.map(
-		(pattern) => /^\*\*\/([^/*]+)\/\*\*$/.exec(pattern)?.[1],
-	).filter((name): name is string => name !== undefined),
+export const DEFAULT_IGNORE_DIR_NAMES = anyDepthDirNames(
+	DEFAULT_IGNORE_PATTERNS,
 );
 
 interface SearchIndexEntry {

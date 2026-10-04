@@ -88,6 +88,10 @@ export function assertNativeIgnoreSafe(nativeDirs: readonly string[]): void {
 	}
 }
 
+export function watchGenerationSentinel(generation: number): string {
+	return `.superset-watch-generation-${generation}`;
+}
+
 export function nativeIgnoreForWindows(
 	ignore: readonly string[],
 	generation: number,
@@ -95,7 +99,7 @@ export function nativeIgnoreForWindows(
 ): { nativeDirs: string[]; jsGlobs: string[] } {
 	const { nativeDirs, jsGlobs } = splitIgnoreForNative(ignore);
 	if (generation > 1) {
-		nativeDirs.push(`.superset-watch-generation-${generation}`);
+		nativeDirs.push(watchGenerationSentinel(generation));
 	}
 	assertNativeIgnoreSafe(nativeDirs);
 	// Native builds event paths as `mDir + "\\" + name`, so under a root that

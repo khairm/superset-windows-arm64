@@ -2,7 +2,10 @@ import type { AppRouter } from "@superset/host-service";
 import { toast } from "@superset/ui/sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
-import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import {
+	getHostServiceClientByUrl,
+	type HostServiceClient,
+} from "renderer/lib/host-service-client";
 import { electronQueryClient } from "renderer/providers/ElectronTRPCProvider";
 import {
 	claudeWorkspaceAccountStateQueryKey,
@@ -124,53 +127,25 @@ export function useSetClaudeWorkspaceAccount(
 	});
 }
 
-export function useSetClaudeAutoSwitch(
-	hostUrl: string | null,
-	workspaceId: string,
-) {
+function useWorkspaceAccountMutation<TVariables, TResult>({
+	hostUrl,
+	workspaceId,
+	call,
+	errorTitle,
+	inlineErrors = false,
+}: {
+	hostUrl: string | null;
+	workspaceId: string;
+	call: (client: HostServiceClient, variables: TVariables) => Promise<TResult>;
+	errorTitle: string;
+	inlineErrors?: boolean;
+}) {
 	const queryClient = useQueryClient();
 
 	return useMutation({
-		mutationFn: (enabled: boolean) => {
+		mutationFn: (variables: TVariables) => {
 			if (!hostUrl) throw new Error("Workspace host is unavailable.");
-			return getHostServiceClientByUrl(
-				hostUrl,
-			).claudeAccounts.setAutoSwitch.mutate({ workspaceId, enabled });
-		},
-		onSuccess: () => {
-			if (!hostUrl) return;
-			return invalidateClaudeWorkspaceAccountState(
-				queryClient,
-				hostUrl,
-				workspaceId,
-			);
-		},
-		onError: (error) =>
-			toast.error("Couldn't change auto-switch", {
-				description: error.message,
-			}),
-	});
-}
-
-export function useScheduleClaudeSwitch(
-	hostUrl: string | null,
-	workspaceId: string,
-	{ inlineErrors = false }: { inlineErrors?: boolean } = {},
-) {
-	const queryClient = useQueryClient();
-
-	return useMutation({
-		mutationFn: ({
-			target,
-			fireAt,
-		}: {
-			target: ClaudeScheduleTarget;
-			fireAt: number;
-		}) => {
-			if (!hostUrl) throw new Error("Workspace host is unavailable.");
-			return getHostServiceClientByUrl(
-				hostUrl,
-			).claudeAccounts.scheduleSwitch.mutate({ workspaceId, target, fireAt });
+			return call(getHostServiceClientByUrl(hostUrl), variables);
 		},
 		onSuccess: () => {
 			if (!hostUrl) return;
@@ -182,10 +157,43 @@ export function useScheduleClaudeSwitch(
 		},
 		onError: (error) => {
 			if (inlineErrors) return;
-			toast.error("Couldn't schedule the switch", {
-				description: error.message,
-			});
+			toast.error(errorTitle, { description: error.message });
 		},
+	});
+}
+
+export function useSetClaudeAutoSwitch(
+	hostUrl: string | null,
+	workspaceId: string,
+) {
+	return useWorkspaceAccountMutation({
+		hostUrl,
+		workspaceId,
+		call: (client, enabled: boolean) =>
+			client.claudeAccounts.setAutoSwitch.mutate({ workspaceId, enabled }),
+		errorTitle: "Couldn't change auto-switch",
+	});
+}
+
+export function useScheduleClaudeSwitch(
+	hostUrl: string | null,
+	workspaceId: string,
+	{ inlineErrors = false }: { inlineErrors?: boolean } = {},
+) {
+	return useWorkspaceAccountMutation({
+		hostUrl,
+		workspaceId,
+		call: (
+			client,
+			{ target, fireAt }: { target: ClaudeScheduleTarget; fireAt: number },
+		) =>
+			client.claudeAccounts.scheduleSwitch.mutate({
+				workspaceId,
+				target,
+				fireAt,
+			}),
+		errorTitle: "Couldn't schedule the switch",
+		inlineErrors,
 	});
 }
 
@@ -193,27 +201,15 @@ export function useClearClaudeScheduledSwitch(
 	hostUrl: string | null,
 	workspaceId: string,
 ) {
-	const queryClient = useQueryClient();
-
-	return useMutation({
-		mutationFn: (scheduleId: string) => {
-			if (!hostUrl) throw new Error("Workspace host is unavailable.");
-			return getHostServiceClientByUrl(
-				hostUrl,
-			).claudeAccounts.clearScheduledSwitch.mutate({ workspaceId, scheduleId });
-		},
-		onSuccess: () => {
-			if (!hostUrl) return;
-			return invalidateClaudeWorkspaceAccountState(
-				queryClient,
-				hostUrl,
+	return useWorkspaceAccountMutation({
+		hostUrl,
+		workspaceId,
+		call: (client, scheduleId: string) =>
+			client.claudeAccounts.clearScheduledSwitch.mutate({
 				workspaceId,
-			);
-		},
-		onError: (error) =>
-			toast.error("Couldn't cancel the scheduled switch", {
-				description: error.message,
+				scheduleId,
 			}),
+		errorTitle: "Couldn't cancel the scheduled switch",
 	});
 }
 

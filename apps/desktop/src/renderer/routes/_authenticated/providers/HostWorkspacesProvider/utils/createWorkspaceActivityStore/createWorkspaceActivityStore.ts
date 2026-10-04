@@ -1,8 +1,8 @@
-export type WorkspaceActivityMap = ReadonlyMap<string, number | null>;
+import type { WorkspaceActivityById } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 
 export interface WorkspaceActivityStore {
-	get: () => WorkspaceActivityMap;
-	set: (next: WorkspaceActivityMap) => void;
+	get: () => WorkspaceActivityById;
+	set: (next: WorkspaceActivityById) => void;
 	subscribe: (listener: () => void) => () => void;
 }
 
@@ -12,16 +12,15 @@ export interface WorkspaceActivityStore {
  * subscribers that read it.
  */
 export function createWorkspaceActivityStore(
-	initial: WorkspaceActivityMap,
+	initial: WorkspaceActivityById,
 ): WorkspaceActivityStore {
 	let current = initial;
 	const listeners = new Set<() => void>();
 	return {
 		get: () => current,
 		set: (next) => {
-			const changed = next !== current;
+			if (next === current) return;
 			current = next;
-			if (!changed) return;
 			for (const listener of [...listeners]) listener();
 		},
 		subscribe: (listener) => {

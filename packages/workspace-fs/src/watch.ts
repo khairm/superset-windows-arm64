@@ -10,6 +10,7 @@ import { toErrorMessage } from "./error-message";
 import { findNestedRepoRoots } from "./find-nested-repos";
 import { normalizeAbsolutePath } from "./paths";
 import {
+	anyDepthDirNames,
 	DEFAULT_IGNORE_DIR_NAMES,
 	DEFAULT_IGNORE_PATTERNS,
 	invalidateSearchIndexesForRoot,
@@ -66,8 +67,6 @@ const OVERFLOW_BACKOFF_RESET_MS = 120_000;
 // probe file and only announces the resumed root once its event arrives.
 const PROBE_PREFIX = ".superset-watcher-probe-";
 const PROBE_TIMEOUT_MS = 4_000;
-
-export { escapeGlobMagic };
 
 // Wall-clock budget for the nested-repo scan (bounds attach latency on a slow
 // or network-backed FS, where readdir latency — not directory count — is the
@@ -307,11 +306,7 @@ export class FsWatcherManager {
 					]
 				: DEFAULT_IGNORE_PATTERNS;
 		this.ignore = [...new Set([...defaults, ...(options.ignore ?? [])])];
-		this.anyDepthIgnoreNames = new Set(
-			this.ignore
-				.map((pattern) => /^\*\*\/([^/*]+)\/\*\*$/.exec(pattern)?.[1])
-				.filter((name): name is string => name !== undefined),
-		);
+		this.anyDepthIgnoreNames = anyDepthDirNames(this.ignore);
 		this.listGitIgnoredDirs = options.listGitIgnoredDirs;
 		this.backend = options.backend ?? defaultWatchBackend();
 		this.filePathsMax = options.filePathsMax ?? FILE_PATHS_MAX;

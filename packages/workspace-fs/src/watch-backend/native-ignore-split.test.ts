@@ -3,12 +3,8 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-	escapeGlobMagic,
-	FsWatcherManager,
-	type FsWatcherManagerOptions,
-} from "../watch";
-import { createIgnoreMatcher } from "./ignore-matcher";
+import { FsWatcherManager, type FsWatcherManagerOptions } from "../watch";
+import { createIgnoreMatcher, escapeGlobMagic } from "./ignore-matcher";
 import {
 	assertNativeIgnoreSafe,
 	NativeIgnoreTripwireError,

@@ -1,4 +1,3 @@
-import { formatDateTime } from "@superset/i18n/format";
 import { Button } from "@superset/ui/button";
 import {
 	Dialog,
@@ -15,6 +14,10 @@ import {
 } from "renderer/hooks/host-service/useClaudeAccounts";
 import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useNow } from "renderer/hooks/useNow";
+import {
+	formatClock,
+	scheduleTargetLabel,
+} from "../../utils/claudeScheduleFormat";
 import { type ClockTime, nextOccurrence } from "./utils/nextOccurrence";
 
 const CLOCK_TIME_PATTERN = /^(\d{1,2}):(\d{2})$/;
@@ -54,8 +57,6 @@ export function ClaudeScheduleTimeDialog({
 	const now = useNow(1000);
 	const time = parseClockTime(text);
 	const occurrence = time === null ? null : nextOccurrence(time, now);
-	const targetLabel =
-		target.kind === "default" ? "Default (tray)" : target.slug;
 
 	const submit = () => {
 		if (time === null || scheduleSwitch.isPending) return;
@@ -72,7 +73,7 @@ export function ClaudeScheduleTimeDialog({
 		>
 			<DialogContent className="sm:max-w-sm" aria-describedby={undefined}>
 				<DialogHeader>
-					<DialogTitle>{`Schedule switch to ${targetLabel}`}</DialogTitle>
+					<DialogTitle>{`Schedule switch to ${scheduleTargetLabel(target)}`}</DialogTitle>
 				</DialogHeader>
 				<form
 					className="space-y-2"
@@ -95,11 +96,7 @@ export function ClaudeScheduleTimeDialog({
 						</p>
 					) : (
 						<p className="text-sm text-muted-foreground">
-							{`Fires ${occurrence.day} at ${formatDateTime(occurrence.at, {
-								hour: "2-digit",
-								minute: "2-digit",
-								hourCycle: "h23",
-							})}`}
+							{`Fires ${occurrence.day} at ${formatClock(occurrence.at)}`}
 						</p>
 					)}
 					{scheduleSwitch.error && (
