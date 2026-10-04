@@ -213,14 +213,16 @@ function stabiliseChildren(
 		const previous = prevByKey.get(getChildKey(child));
 		return previous && isSameChild(previous, child) ? previous : child;
 	});
-	return haveSameItems(stabilised, prev) ? prev : stabilised;
+	if (haveSameItems(stabilised, prev)) return prev;
+	return haveSameItems(stabilised, next) ? next : stabilised;
 }
 
 /**
  * (ACTIVITY-SPLIT) Reuses the previous sorted tree's objects by identity
  * wherever a re-sort produced an equal copy, so an unchanged order returns
- * `prev` itself. Never creates objects: every reused object holds exactly the
- * leaves of its counterpart in `next`.
+ * `prev` itself. Every reused object holds exactly the leaves of its
+ * counterpart in `next`. The only objects it creates are project shells, for a
+ * project that cannot be reused whole but has reusable children.
  */
 export function stabiliseSortedProjects(
 	prev: DashboardSidebarProject[],
@@ -230,12 +232,14 @@ export function stabiliseSortedProjects(
 	const stabilised = next.map((project) => {
 		const previous = prevById.get(project.id);
 		if (!previous || previous === project) return project;
-		const sameChildren =
-			stabiliseChildren(previous.children, project.children) ===
-			previous.children;
-		return sameChildren && haveSameValuesExcept(previous, project, "children")
-			? previous
-			: project;
+		const children = stabiliseChildren(previous.children, project.children);
+		if (
+			children === previous.children &&
+			haveSameValuesExcept(previous, project, "children")
+		) {
+			return previous;
+		}
+		return children === project.children ? project : { ...project, children };
 	});
 	return haveSameItems(stabilised, prev) ? prev : stabilised;
 }

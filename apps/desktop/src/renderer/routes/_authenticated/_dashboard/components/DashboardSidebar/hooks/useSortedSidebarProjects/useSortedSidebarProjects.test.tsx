@@ -4,11 +4,12 @@ import {
 	beforeEach,
 	describe,
 	expect,
-	mock,
 	test,
 } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { ReactNode } from "react";
 import type { SidebarProjectSortMode } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
+import { HostWorkspaceActivityStoreContext } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider/hostWorkspaceActivityStoreContext";
 import {
 	createWorkspaceActivityStore,
 	type WorkspaceActivityStore,
@@ -25,26 +26,6 @@ if (!alreadyRegistered) GlobalRegistrator.register();
 const at = (iso: string) => new Date(iso).getTime();
 
 let store: WorkspaceActivityStore = createWorkspaceActivityStore(new Map());
-
-const realHostWorkspacesProvider = await import(
-	"renderer/routes/_authenticated/providers/HostWorkspacesProvider"
-);
-
-/**
- * `HostWorkspacesProvider` cannot mount here, so the real store is injected
- * through the provider's hook. `mock.module` is process-global, so the real
- * exports are spread through and the install repeats in `beforeEach`.
- */
-function installMocks(): void {
-	mock.module(
-		"renderer/routes/_authenticated/providers/HostWorkspacesProvider",
-		() => ({
-			...realHostWorkspacesProvider,
-			useHostWorkspaceActivityStore: () => store,
-		}),
-	);
-}
-installMocks();
 
 const { act, cleanup, renderHook } = await import("@testing-library/react");
 const { useSortedSidebarProjects } = await import("./useSortedSidebarProjects");
@@ -70,15 +51,23 @@ const childIds = (projects: DashboardSidebarProject[]) =>
 
 function renderSorted(sortMode: SidebarProjectSortMode) {
 	let renders = 0;
-	const hook = renderHook(() => {
-		renders += 1;
-		return useSortedSidebarProjects(orderedGroups, sortMode);
-	});
+	const hook = renderHook(
+		() => {
+			renders += 1;
+			return useSortedSidebarProjects(orderedGroups, sortMode);
+		},
+		{
+			wrapper: ({ children }: { children: ReactNode }) => (
+				<HostWorkspaceActivityStoreContext.Provider value={store}>
+					{children}
+				</HostWorkspaceActivityStoreContext.Provider>
+			),
+		},
+	);
 	return { hook, renders: () => renders };
 }
 
 beforeEach(() => {
-	installMocks();
 	store = createWorkspaceActivityStore(
 		new Map([
 			["w-first", at("2026-02-01")],

@@ -664,4 +664,30 @@ describe("stabiliseSortedProjects", () => {
 			expect(leaves.some((original) => original === leaf)).toBe(true);
 		}
 	});
+
+	it("keeps an unchanged section when a loose row moves past it", () => {
+		const prev = sortAndStabilise([], baseActivity);
+		expect(childIds(prev[0]?.children ?? [])).toEqual([
+			"w-loose-new",
+			"s1",
+			"w-loose-old",
+		]);
+		const next = sortAndStabilise(
+			prev,
+			baseActivity.map(([id, time]): [string, number] =>
+				id === "w-loose-old" ? [id, at("2026-05-01")] : [id, time],
+			),
+		);
+		expect(childIds(next[0]?.children ?? [])).toEqual([
+			"w-loose-new",
+			"w-loose-old",
+			"s1",
+		]);
+		const sectionOf = (projects: DashboardSidebarProject[]) =>
+			projects[0]?.children.find((child) => child.type === "section");
+		expect(sectionOf(prev)).toBeDefined();
+		expect(sectionOf(prev)).not.toBe(busy.children[0]);
+		expect(sectionOf(next)).toBe(sectionOf(prev));
+		expect(next[1]).toBe(prev[1]);
+	});
 });

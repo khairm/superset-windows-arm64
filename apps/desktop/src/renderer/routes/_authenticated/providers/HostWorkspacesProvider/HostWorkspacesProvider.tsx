@@ -9,17 +9,12 @@ import {
 	type UseHostWorkspacesResult,
 	useHostWorkspacesSourceWithActivity,
 } from "renderer/hooks/host-workspaces/useHostWorkspaces";
-import {
-	createWorkspaceActivityStore,
-	type WorkspaceActivityStore,
-} from "./utils/createWorkspaceActivityStore";
+import { HostWorkspaceActivityStoreContext } from "./hostWorkspaceActivityStoreContext";
+import { createWorkspaceActivityStore } from "./utils/createWorkspaceActivityStore";
 
 const HostWorkspacesContext = createContext<UseHostWorkspacesResult | null>(
 	null,
 );
-
-const HostWorkspaceActivityStoreContext =
-	createContext<WorkspaceActivityStore | null>(null);
 
 /**
  * Runs the per-host workspace fan-out once (queries, event subscriptions,
@@ -60,14 +55,4 @@ export function useHostWorkspaces(): UseHostWorkspacesResult {
 		);
 	}
 	return value;
-}
-
-export function useHostWorkspaceActivityStore(): WorkspaceActivityStore {
-	const store = useContext(HostWorkspaceActivityStoreContext);
-	if (!store) {
-		throw new Error(
-			"useHostWorkspaceActivityStore must be used within HostWorkspacesProvider",
-		);
-	}
-	return store;
 }

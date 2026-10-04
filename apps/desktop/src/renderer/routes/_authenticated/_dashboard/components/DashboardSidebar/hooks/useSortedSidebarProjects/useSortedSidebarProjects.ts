@@ -1,9 +1,8 @@
 import { useCallback, useRef, useSyncExternalStore } from "react";
 import type { SidebarProjectSortMode } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
-import {
-	useHostWorkspaceActivityStore,
-	type WorkspaceActivityMap,
-} from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
+// Not the barrel: other test files mock it process-wide.
+import { useHostWorkspaceActivityStore } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider/hostWorkspaceActivityStoreContext";
+import type { WorkspaceActivityMap } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider/utils/createWorkspaceActivityStore";
 import type { DashboardSidebarProject } from "../../types";
 import {
 	sortDashboardSidebarProjects,
@@ -11,7 +10,7 @@ import {
 } from "../../utils/sortDashboardSidebarProjects";
 
 interface SortedProjectsCache {
-	activityById: WorkspaceActivityMap;
+	activityById: WorkspaceActivityMap | null;
 	orderedGroups: DashboardSidebarProject[];
 	sortMode: SidebarProjectSortMode;
 	result: DashboardSidebarProject[];
@@ -31,7 +30,7 @@ export function useSortedSidebarProjects(
 	const store = useHostWorkspaceActivityStore();
 	const cacheRef = useRef<SortedProjectsCache | null>(null);
 	const getSnapshot = useCallback(() => {
-		const activityById = store.get();
+		const activityById = sortMode === "active" ? store.get() : null;
 		const cache = cacheRef.current;
 		if (
 			cache &&
@@ -46,11 +45,7 @@ export function useSortedSidebarProjects(
 				? orderedGroups
 				: stabiliseSortedProjects(
 						cache?.result ?? [],
-						sortDashboardSidebarProjects(
-							orderedGroups,
-							sortMode,
-							sortMode === "active" ? activityById : null,
-						),
+						sortDashboardSidebarProjects(orderedGroups, sortMode, activityById),
 					);
 		cacheRef.current = { activityById, orderedGroups, sortMode, result };
 		return result;

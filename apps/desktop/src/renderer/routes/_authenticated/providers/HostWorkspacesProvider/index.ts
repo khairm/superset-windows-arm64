@@ -1,9 +1,9 @@
 export type { HostWorkspaceItem } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 export {
 	HostWorkspacesProvider,
-	useHostWorkspaceActivityStore,
 	useHostWorkspaces,
 } from "./HostWorkspacesProvider";
+export { useHostWorkspaceActivityStore } from "./hostWorkspaceActivityStoreContext";
 export type {
 	WorkspaceActivityMap,
 	WorkspaceActivityStore,
