@@ -272,6 +272,11 @@ In brief:
   rebuild of `workspaces` drops fork columns from existing DBs;
   `src/db/migrations.test.ts` asserts the fork columns after a full-folder run.
 - Read workspace activity via `useHostWorkspaceActivityStore`, never from `useHostWorkspaces()` rows; keep `combine` on the projects/tag-folder `useQueries`; sort the sidebar inside `useSortedSidebarProjects`. A per-tick field, an uncombined `useQueries` or a render-time sort re-renders ~50 consumers and ~300 query hooks (`(ACTIVITY-SPLIT)`, `(STABLE-HOST-QUERIES)`).
+- Never pass @parcel/watcher a glob on Windows: its std::regex aborts the
+  host-service with 0xC0000409 on a ~290-char path (bun sees exit 9, the low
+  byte). Plain dirs go native, globs filter in JS; re-run the Windows watcher
+  tests after any watcher merge (`(WATCHER-NO-NATIVE-GLOBS)`). A
+  `fixture-error` line there is a broken test, not the crash.
 
 ## Accepted limitations
 

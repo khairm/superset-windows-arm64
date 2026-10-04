@@ -1,7 +1,17 @@
 import path from "node:path";
 import picomatch from "picomatch";
 
-const GLOB_MAGIC = /[*?{}()[\]!+@|]/;
+export const GLOB_MAGIC = /[*?{}()[\]!+@|]/;
+
+// Every character picomatch (parcel's glob engine) treats as magic, plus the
+// escape itself. Mirrors the metacharacter set `is-glob`/picomatch@2 recognize.
+export const GLOB_ESCAPABLE = /[\\*?{}()[\]!+@|^$]/;
+const GLOB_ESCAPABLE_ALL = new RegExp(GLOB_ESCAPABLE.source, "g");
+
+/** Backslash-escapes glob magic so a path is matched literally inside a glob. */
+export function escapeGlobMagic(input: string): string {
+	return input.replace(GLOB_ESCAPABLE_ALL, (char) => `\\${char}`);
+}
 
 /**
  * Compiles a root-relative ignore list into a predicate over absolute paths.
@@ -29,7 +39,12 @@ export function createIgnoreMatcher(
 			}
 		}
 		const relative = path.relative(rootPath, absolutePath);
-		if (relative === "" || relative.startsWith("..")) {
+		if (
+			relative === "" ||
+			relative === ".." ||
+			relative.startsWith(`..${path.sep}`) ||
+			path.isAbsolute(relative)
+		) {
 			return false;
 		}
 		const posixRelative =

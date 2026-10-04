@@ -36,6 +36,8 @@ export interface FindNestedRepoRootsResult {
 	roots: string[];
 	/** A scan cap (count or time) was hit; `roots` may be incomplete. */
 	truncated: boolean;
+	/** Absolute dirs skipped because their name is in `pruneDirNames`. */
+	prunedDirs: string[];
 }
 
 /**
@@ -67,6 +69,7 @@ export async function findNestedRepoRoots(
 	const deadline =
 		options.deadlineMs !== undefined ? now() + options.deadlineMs : null;
 	const roots: string[] = [];
+	const prunedDirs: string[] = [];
 	// FIFO queue with a head cursor — plain `shift()` would be O(n) per dequeue.
 	const queue: string[] = [rootPath];
 	let head = 0;
@@ -74,7 +77,7 @@ export async function findNestedRepoRoots(
 
 	while (head < queue.length) {
 		if (roots.length >= maxRoots || (deadline !== null && now() >= deadline)) {
-			return { roots, truncated: true };
+			return { roots, truncated: true, prunedDirs };
 		}
 		const dir = queue[head++] as string;
 
@@ -96,6 +99,8 @@ export async function findNestedRepoRoots(
 				continue;
 			}
 			if (options.pruneDirNames.has(entry.name)) {
+				// (WATCHER-NATIVE-NAME-HITS) reported so Windows can prune it natively.
+				prunedDirs.push(path.join(dir, entry.name));
 				continue;
 			}
 			if (queue.length >= maxQueuedDirs) {
@@ -109,5 +114,5 @@ export async function findNestedRepoRoots(
 		}
 	}
 
-	return { roots, truncated };
+	return { roots, truncated, prunedDirs };
 }

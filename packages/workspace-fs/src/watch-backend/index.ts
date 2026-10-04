@@ -3,7 +3,8 @@ import { parcelWatchBackend } from "./parcel-backend";
 import type { NativeWatchBackend } from "./types";
 
 export { chokidarWatchBackend } from "./chokidar-backend";
-export { createIgnoreMatcher } from "./ignore-matcher";
+export { createIgnoreMatcher, escapeGlobMagic } from "./ignore-matcher";
+export { NativeIgnoreTripwireError } from "./native-ignore-split";
 export { parcelWatchBackend } from "./parcel-backend";
 export type {
 	NativeWatchBackend,
