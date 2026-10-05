@@ -506,6 +506,9 @@ export async function createPlatformWindow({
 			// Isolate Electron session from system browser cookies
 			// This ensures desktop uses bearer token auth, not web cookies
 			partition: "persist:superset",
+			// (WIN-NO-BG-THROTTLE) Constructor only: a later setBackgroundThrottling
+			// on Windows blanks the window (electron#42378).
+			backgroundThrottling: !PLATFORM.IS_WINDOWS,
 		},
 	});
 
