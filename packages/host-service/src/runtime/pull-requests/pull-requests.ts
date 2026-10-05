@@ -15,6 +15,7 @@ import type { ExecGh } from "../../trpc/router/workspace-creation/utils/exec-gh"
 import type { GitFactory } from "../git";
 import { isGitRepo } from "../git/non-git";
 import { peekOriginHead, readOriginHead } from "../git/origin-head-cache";
+import type { ExitedWorkspaceFilterSlot } from "./exited-workspaces";
 import type { PrSyncTrigger } from "./pr-sync-trigger";
 import {
 	GitHubAvailabilityGate,
@@ -153,8 +154,10 @@ export interface PullRequestRuntimeManagerOptions {
 	readWorkspaceRefs?: (worktreePath: string) => Promise<WorkspaceRefsSnapshot>;
 	/** Test seam for the missing-worktree gate. Defaults to `existsSync`. */
 	worktreeExists?: (worktreePath: string) => boolean;
-	// (PR-SWEEP-SKIPS-EXITED)
-	loadExitedWorkspaceFilter?: () => ExitedWorkspaceFilter;
+	// (PR-SWEEP-SKIPS-EXITED) (PR-SWEEP-LAST-KNOWN-MIRROR)
+	loadExitedWorkspaceFilter?: (
+		slot: ExitedWorkspaceFilterSlot | null,
+	) => ExitedWorkspaceFilter;
 }
 
 type ExitedWorkspaceFilter = (workspace: {
@@ -292,7 +295,9 @@ export class PullRequestRuntimeManager {
 		worktreePath: string,
 	) => Promise<WorkspaceRefsSnapshot>;
 	private readonly worktreeExists: (worktreePath: string) => boolean;
-	private readonly loadExitedWorkspaceFilter: () => ExitedWorkspaceFilter;
+	private readonly loadExitedWorkspaceFilter: (
+		slot: ExitedWorkspaceFilterSlot | null,
+	) => ExitedWorkspaceFilter;
 	// Worktrees deleted out from under us (external `rm`, crashed teardown).
 	// While a workspace is listed here, sync attempts cost one existsSync and
 	// spawn no git; the probe timer re-enters the normal sync path when the
@@ -352,7 +357,7 @@ export class PullRequestRuntimeManager {
 		// an accepted staleness tradeoff, not a gap to close by watching more.
 		this.unsubscribeFromGitWatcher = this.gitWatcher.onChanged((event) => {
 			if (event.trailing) {
-				const isExited = this.loadExitedWorkspaceFilter();
+				const isExited = this.loadExitedWorkspaceFilter(null);
 				const workspace = this.db
 					.select({
 						id: workspaces.id,
@@ -689,7 +694,7 @@ export class PullRequestRuntimeManager {
 		// Session workspaces (null projectId) have no remote and no PRs, and
 		// archived workspaces are frozen. Filtered in JS: the unit-test fakes
 		// stub select().from().all() without a where() builder.
-		const isExited = this.loadExitedWorkspaceFilter();
+		const isExited = this.loadExitedWorkspaceFilter("branch-sweep");
 		const ids = this.db
 			.select({
 				id: workspaces.id,
@@ -905,7 +910,9 @@ export class PullRequestRuntimeManager {
 	}
 
 	private async refreshEligibleProjects(): Promise<void> {
-		const isExited = this.loadExitedWorkspaceFilter();
+		const isExited = this.loadExitedWorkspaceFilter(
+			this.githubGate.status() ? null : "pr-refresh", // (PR-SWEEP-LAST-KNOWN-MIRROR)
+		);
 		const rows = this.db
 			.select({
 				id: workspaces.id,

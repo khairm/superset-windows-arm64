@@ -7,6 +7,7 @@ import {
 	describe,
 	expect,
 	setSystemTime,
+	spyOn,
 	test,
 } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,7 +28,11 @@ import {
 	peekOriginHead,
 	resetOriginHeadCacheForTests,
 } from "../git/origin-head-cache";
-import { createExitedWorkspaceFilterLoader } from "./exited-workspaces";
+import {
+	createExitedWorkspaceFilterLoader,
+	MIRROR_WARN_INTERVAL_MS,
+	PR_SWEEP_MIRROR_LIMIT_MS,
+} from "./exited-workspaces";
 import { createPrSyncTrigger } from "./pr-sync-trigger";
 import {
 	PullRequestRuntimeManager,
@@ -2690,10 +2695,23 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 		}
 	}
 
-	function mirrorLoader(mirror: MirrorFixture) {
+	type MirrorClocks = { nowMs: () => number; elapsedMs: () => number };
+	const REAL_CLOCKS: MirrorClocks = {
+		nowMs: Date.now,
+		elapsedMs: () => performance.now(),
+	};
+
+	function mirrorLoader(
+		mirror: MirrorFixture,
+		clocks: MirrorClocks = REAL_CLOCKS,
+	) {
 		return (db: HostDb): LoadFilter => {
 			seedMirror(db, mirror);
-			return createExitedWorkspaceFilterLoader({ db, organizationId: ORG });
+			return createExitedWorkspaceFilterLoader({
+				db,
+				organizationId: ORG,
+				...clocks,
+			});
 		};
 	}
 
@@ -2877,7 +2895,7 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 	);
 
 	test(
-		"a mirror older than the age-out window filters nothing",
+		"a mirror 21 min old still skips exited cards, by both sweeps",
 		async () => {
 			const scenario = createScenario(
 				["ws-a"],
@@ -2891,7 +2909,12 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 				await withSilencedWarnings(() =>
 					scenario.sweeps.syncWorkspaceBranches(),
 				);
-				expect(scenario.refsReadPaths).toEqual([dir("ws-a")]);
+				expect(scenario.refsReadPaths).toEqual([]);
+				await withSilencedWarnings(() =>
+					scenario.sweeps.refreshEligibleProjects(),
+				);
+				expect(scenario.gitCalls()).toBe(0);
+				expect(scenario.ghArgs).toEqual([]);
 			} finally {
 				scenario.cleanup();
 			}
@@ -2969,6 +2992,7 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 					.run();
 			};
 			let trailingFires = 0;
+			const error = spyOn(console, "error");
 			try {
 				await withSilencedWarnings(async () => {
 					scenario.manager.start();
@@ -2986,15 +3010,551 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 					await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
 				});
 				expect(trailingFires).toBe(1);
+				expect(
+					error.mock.calls.filter(([message]) =>
+						String(message).includes("[pr-sync-trigger] listener threw"),
+					),
+				).toEqual([]);
 				expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
 				expect(scenario.headLookups("feat/ws-b")).toBe(1);
 			} finally {
+				error.mockRestore();
 				scenario.cleanup();
 				trigger.dispose();
 			}
 		},
 		GIT_SPAWN_TIMEOUT_MS,
 	);
+
+	describe("(PR-SWEEP-LAST-KNOWN-MIRROR) an old mirror keeps filtering, an expired one owes each sweep a daily pass", () => {
+		const HOUR_MS = 3_600_000;
+		const DAY_MS = 24 * HOUR_MS;
+		const EXPIRED_AGE_MS = 25 * HOUR_MS;
+		const WS_A = { id: "ws-a", projectId: PROJECT_ID, type: "worktree" };
+
+		async function quietly<T>(fn: () => Promise<T>): Promise<T> {
+			const { warn, error } = console;
+			console.warn = () => {};
+			console.error = () => {};
+			try {
+				return await fn();
+			} finally {
+				console.warn = warn;
+				console.error = error;
+			}
+		}
+
+		// ws-a is completed and alone in its project, so a skipped PR refresh
+		// launches nothing and a swept one always reads git: the origin/HEAD
+		// failure is never cached, unlike the 60 s PR cache.
+		function agedScenario(ageMs: number) {
+			const t0 = Date.now();
+			setSystemTime(new Date(t0));
+			let elapsed = 0;
+			const scenario = createScenario(
+				["ws-a"],
+				mirrorLoader(
+					{ lastFullSyncAtMs: t0 - ageMs, completed: ["ws-a"], live: [] },
+					{ nowMs: Date.now, elapsedMs: () => elapsed },
+				),
+			);
+			return {
+				cleanup: scenario.cleanup,
+				advance(ms: number) {
+					elapsed += ms;
+					setSystemTime(new Date(Date.now() + ms));
+				},
+				stepWallClock(ms: number) {
+					setSystemTime(new Date(Date.now() + ms));
+				},
+				setMirrorAge(ms: number) {
+					scenario.db
+						.update(schema.sidebarMirrorMeta)
+						.set({ lastFullSyncAtMs: Date.now() - ms })
+						.run();
+				},
+				async branchSweepReadsWsA(): Promise<boolean> {
+					scenario.resetCalls();
+					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
+					return scenario.refsReadPaths.includes(dir("ws-a"));
+				},
+				async prRefreshLaunches(): Promise<number> {
+					scenario.resetCalls();
+					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					return scenario.gitCalls() + scenario.ghArgs.length;
+				},
+			};
+		}
+
+		async function withAgedMirror(
+			ageMs: number,
+			body: (scenario: ReturnType<typeof agedScenario>) => Promise<void>,
+		) {
+			try {
+				const scenario = agedScenario(ageMs);
+				try {
+					await body(scenario);
+				} finally {
+					scenario.cleanup();
+				}
+			} finally {
+				setSystemTime();
+			}
+		}
+
+		function trailingScenario(lastFullSyncAtMs: number) {
+			const trigger = createPrSyncTrigger({
+				broadIntervalMs: 300,
+				fileOnlyIntervalMs: 300,
+			});
+			const scenario = createScenario(
+				["ws-b"],
+				mirrorLoader({ lastFullSyncAtMs, completed: ["ws-b"], live: [] }),
+				undefined,
+				trigger,
+			);
+			const setCompletedAt = (completedAt: number | null) => {
+				scenario.db
+					.update(schema.sidebarWorkspaceState)
+					.set({ completedAt })
+					.where(eq(schema.sidebarWorkspaceState.workspaceId, "ws-b"))
+					.run();
+			};
+			let trailingFires = 0;
+			const listenerThrows: unknown[][] = [];
+			return {
+				...scenario,
+				trailingFires: () => trailingFires,
+				listenerThrows: () => listenerThrows,
+				async reExitDuringTrailingWindow() {
+					const error = spyOn(console, "error").mockImplementation(() => {});
+					try {
+						trigger.onChanged((event) => {
+							if (event.trailing) trailingFires += 1;
+						});
+						setCompletedAt(null);
+						trigger.push({ workspaceId: "ws-b" });
+						trigger.push({ workspaceId: "ws-b" });
+						setCompletedAt(Date.now());
+						await waitFor(
+							() =>
+								trailingFires === 1 && scenario.headLookups("feat/ws-b") > 0,
+							20_000,
+						);
+						await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
+					} finally {
+						listenerThrows.push(
+							...error.mock.calls.filter(([message]) =>
+								String(message).includes("[pr-sync-trigger] listener threw"),
+							),
+						);
+						error.mockRestore();
+					}
+				},
+				dispose() {
+					scenario.cleanup();
+					trigger.dispose();
+				},
+			};
+		}
+
+		test.each([
+			["23 h old", 23 * HOUR_MS],
+			["stamped 23 h in the future", -23 * HOUR_MS],
+		])(
+			"a mirror %s still skips exited cards, by both sweeps",
+			async (_label, ageMs) => {
+				await withAgedMirror(ageMs, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					expect(await scenario.prRefreshLaunches()).toBe(0);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a mirror stamped 25 h in the future is expired and each sweep takes its pass",
+			async () => {
+				await withAgedMirror(-EXPIRED_AGE_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					expect(await scenario.prRefreshLaunches()).toBeGreaterThan(0);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"exactly 24 h is old, 24 h + 1 ms takes the pass, and a used slot is owed again 24 h of elapsed time later",
+			async () => {
+				await withAgedMirror(PR_SWEEP_MIRROR_LIMIT_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					scenario.advance(1);
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					scenario.advance(PR_SWEEP_MIRROR_LIMIT_MS - 1);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					scenario.advance(1);
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a wall-clock step neither stalls nor opens a pass; only elapsed time does",
+			async () => {
+				await withAgedMirror(EXPIRED_AGE_MS, async (scenario) => {
+					scenario.stepWallClock(7 * DAY_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					scenario.stepWallClock(-7 * DAY_MS);
+					scenario.advance(23 * HOUR_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					scenario.advance(HOUR_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					scenario.stepWallClock(7 * DAY_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a backward wall-clock step that reads the mirror as old keeps the used pass",
+			async () => {
+				await withAgedMirror(EXPIRED_AGE_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					scenario.stepWallClock(-2 * HOUR_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					scenario.advance(2 * HOUR_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a fresh push between two expiries owes the pass again at once",
+			async () => {
+				await withAgedMirror(EXPIRED_AGE_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					scenario.setMirrorAge(0);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					scenario.setMirrorAge(EXPIRED_AGE_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"the loader refuses a missing or unknown slot, and a sweep that drops its slot rejects",
+			async () => {
+				const fresh: MirrorFixture = {
+					lastFullSyncAtMs: Date.now(),
+					completed: ["ws-a"],
+					live: [],
+				};
+				const load = mirrorLoader(fresh)(createRealDb()) as unknown as (
+					...args: unknown[]
+				) => unknown;
+				expect(() => load(undefined)).toThrow(
+					"invalid exited-workspace filter slot: undefined",
+				);
+				expect(() => load("watcher")).toThrow(
+					"invalid exited-workspace filter slot: watcher",
+				);
+				expect(() => load()).toThrow(
+					"invalid exited-workspace filter slot: undefined",
+				);
+
+				const scenario = createScenario(["ws-a"], (db) => {
+					const real = mirrorLoader(fresh)(
+						db,
+					) as unknown as () => ReturnType<LoadFilter>;
+					return () => real();
+				});
+				try {
+					await expect(scenario.sweeps.syncWorkspaceBranches()).rejects.toThrow(
+						"invalid exited-workspace filter slot",
+					);
+					await expect(
+						scenario.sweeps.refreshEligibleProjects(),
+					).rejects.toThrow("invalid exited-workspace filter slot");
+					expect(scenario.refsReadPaths).toEqual([]);
+					expect(scenario.ghArgs).toEqual([]);
+				} finally {
+					scenario.cleanup();
+				}
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a 25 h mirror gives each sweep one pass, and a late or early next tick skips",
+			async () => {
+				await withAgedMirror(EXPIRED_AGE_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					expect(await scenario.prRefreshLaunches()).toBeGreaterThan(0);
+					scenario.advance(4 * 60_000 + 59_900);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					expect(await scenario.prRefreshLaunches()).toBe(0);
+					scenario.advance(200);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					expect(await scenario.prRefreshLaunches()).toBe(0);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"taking the branch-sweep pass leaves the PR refresh's pass owed",
+			async () => {
+				await withAgedMirror(EXPIRED_AGE_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					expect(await scenario.prRefreshLaunches()).toBeGreaterThan(0);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"(GIT-LAUNCH-BUDGET-B-EXITED) a 25 h mirror skips a trailing sync without using the branch sweep's pass",
+			async () => {
+				const scenario = trailingScenario(Date.now());
+				try {
+					await quietly(async () => {
+						scenario.manager.start();
+						// The start-up sweeps read the mirror fresh; it expires only now.
+						scenario.db
+							.update(schema.sidebarMirrorMeta)
+							.set({ lastFullSyncAtMs: Date.now() - EXPIRED_AGE_MS })
+							.run();
+						await scenario.reExitDuringTrailingWindow();
+					});
+					expect(scenario.trailingFires()).toBe(1);
+					expect(scenario.listenerThrows()).toEqual([]);
+					expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
+
+					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
+					expect(scenario.refsReadPaths).toEqual([dir("ws-b"), dir("ws-b")]);
+				} finally {
+					scenario.dispose();
+				}
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"(GIT-LAUNCH-BUDGET-B-EXITED) a 21 min mirror still drops the trailing sync of a re-exited card",
+			async () => {
+				const scenario = trailingScenario(Date.now() - MIRROR_STALE_MS);
+				try {
+					await quietly(async () => {
+						scenario.manager.start();
+						await scenario.reExitDuringTrailingWindow();
+					});
+					expect(scenario.trailingFires()).toBe(1);
+					expect(scenario.listenerThrows()).toEqual([]);
+					expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
+					expect(scenario.headLookups("feat/ws-b")).toBe(1);
+				} finally {
+					scenario.dispose();
+				}
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a GitHub hold keeps the PR refresh filtering and its pass owed for the recovery refresh",
+			async () => {
+				const scenario = createScenario(
+					["ws-a"],
+					mirrorLoader({
+						lastFullSyncAtMs: Date.now() - EXPIRED_AGE_MS,
+						completed: ["ws-a"],
+						live: [],
+					}),
+				);
+				let gateNow = 0;
+				const gate = new GitHubAvailabilityGate({ now: () => gateNow });
+				(
+					scenario.manager as unknown as { githubGate: GitHubAvailabilityGate }
+				).githubGate = gate;
+				try {
+					gate.recordFailure(
+						Object.assign(new Error("offline"), { code: "ENOTFOUND" }),
+					);
+					expect(scenario.manager.getGithubStatus()).not.toBeNull();
+					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					expect(scenario.gitCalls()).toBe(0);
+					expect(scenario.ghArgs).toEqual([]);
+
+					gateNow += 61_000;
+					expect(scenario.manager.getGithubStatus()).toBeNull();
+					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					expect(scenario.gitCalls()).toBeGreaterThan(0);
+					expect(scenario.ghTouched("feat/ws-a")).toBe(true);
+				} finally {
+					scenario.cleanup();
+				}
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test("a restarted host owes both passes again on the same 25 h mirror", async () => {
+			const db = createRealDb();
+			const before = mirrorLoader({
+				lastFullSyncAtMs: Date.now() - EXPIRED_AGE_MS,
+				completed: ["ws-a"],
+				live: [],
+			})(db);
+			const after = createExitedWorkspaceFilterLoader({
+				db,
+				organizationId: ORG,
+				nowMs: Date.now,
+				elapsedMs: () => 0,
+			});
+			await quietly(async () => {
+				expect(before("branch-sweep")(WS_A)).toBe(false);
+				expect(before("pr-refresh")(WS_A)).toBe(false);
+				expect(before("branch-sweep")(WS_A)).toBe(true);
+				expect(before("pr-refresh")(WS_A)).toBe(true);
+				expect(after("branch-sweep")(WS_A)).toBe(false);
+				expect(after("pr-refresh")(WS_A)).toBe(false);
+			});
+		});
+
+		test(
+			"a mirror written for another org filters nothing",
+			async () => {
+				const scenario = createScenario(["ws-a"], (db) => {
+					seedMirror(db, {
+						lastFullSyncAtMs: Date.now(),
+						completed: ["ws-a"],
+						live: [],
+					});
+					return createExitedWorkspaceFilterLoader({
+						db,
+						organizationId: "org-2",
+						...REAL_CLOCKS,
+					});
+				});
+				try {
+					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
+					expect(scenario.refsReadPaths).toEqual([dir("ws-a")]);
+					scenario.resetCalls();
+					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					expect(scenario.gitCalls()).toBeGreaterThan(0);
+				} finally {
+					scenario.cleanup();
+				}
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		describe("log cadence", () => {
+			function fakeClockLoader(ageMs: number) {
+				const clock = { now: 1_700_000_000_000, elapsed: 0 };
+				const lastFullSyncAtMs = clock.now - ageMs;
+				const load = mirrorLoader(
+					{ lastFullSyncAtMs, completed: ["ws-a"], live: [] },
+					{ nowMs: () => clock.now, elapsedMs: () => clock.elapsed },
+				)(createRealDb());
+				const warn = spyOn(console, "warn").mockImplementation(() => {});
+				const error = spyOn(console, "error").mockImplementation(() => {});
+				return {
+					load,
+					warn,
+					error,
+					age: {
+						lastSyncAgeMs: ageMs,
+						lastFullSyncAt: new Date(lastFullSyncAtMs).toISOString(),
+					},
+					advance(ms: number) {
+						clock.now += ms;
+						clock.elapsed += ms;
+					},
+					stepWallClock(ms: number) {
+						clock.now += ms;
+					},
+					advanceElapsed(ms: number) {
+						clock.elapsed += ms;
+					},
+					restore() {
+						warn.mockRestore();
+						error.mockRestore();
+					},
+				};
+			}
+
+			test("only elapsed time repeats an old mirror's warning, not a wall-clock step", () => {
+				const probe = fakeClockLoader(MIRROR_STALE_MS);
+				try {
+					probe.load("branch-sweep");
+					expect(probe.warn).toHaveBeenCalledTimes(1);
+					probe.stepWallClock(MIRROR_WARN_INTERVAL_MS);
+					probe.load("branch-sweep");
+					expect(probe.warn).toHaveBeenCalledTimes(1);
+					probe.advanceElapsed(MIRROR_WARN_INTERVAL_MS);
+					probe.load("branch-sweep");
+					expect(probe.warn).toHaveBeenCalledTimes(2);
+					expect(probe.error).not.toHaveBeenCalled();
+				} finally {
+					probe.restore();
+				}
+			});
+
+			test("an old mirror warns on the first call and every 5 min after, not in between", () => {
+				const probe = fakeClockLoader(MIRROR_STALE_MS);
+				try {
+					probe.load("branch-sweep");
+					expect(probe.warn.mock.calls).toEqual([
+						[expect.stringContaining("is old"), probe.age],
+					]);
+					probe.advance(60_000);
+					probe.load("branch-sweep");
+					expect(probe.warn).toHaveBeenCalledTimes(1);
+					probe.advance(MIRROR_WARN_INTERVAL_MS - 60_000);
+					probe.load(null);
+					expect(probe.warn).toHaveBeenCalledTimes(2);
+					expect(probe.error).not.toHaveBeenCalled();
+				} finally {
+					probe.restore();
+				}
+			});
+
+			test("an expired mirror logs at error level, plus one error per pass", () => {
+				const probe = fakeClockLoader(EXPIRED_AGE_MS);
+				const passLines = () =>
+					probe.error.mock.calls.filter(([message]) =>
+						String(message).includes("full pass started"),
+					);
+				try {
+					probe.load(null);
+					expect(probe.error.mock.calls).toEqual([
+						[expect.stringContaining("is over 24 h old"), probe.age],
+					]);
+					probe.load("branch-sweep");
+					probe.load("pr-refresh");
+					probe.load("branch-sweep");
+					expect(passLines()).toEqual([
+						[
+							expect.stringContaining("full pass started"),
+							{ slot: "branch-sweep", ...probe.age },
+						],
+						[
+							expect.stringContaining("full pass started"),
+							{ slot: "pr-refresh", ...probe.age },
+						],
+					]);
+					expect(probe.error).toHaveBeenCalledTimes(3);
+					expect(probe.warn).not.toHaveBeenCalled();
+				} finally {
+					probe.restore();
+				}
+			});
+		});
+	});
 });
 
 describe("(GIT-LAUNCH-BUDGET-B) the runtime runs on a PR-sync trigger, not the GitWatcher", () => {
