@@ -4,16 +4,13 @@ import { errorMessage } from "@superset/i18n/errors";
 import { normalizeWorkspaceTags } from "@superset/shared/workspace-tags";
 import { toast } from "@superset/ui/sonner";
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import type { inferRouterOutputs } from "@trpc/server";
-import {
-	useMatchRoute,
-	useNavigate,
-	useRouterState,
-} from "@tanstack/react-router";
 import { useState } from "react";
 import { getTerminalAgentBindingsQueryKey } from "renderer/hooks/host-service/useTerminalAgentBindings";
 import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
+import { useActiveRoute } from "renderer/lib/active-route";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
@@ -40,6 +37,7 @@ import {
 	getV2TerminalNotificationSource,
 	useV2NotificationStore,
 } from "renderer/stores/v2-notifications";
+import { selectIsWorkspaceRowActive } from "./useDashboardSidebarWorkspaceItemActions.utils";
 
 /**
  * (MANUAL-DISMISS) One terminal's outcome from the host's
@@ -222,7 +220,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 }: UseDashboardSidebarWorkspaceItemActionsOptions) {
 	const { t } = useLingui();
 	const navigate = useNavigate();
-	const matchRoute = useMatchRoute();
+	const router = useRouter();
 	const hostService = useLocalHostService();
 	const { activeHostUrl } = hostService;
 	const { copyToClipboard } = useCopyToClipboard();
@@ -292,21 +290,10 @@ export function useDashboardSidebarWorkspaceItemActions({
 		setPendingName(null);
 	}
 
-	// (KANBAN) When the kanban view is showing, sidebar selection opens the
-	// workspace INSIDE the collapse-split (board rail stays) instead of
-	// navigating away from the board.
-	const onKanban = !!matchRoute({ to: "/kanban", fuzzy: true });
-	const kanbanOpenWorkspaceId = useRouterState({
-		select: (s) => (s.location.search as { cardId?: string }).cardId,
-	});
-
-	const isActive =
-		!!matchRoute({
-			to: "/v2-workspace/$workspaceId",
-			params: { workspaceId },
-			fuzzy: true,
-		}) ||
-		(onKanban && kanbanOpenWorkspaceId === workspaceId);
+	// (NAV-LOCAL-RENDER) One boolean per row, so a click re-renders two rows.
+	const isActive = useActiveRoute((matched, state) =>
+		selectIsWorkspaceRowActive(matched, state, workspaceId),
+	);
 
 	const handleClick = () => {
 		if (isRenaming) return;
@@ -315,7 +302,10 @@ export function useDashboardSidebarWorkspaceItemActions({
 		// active terminal's source on focus, so unfocused terminals keep
 		// their unread dot until the user actually visits them — matching
 		// the per-terminal-dots indicator we render in the sidebar row.
-		if (onKanban) {
+		// (KANBAN) When the kanban view is showing, sidebar selection opens the
+		// workspace INSIDE the collapse-split (board rail stays) instead of
+		// navigating away from the board.
+		if (router.matchRoute({ to: "/kanban" }, { fuzzy: true })) {
 			navigate({ to: "/kanban", search: { cardId: workspaceId } });
 			return;
 		}

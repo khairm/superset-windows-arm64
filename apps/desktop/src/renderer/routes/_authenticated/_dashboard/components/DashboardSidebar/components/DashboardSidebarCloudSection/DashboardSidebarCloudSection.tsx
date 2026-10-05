@@ -3,7 +3,7 @@ import { FEATURE_FLAGS } from "@superset/shared/constants";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useFeatureFlagEnabled } from "posthog-js/react";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { LuPlus } from "react-icons/lu";
 import { useActiveOrganizationId } from "renderer/hooks/useActiveOrganizationId";
 import { useCloudWorkspaces } from "renderer/hooks/useCloudWorkspaces";
@@ -35,7 +35,7 @@ import { DashboardSidebarWorkspaceItem } from "../DashboardSidebarWorkspaceItem"
  * open workspace's sandbox is in the fan-out, so every other row shows the
  * branch it was created on; pull requests come from the cloud table.
  */
-export function DashboardSidebarCloudSection({
+function DashboardSidebarCloudSectionInner({
 	isCollapsed,
 	onWorkspaceHover,
 }: {
@@ -264,3 +264,8 @@ export function DashboardSidebarCloudSection({
 		</div>
 	);
 }
+
+// (NAV-LOCAL-RENDER) Memoised: a sidebar click must not re-render every row.
+export const DashboardSidebarCloudSection = memo(
+	DashboardSidebarCloudSectionInner,
+);

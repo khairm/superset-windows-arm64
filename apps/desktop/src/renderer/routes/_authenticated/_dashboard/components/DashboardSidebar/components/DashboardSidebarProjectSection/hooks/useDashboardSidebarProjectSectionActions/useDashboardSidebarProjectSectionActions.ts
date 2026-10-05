@@ -4,7 +4,7 @@ import { errorMessage } from "@superset/i18n/errors";
 import { buildHostRoutingKey } from "@superset/shared/host-routing";
 import { alert } from "@superset/ui/atoms/Alert";
 import { toast } from "@superset/ui/sonner";
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import { type AnyRouter, useNavigate, useRouter } from "@tanstack/react-router";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
@@ -93,15 +93,17 @@ export function useDashboardSidebarProjectSectionActions({
 	// Hiding or deleting the project you are inside would leave the view
 	// pointing at a workspace the sidebar no longer shows (or that no longer
 	// exists), so both land on the workspaces list first.
-	const matchRoute = useMatchRoute();
-	const activeWorkspaceMatch = matchRoute({ to: "/v2-workspace/$workspaceId" });
-	const activeWorkspaceId = activeWorkspaceMatch
-		? activeWorkspaceMatch.workspaceId
-		: null;
+	// (NAV-LOCAL-RENDER) Read at call time; subscribing re-renders every
+	// section on each navigation.
+	const router = useRouter<AnyRouter>();
 	const leaveProjectIfActive = () => {
-		if (!activeWorkspaceId) return;
+		const activeWorkspaceMatch = router.matchRoute(
+			{ to: "/v2-workspace/$workspaceId" },
+			{ fuzzy: true },
+		);
+		if (!activeWorkspaceMatch) return;
 		const active = hostWorkspaces.find(
-			(workspace) => workspace.id === activeWorkspaceId,
+			(workspace) => workspace.id === activeWorkspaceMatch.workspaceId,
 		);
 		if (active?.projectId === project.id) {
 			navigate({ to: "/v2-workspaces" });

@@ -3,7 +3,7 @@ import {
 	verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { useLingui } from "@lingui/react/macro";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import {
 	dropZoneId,
@@ -34,7 +34,7 @@ interface DashboardSidebarPinnedSectionProps {
  * no section chrome anywhere, so collapsed mode is a plain icon stack with a
  * trailing divider.
  */
-export function DashboardSidebarPinnedSection({
+function DashboardSidebarPinnedSectionInner({
 	pinnedWorkspaces,
 	isCollapsed = false,
 	onWorkspaceHover,
@@ -147,3 +147,8 @@ export function DashboardSidebarPinnedSection({
 		</div>
 	);
 }
+
+// (NAV-LOCAL-RENDER) Memoised: a sidebar click must not re-render every row.
+export const DashboardSidebarPinnedSection = memo(
+	DashboardSidebarPinnedSectionInner,
+);

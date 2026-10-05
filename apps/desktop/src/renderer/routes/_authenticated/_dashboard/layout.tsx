@@ -1,17 +1,11 @@
 import { FORK_PORT_SCAN_DISABLED } from "@superset/shared/fork-disabled-features";
-import {
-	createFileRoute,
-	Outlet,
-	useMatchRoute,
-	useNavigate,
-} from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { CommandPaletteHost } from "renderer/commandPalette";
 import { Redirect } from "renderer/components/Redirect";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
-import { useOpenNewWorkspace } from "renderer/hooks/useOpenNewWorkspace";
-import { useQuickCreateWorkspace } from "renderer/hooks/useQuickCreateWorkspace";
 import { useHotkey } from "renderer/hotkeys";
+import { useActiveRoute } from "renderer/lib/active-route";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
@@ -20,11 +14,8 @@ import { PortForwardsProvider } from "renderer/routes/_authenticated/_dashboard/
 import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
 import { WorkspaceExitCleanupReconciler } from "renderer/routes/_authenticated/_dashboard/components/WorkspaceExitCleanupReconciler";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
-import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import { WorkspaceSidebar } from "renderer/screens/main/components/WorkspaceSidebar";
-import { DeleteWorkspaceDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
-import { useDeleteWorkspaceIntent } from "renderer/stores/delete-workspace-intent";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { syncPersistedStoreAcrossWindows } from "renderer/stores/syncPersistedStoreAcrossWindows";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
@@ -37,31 +28,23 @@ import {
 import { ContentBoundary } from "../components/ContentBoundary";
 import { AddRepositoryModals } from "./components/AddRepositoryModals";
 import { CrossVersionMismatchState } from "./components/CrossVersionMismatchState";
+import { DashboardWorkspaceHotkeys } from "./components/DashboardWorkspaceHotkeys";
 import { TopBar } from "./components/TopBar";
+import {
+	selectCurrentWorkspaceId,
+	selectOnDashboardViewRoute,
+	selectOnNewWorkspaceRoute,
+	selectOnV2WorkspaceRoute,
+} from "./layout.utils";
 
 export const Route = createFileRoute("/_authenticated/_dashboard")({
 	component: DashboardLayout,
 });
 
-/**
- * v1 only — v2 deletes go through the globally-mounted DeleteWorkspaceMount
- * (see delete-workspace-intent store), which in this fork is a SILENT
- * soft-delete into the project's Recycle Bin. Only the legacy
- * (non-v2-cloud) WorkspaceSidebar still opens a destroy dialog here.
- */
-type DeleteTarget = {
-	workspaceId: string;
-	workspaceName: string;
-	workspaceType: "worktree" | "branch";
-};
-
 function DashboardLayout() {
 	const navigate = useNavigate();
 
-	const openNewWorkspace = useOpenNewWorkspace();
 	const isV2CloudEnabled = useIsV2CloudEnabled();
-	const { workspaces: hostWorkspaces } = useHostWorkspaces();
-	const quickCreateWorkspace = useQuickCreateWorkspace();
 	useDevSeedV2Sidebar();
 	useEffect(() => {
 		const stopWorkspaceSidebarSync = syncPersistedStoreAcrossWindows(
@@ -81,30 +64,13 @@ function DashboardLayout() {
 		};
 	}, []);
 	// Get current workspace from route to pre-select project in new workspace modal
-	const matchRoute = useMatchRoute();
-	const currentWorkspaceMatch = matchRoute({
-		to: "/workspace/$workspaceId",
-		fuzzy: true,
-	});
-	const currentWorkspaceId =
-		currentWorkspaceMatch !== false ? currentWorkspaceMatch.workspaceId : null;
-	const v2WorkspaceMatch = matchRoute({
-		to: "/v2-workspace/$workspaceId",
-		fuzzy: true,
-	});
-	const currentV2WorkspaceId =
-		v2WorkspaceMatch !== false ? v2WorkspaceMatch.workspaceId : null;
-	const onV1WorkspaceRoute = currentWorkspaceMatch !== false;
-	const onV2WorkspaceRoute = v2WorkspaceMatch !== false;
-	const onNewWorkspaceRoute = matchRoute({ to: "/new-workspace" }) !== false;
-	// (CLOUD-SEVERANCE-P2) Automations and Tasks used to be part of this set;
-	// they are severed, so the only full-width dashboard views left are pull
-	// requests and the workspaces list.
-	const onDashboardViewRoute =
-		matchRoute({ to: "/pull-requests", fuzzy: true }) !== false ||
-		matchRoute({ to: "/plugins", fuzzy: true }) !== false ||
-		matchRoute({ to: "/pages", fuzzy: true }) !== false ||
-		matchRoute({ to: "/v2-workspaces", fuzzy: true }) !== false;
+	// (NAV-LOCAL-RENDER) Primitive selects: a v2-to-v2 click changes none of
+	// them, so this layout does not render.
+	const currentWorkspaceId = useActiveRoute(selectCurrentWorkspaceId);
+	const onV1WorkspaceRoute = currentWorkspaceId !== null;
+	const onV2WorkspaceRoute = useActiveRoute(selectOnV2WorkspaceRoute);
+	const onNewWorkspaceRoute = useActiveRoute(selectOnNewWorkspaceRoute);
+	const onDashboardViewRoute = useActiveRoute(selectOnDashboardViewRoute);
 	const versionMismatch =
 		(isV2CloudEnabled && onV1WorkspaceRoute) ||
 		(!isV2CloudEnabled && onV2WorkspaceRoute);
@@ -114,15 +80,6 @@ function DashboardLayout() {
 		{ enabled: !!currentWorkspaceId },
 	);
 
-	const currentV2Workspace = useMemo(
-		() =>
-			currentV2WorkspaceId != null
-				? (hostWorkspaces.find(
-						(workspace) => workspace.id === currentV2WorkspaceId,
-					) ?? null)
-				: null,
-		[hostWorkspaces, currentV2WorkspaceId],
-	);
 	const {
 		isOpen: isWorkspaceSidebarOpen,
 		toggleCollapsed: toggleWorkspaceSidebarCollapsed,
@@ -144,54 +101,6 @@ function DashboardLayout() {
 			toggleWorkspaceSidebarCollapsed();
 		}
 	});
-	useHotkey("NEW_WORKSPACE", () =>
-		openNewWorkspace(
-			currentWorkspace?.projectId ?? currentV2Workspace?.projectId ?? undefined,
-		),
-	);
-	useHotkey(
-		"QUICK_CREATE_WORKSPACE",
-		() => quickCreateWorkspace(currentV2Workspace?.projectId ?? null),
-		{ enabled: isV2CloudEnabled },
-	);
-
-	const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
-
-	useHotkey(
-		"CLOSE_WORKSPACE",
-		() => {
-			if (currentWorkspaceId && currentWorkspace) {
-				setDeleteTarget({
-					workspaceId: currentWorkspaceId,
-					workspaceName: currentWorkspace.name,
-					workspaceType: currentWorkspace.type,
-				});
-				return;
-			}
-
-			if (
-				currentV2WorkspaceId &&
-				currentV2Workspace &&
-				currentV2Workspace.type !== "main"
-			) {
-				// (RECYCLE-BIN) Close-workspace routes through the globally-mounted
-				// DeleteWorkspaceMount like every other v2 delete entry point — and
-				// that mount is a SILENT soft-delete here: it moves the thread to its
-				// project's Recycle Bin and navigates off the route. The real git
-				// destroy lives only behind in-bin "Delete permanently". Mains never
-				// reach here (deleteWorkspace would no-op them anyway).
-				useDeleteWorkspaceIntent.getState().request({
-					workspaceId: currentV2WorkspaceId,
-					workspaceName: currentV2Workspace.name || currentV2Workspace.branch,
-				});
-			}
-		},
-		{
-			enabled:
-				(!!currentWorkspaceId && !!currentWorkspace) ||
-				(!!currentV2WorkspaceId && !!currentV2Workspace),
-		},
-	);
 
 	// Collapsed rail on the v2 workspace route: the rail's headroom strip
 	// continues the pane tab bar, so the panel must not draw its own
@@ -297,17 +206,10 @@ function DashboardLayout() {
 						className="flex h-full shrink-0"
 					/>
 					<AddRepositoryModals />
-					{deleteTarget && (
-						<DeleteWorkspaceDialog
-							workspaceId={deleteTarget.workspaceId}
-							workspaceName={deleteTarget.workspaceName}
-							workspaceType={deleteTarget.workspaceType}
-							open={true}
-							onOpenChange={(open) => {
-								if (!open) setDeleteTarget(null);
-							}}
-						/>
-					)}
+					<DashboardWorkspaceHotkeys
+						currentWorkspaceId={currentWorkspaceId}
+						currentWorkspace={currentWorkspace}
+					/>
 				</div>
 			</PortForwardsProvider>
 		</DashboardSidebarPortsProvider>

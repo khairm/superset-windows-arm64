@@ -1,4 +1,4 @@
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import { type AnyRouter, useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useDeletingWorkspacesStore } from "renderer/routes/_authenticated/_dashboard/stores/deletingWorkspacesStore";
 import { navigateToV2Workspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
@@ -20,7 +20,8 @@ function reportRemovalNavigationError(error: unknown) {
  */
 export function useNavigateAwayFromWorkspace() {
 	const navigate = useNavigate();
-	const matchRoute = useMatchRoute();
+	// (NAV-LOCAL-RENDER) Read at call time instead of subscribing.
+	const router = useRouter<AnyRouter>();
 	const collections = useCollections();
 	const { workspaces, isReady } = useHostWorkspaces();
 	const tagFolderContext = useTagFolderContext();
@@ -34,10 +35,10 @@ export function useNavigateAwayFromWorkspace() {
 			workspaceId: string,
 			additionalDeletingWorkspaceIds?: ReadonlySet<string>,
 		) => {
-			const workspaceMatch = matchRoute({
-				to: "/v2-workspace/$workspaceId",
-				fuzzy: true,
-			});
+			const workspaceMatch = router.matchRoute(
+				{ to: "/v2-workspace/$workspaceId" },
+				{ fuzzy: true },
+			);
 			const activeWorkspaceId =
 				workspaceMatch !== false ? workspaceMatch.workspaceId : null;
 			const target = resolveWorkspaceRemovalNavigationTarget({
@@ -79,7 +80,7 @@ export function useNavigateAwayFromWorkspace() {
 			workspaceIds,
 			workspaces,
 			tagFolderContext,
-			matchRoute,
+			router,
 			navigate,
 			isReady,
 		],

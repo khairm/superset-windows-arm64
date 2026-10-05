@@ -1,7 +1,7 @@
-import { useQueries } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { type UseQueryResult, useQueries } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import { useCloudWorkspaces } from "renderer/hooks/useCloudWorkspaces";
+import { useActiveRoute, v2WorkspaceIdOf } from "renderer/lib/active-route";
 import { apiTrpcClient } from "renderer/lib/api-trpc-client";
 import { setHostServiceSecret } from "renderer/lib/host-service-auth";
 
@@ -38,6 +38,14 @@ export interface SandboxAccessValue {
 
 const SandboxAccessContext = createContext<SandboxAccessValue | null>(null);
 
+// (NAV-LOCAL-RENDER) Module-level so the combined results keep identity.
+function toAccessStates<T>(results: UseQueryResult<T>[]) {
+	return results.map((result) => ({
+		data: result.data,
+		isFetched: result.isFetched,
+	}));
+}
+
 /**
  * Keeps a live address for every ready cloud workspace.
  *
@@ -50,7 +58,9 @@ const SandboxAccessContext = createContext<SandboxAccessValue | null>(null);
  */
 export function SandboxAccessProvider({ children }: { children: ReactNode }) {
 	const { workspaces: cloudWorkspaces, organizationId } = useCloudWorkspaces();
-	const { workspaceId: openWorkspaceId } = useParams({ strict: false });
+	const openWorkspaceId = useActiveRoute((matched) =>
+		v2WorkspaceIdOf(matched.pathname, { fuzzy: true }),
+	);
 
 	// Only a `ready` row has a sandbox to address: `access` refuses anything
 	// else, and a provisioning workspace asking for a ticket every few seconds
@@ -103,6 +113,7 @@ export function SandboxAccessProvider({ children }: { children: ReactNode }) {
 				gcTime: wake ? 0 : undefined,
 			};
 		}),
+		combine: toAccessStates,
 	});
 
 	const value = useMemo<SandboxAccessValue>(() => {

@@ -275,6 +275,7 @@ In brief:
   rebuild of `workspaces` drops fork columns from existing DBs;
   `src/db/migrations.test.ts` asserts the fork columns after a full-folder run.
 - Read workspace activity via `useHostWorkspaceActivityStore`, never from `useHostWorkspaces()` rows; keep `combine` on the projects/tag-folder `useQueries`; sort the sidebar inside `useSortedSidebarProjects`. A per-tick field, an uncombined `useQueries` or a render-time sort re-renders ~50 consumers and ~300 query hooks (`(ACTIVITY-SPLIT)`, `(STABLE-HOST-QUERIES)`).
+- Sidebar rows, sections and the layouts above them never subscribe to the router: select a primitive through `lib/active-route`, or call `router.matchRoute({ to }, { fuzzy })` at event time. The one exception is `CloudSeveredRouteGate` and `OriginRouteTracker`, which select the pending `s.location.pathname` so a severed route redirects before it commits. Context values under AuthenticatedLayout keep identity: cached severed authClient results, module-level `combine` and empty constants, and active ids held in refs. One broken value re-renders every row and rebuilds about 30 live queries per click. Ratcheted by `active-route-ratchet.test.ts` (`(NAV-LOCAL-RENDER)`).
 - Never pass @parcel/watcher a glob on Windows: its std::regex aborts the
   host-service with 0xC0000409 on a ~290-char path (bun sees exit 9, the low
   byte). Plain dirs go native, globs filter in JS; re-run the Windows watcher
