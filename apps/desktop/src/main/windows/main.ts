@@ -6,7 +6,7 @@ import { i18n } from "@superset/i18n";
 import { workspaces, worktrees } from "@superset/local-db";
 import { eq } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
-import { app, dialog, Notification, nativeTheme } from "electron";
+import { app, dialog, Notification, nativeTheme, powerMonitor } from "electron";
 import log from "electron-log/main";
 import { createWindow } from "lib/electron-app/factories/windows/create";
 import { createTrpcContext } from "lib/trpc/context";
@@ -72,6 +72,10 @@ import { getWorkspaceRuntimeRegistry } from "../lib/workspace-runtime";
 import { findActiveOrganizationId } from "../lib/auto-resume/host-send/host-send";
 import { autoResumeManager } from "../lib/auto-resume/manager/manager";
 import { startKeepAwake, stopKeepAwake } from "../lib/keep-awake";
+import {
+	startScreenLock,
+	stopScreenLock,
+} from "../lib/screen-lock/screen-lock";
 
 // Singleton IPC handler — created once, shared by every window. Each window is
 // attached/detached individually via attachWindow/detachWindow.
@@ -235,6 +239,7 @@ function startSharedServices(): void {
 	// call an upstream merge could drop it here and the marker gate would still
 	// pass with the feature silently never starting.
 	startKeepAwake();
+	startScreenLock({ powerMonitor }); // (PRESENCE-SCREEN-LOCK-START)
 
 	notificationsServer = notificationsApp.listen(
 		env.DESKTOP_NOTIFICATIONS_PORT,
@@ -331,6 +336,7 @@ function stopSharedServices(): void {
 	// catch "stop dropped, start kept" — a power request acquired and never
 	// released for the rest of the process's life.
 	stopKeepAwake();
+	stopScreenLock(); // (PRESENCE-SCREEN-LOCK-STOP)
 	browserManager.unregisterAll();
 	notificationsServer?.close();
 	notificationsServer = null;
@@ -500,6 +506,9 @@ export async function createPlatformWindow({
 			// Isolate Electron session from system browser cookies
 			// This ensures desktop uses bearer token auth, not web cookies
 			partition: "persist:superset",
+			// (WIN-NO-BG-THROTTLE) Constructor only: a later setBackgroundThrottling
+			// on Windows blanks the window (electron#42378).
+			backgroundThrottling: !PLATFORM.IS_WINDOWS, // (WIN-NO-BG-THROTTLE-PREF)
 		},
 	});
 

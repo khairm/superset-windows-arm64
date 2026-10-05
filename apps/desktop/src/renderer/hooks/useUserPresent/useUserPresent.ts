@@ -1,7 +1,21 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Is the user actually AT the machine — window shown and focused?
+ * (PRESENCE-SCREEN-LOCK) Main's session lock state. `null` until main has
+ * answered, and whenever it cannot tell: both count as away.
+ */
+let screenLocked: boolean | null = null;
+const screenLockListeners = new Set<() => void>();
+
+export function setScreenLocked(next: boolean | null): void {
+	if (next === screenLocked) return;
+	screenLocked = next;
+	for (const listener of screenLockListeners) listener();
+}
+
+/**
+ * Is the user actually AT the machine — session unlocked, window shown and
+ * focused?
  *
  * ONE PREDICATE, THREE CALLERS, and they ask it for opposite reasons: do not
  * ring a chime at someone who is watching; do not raise a review dot for a
@@ -16,24 +30,28 @@ import { useSyncExternalStore } from "react";
  * notification code's business, not this hook's.
  */
 export function isUserPresent(): boolean {
+	if (screenLocked !== false) return false; // (PRESENCE-SCREEN-LOCK-GATE)
 	if (typeof document !== "undefined" && document.hidden) return false;
 	if (typeof window !== "undefined" && !document.hasFocus()) return false;
 	return true;
 }
 
 /**
- * The three DOM events that can change the answer, in one place beside the
- * predicate they re-read. Nothing else in the renderer re-renders when a user
- * comes back to a window that has been hidden for an hour.
+ * The three DOM events and main's lock state that can change the answer, in
+ * one place beside the predicate they re-read. Nothing else in the renderer
+ * re-renders when a user comes back to a window that has been hidden for an
+ * hour.
  */
-function subscribeToPresence(onChange: () => void): () => void {
+export function subscribeToPresence(onChange: () => void): () => void {
 	window.addEventListener("focus", onChange);
 	window.addEventListener("blur", onChange);
 	document.addEventListener("visibilitychange", onChange);
+	screenLockListeners.add(onChange);
 	return () => {
 		window.removeEventListener("focus", onChange);
 		window.removeEventListener("blur", onChange);
 		document.removeEventListener("visibilitychange", onChange);
+		screenLockListeners.delete(onChange);
 	};
 }
 

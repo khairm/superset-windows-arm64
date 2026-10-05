@@ -88,6 +88,10 @@ if (PLATFORM.IS_MAC) {
 	app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 }
 
+// (WIN-NO-BG-THROTTLE)
+PLATFORM.IS_WINDOWS &&
+	app.commandLine.appendSwitch("disable-renderer-backgrounding"); // (WIN-NO-BG-THROTTLE-SWITCH)
+
 PLATFORM.IS_WINDOWS &&
 	app.setAppUserModelId(
 		env.NODE_ENV === "development" ? process.execPath : makeAppId(),

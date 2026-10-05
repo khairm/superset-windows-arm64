@@ -12,7 +12,7 @@
  * `companionAlertSync` is tested through.
  */
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { WorkspaceState } from "@superset/panes";
 import type { AgentLifecyclePayload } from "@superset/workspace-client";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
@@ -62,6 +62,7 @@ const {
 const { resetV2NotificationStoreForTest } = await import(
 	"renderer/stores/v2-notifications/resetForTest"
 );
+const { setScreenLocked } = await import("renderer/hooks/useUserPresent");
 
 const HOST = "http://host-a";
 const WORKSPACE = "workspace-1";
@@ -139,6 +140,7 @@ beforeEach(() => {
 	seenCalls = [];
 	presence.hidden = false;
 	presence.hasFocus = () => true;
+	setScreenLocked(false);
 	resetV2NotificationStoreForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
 	// `getCurrentWorkspaceId` reads the route out of the hash, and the test
@@ -147,6 +149,8 @@ beforeEach(() => {
 		hash: `#/v2-workspace/${WORKSPACE}`,
 	};
 });
+
+afterEach(() => setScreenLocked(null));
 
 describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	it("reports a visible Stop with the OUTCOME instant", async () => {
