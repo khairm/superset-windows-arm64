@@ -5,13 +5,7 @@ import { CommandPaletteHost } from "renderer/commandPalette";
 import { Redirect } from "renderer/components/Redirect";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useHotkey } from "renderer/hotkeys";
-import {
-	isExactly,
-	isUnder,
-	useActiveRoute,
-	v1WorkspaceIdOf,
-	v2WorkspaceIdOf,
-} from "renderer/lib/active-route";
+import { useActiveRoute } from "renderer/lib/active-route";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
@@ -36,6 +30,12 @@ import { AddRepositoryModals } from "./components/AddRepositoryModals";
 import { CrossVersionMismatchState } from "./components/CrossVersionMismatchState";
 import { DashboardWorkspaceHotkeys } from "./components/DashboardWorkspaceHotkeys";
 import { TopBar } from "./components/TopBar";
+import {
+	selectCurrentWorkspaceId,
+	selectOnDashboardViewRoute,
+	selectOnNewWorkspaceRoute,
+	selectOnV2WorkspaceRoute,
+} from "./layout.utils";
 
 export const Route = createFileRoute("/_authenticated/_dashboard")({
 	component: DashboardLayout,
@@ -66,26 +66,11 @@ function DashboardLayout() {
 	// Get current workspace from route to pre-select project in new workspace modal
 	// (NAV-LOCAL-RENDER) Primitive selects: a v2-to-v2 click changes none of
 	// them, so this layout does not render.
-	const currentWorkspaceId = useActiveRoute((matched) =>
-		v1WorkspaceIdOf(matched.pathname),
-	);
+	const currentWorkspaceId = useActiveRoute(selectCurrentWorkspaceId);
 	const onV1WorkspaceRoute = currentWorkspaceId !== null;
-	const onV2WorkspaceRoute = useActiveRoute(
-		(matched) => v2WorkspaceIdOf(matched.pathname, { fuzzy: true }) !== null,
-	);
-	const onNewWorkspaceRoute = useActiveRoute((matched) =>
-		isExactly(matched.pathname, "/new-workspace"),
-	);
-	// (CLOUD-SEVERANCE-P2) Automations and Tasks used to be part of this set;
-	// they are severed, so the only full-width dashboard views left are pull
-	// requests and the workspaces list.
-	const onDashboardViewRoute = useActiveRoute(
-		(matched) =>
-			isUnder(matched.pathname, "/pull-requests") ||
-			isUnder(matched.pathname, "/plugins") ||
-			isUnder(matched.pathname, "/pages") ||
-			isUnder(matched.pathname, "/v2-workspaces"),
-	);
+	const onV2WorkspaceRoute = useActiveRoute(selectOnV2WorkspaceRoute);
+	const onNewWorkspaceRoute = useActiveRoute(selectOnNewWorkspaceRoute);
+	const onDashboardViewRoute = useActiveRoute(selectOnDashboardViewRoute);
 	const versionMismatch =
 		(isV2CloudEnabled && onV1WorkspaceRoute) ||
 		(!isV2CloudEnabled && onV2WorkspaceRoute);

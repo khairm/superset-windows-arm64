@@ -20,7 +20,7 @@ const ALLOWED: Record<string, number> = {
 	[`${SIDEBAR_DIR}/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx`]: 1,
 };
 const ROUTER_HOOK_CALL =
-	/\buse(?:MatchRoute|RouterState|Location|Params|Search|Match|Matches)\(/g;
+	/\buse(?:MatchRoute|RouterState|Location|Params|Search|Match|Matches)(?:<[^()]*>)?\(/g;
 
 function* walk(dir: string): Generator<string> {
 	for (const entry of readdirSync(join(RENDERER_ROOT, dir))) {

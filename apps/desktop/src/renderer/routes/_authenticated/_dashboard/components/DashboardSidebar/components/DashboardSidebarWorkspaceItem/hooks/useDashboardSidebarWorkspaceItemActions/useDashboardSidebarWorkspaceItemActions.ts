@@ -10,11 +10,7 @@ import { useState } from "react";
 import { getTerminalAgentBindingsQueryKey } from "renderer/hooks/host-service/useTerminalAgentBindings";
 import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
-import {
-	isUnder,
-	useActiveRoute,
-	v2WorkspaceIdOf,
-} from "renderer/lib/active-route";
+import { useActiveRoute } from "renderer/lib/active-route";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
@@ -41,6 +37,7 @@ import {
 	getV2TerminalNotificationSource,
 	useV2NotificationStore,
 } from "renderer/stores/v2-notifications";
+import { selectIsWorkspaceRowActive } from "./useDashboardSidebarWorkspaceItemActions.utils";
 
 /**
  * (MANUAL-DISMISS) One terminal's outcome from the host's
@@ -293,13 +290,9 @@ export function useDashboardSidebarWorkspaceItemActions({
 		setPendingName(null);
 	}
 
-	// (NAV-LOCAL-RENDER) The card id reads the pending location, so on a
-	// pending kanban switch the target row lights up first, as before.
-	const isActive = useActiveRoute(
-		(matched, state) =>
-			v2WorkspaceIdOf(matched.pathname, { fuzzy: true }) === workspaceId ||
-			(isUnder(matched.pathname, "/kanban") &&
-				(state.location.search as { cardId?: string }).cardId === workspaceId),
+	// (NAV-LOCAL-RENDER) One boolean per row, so a click re-renders two rows.
+	const isActive = useActiveRoute((matched, state) =>
+		selectIsWorkspaceRowActive(matched, state, workspaceId),
 	);
 
 	const handleClick = () => {

@@ -175,8 +175,11 @@ export function useHostWorkspacesSourceWithActivity(
 	// before then is a stream of failed requests. The sidebar renders cloud
 	// rows from the cloud row, so nothing else needs a sandbox's served rows.
 	// (NAV-LOCAL-RENDER) A primitive select; route params re-render on every click.
+	// A disabled source (null) selects a constant, so its caller never re-renders.
 	const openWorkspaceId = useActiveRoute((matched) =>
-		v2WorkspaceIdOf(matched.pathname, { fuzzy: true }),
+		scopedHostId === null
+			? null
+			: v2WorkspaceIdOf(matched.pathname, { fuzzy: true }),
 	);
 	const openSandbox = useMemo(
 		() =>

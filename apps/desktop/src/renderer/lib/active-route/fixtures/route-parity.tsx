@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { ParsedLocation, RouterState } from "@tanstack/react-router";
 
 GlobalRegistrator.register({ url: "http://localhost" });
 (
@@ -12,10 +13,62 @@ const {
 	createRootRoute,
 	createRoute,
 	createRouter,
+	Outlet,
 	RouterProvider,
 } = await import("@tanstack/react-router");
-const { isExactly, isUnder, matchLocation, v1WorkspaceIdOf, v2WorkspaceIdOf } =
+const { isUnder, matchLocation, useActiveRoute, v2WorkspaceIdOf } =
 	await import("../active-route");
+const { selectActiveV2WorkspaceId, selectIsSettingsOpen } = await import(
+	"renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.utils"
+);
+const { selectIsWorkspaceRowActive } = await import(
+	"renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.utils"
+);
+const {
+	selectCurrentWorkspaceId,
+	selectOnDashboardViewRoute,
+	selectOnNewWorkspaceRoute,
+	selectOnV2WorkspaceRoute,
+} = await import("renderer/routes/_authenticated/_dashboard/layout.utils");
+
+type Select = (
+	matched: ParsedLocation,
+	state: Pick<RouterState, "location">,
+) => string | boolean | null;
+
+const ROWS = ["A", "B"];
+const SELECTS: Record<string, Select> = {
+	...Object.fromEntries(
+		ROWS.map((id): [string, Select] => [
+			`row ${id} isActive`,
+			(matched, state) => selectIsWorkspaceRowActive(matched, state, id),
+		]),
+	),
+	"sidebar activeV2WorkspaceId": selectActiveV2WorkspaceId,
+	"sidebar isSettingsOpen": selectIsSettingsOpen,
+	"fuzzy v2 id": (matched) =>
+		v2WorkspaceIdOf(matched.pathname, { fuzzy: true }),
+	"layout currentWorkspaceId": selectCurrentWorkspaceId,
+	"layout onV2WorkspaceRoute": selectOnV2WorkspaceRoute,
+	"layout onNewWorkspaceRoute": selectOnNewWorkspaceRoute,
+	"layout onDashboardViewRoute": selectOnDashboardViewRoute,
+};
+
+const rendered: Record<string, unknown> = {};
+function Probe({ name, select }: { name: string; select: Select }) {
+	rendered[name] = useActiveRoute(select);
+	return null;
+}
+function Probes() {
+	return (
+		<>
+			{Object.entries(SELECTS).map(([name, select]) => (
+				<Probe key={name} name={name} select={select} />
+			))}
+			<Outlet />
+		</>
+	);
+}
 
 let gate: Promise<void> = Promise.resolve();
 let release: () => void = () => {};
@@ -25,11 +78,12 @@ function hold() {
 	});
 }
 
-const rootRoute = createRootRoute();
+const rootRoute = createRootRoute({ component: Probes });
 const v2Workspace = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/v2-workspace/$workspaceId",
 	loader: () => gate,
+	gcTime: 0,
 });
 const v2WorkspaceNested = createRoute({
 	getParentRoute: () => v2Workspace,
@@ -46,6 +100,7 @@ const kanban = createRoute({
 	}),
 	loaderDeps: ({ search }) => ({ cardId: search.cardId }),
 	loader: () => gate,
+	gcTime: 0,
 });
 const plainPaths = [
 	"/workspace/$workspaceId",
@@ -76,7 +131,6 @@ function today(to: string, params?: Record<string, string>, fuzzy = false) {
 		| Record<string, string>;
 }
 
-const ROWS = ["A", "B"];
 const DASHBOARD_VIEWS = [
 	"/pull-requests",
 	"/plugins",
@@ -84,64 +138,42 @@ const DASHBOARD_VIEWS = [
 	"/v2-workspaces",
 ];
 
-function compareAll(): string[] {
-	const state = router.state;
-	const matched = matchLocation(state);
-	const path = matched.pathname;
-	const cardId = (state.location.search as { cardId?: string }).cardId;
+function todayValues(): Record<string, unknown> {
+	const cardId = (router.state.location.search as { cardId?: string }).cardId;
 	const v2Fuzzy = today("/v2-workspace/$workspaceId", undefined, true);
 	const v2Exact = today("/v2-workspace/$workspaceId");
 	const v1 = today("/workspace/$workspaceId", undefined, true);
 	const onKanban = !!today("/kanban", undefined, true);
-	const pairs: [string, unknown, unknown][] = [
-		...ROWS.map((id): [string, unknown, unknown] => [
-			`row ${id} isActive`,
-			v2WorkspaceIdOf(path, { fuzzy: true }) === id ||
-				(isUnder(path, "/kanban") && cardId === id),
-			!!today("/v2-workspace/$workspaceId", { workspaceId: id }, true) ||
-				(onKanban && cardId === id),
-		]),
-		[
-			"sidebar activeV2WorkspaceId",
-			v2WorkspaceIdOf(path, { fuzzy: false }),
-			v2Exact ? v2Exact.workspaceId : null,
-		],
-		[
-			"sidebar isSettingsOpen",
-			isUnder(path, "/settings"),
-			!!today("/settings", undefined, true),
-		],
-		[
-			"fuzzy v2 id",
-			v2WorkspaceIdOf(path, { fuzzy: true }),
-			v2Fuzzy !== false ? v2Fuzzy.workspaceId : null,
-		],
-		[
-			"layout currentWorkspaceId",
-			v1WorkspaceIdOf(path),
-			v1 ? v1.workspaceId : null,
-		],
-		[
-			"layout onV2WorkspaceRoute",
-			v2WorkspaceIdOf(path, { fuzzy: true }) !== null,
-			v2Fuzzy !== false,
-		],
-		[
-			"layout onNewWorkspaceRoute",
-			isExactly(path, "/new-workspace"),
-			today("/new-workspace") !== false,
-		],
-		[
-			"layout onDashboardViewRoute",
-			DASHBOARD_VIEWS.some((base) => isUnder(path, base)),
-			DASHBOARD_VIEWS.some((base) => today(base, undefined, true) !== false),
-		],
-	];
-	return pairs
-		.filter(([, helper, expected]) => helper !== expected)
+	return {
+		...Object.fromEntries(
+			ROWS.map((id) => [
+				`row ${id} isActive`,
+				!!today("/v2-workspace/$workspaceId", { workspaceId: id }, true) ||
+					(onKanban && cardId === id),
+			]),
+		),
+		"sidebar activeV2WorkspaceId": v2Exact ? v2Exact.workspaceId : null,
+		"sidebar isSettingsOpen": !!today("/settings", undefined, true),
+		"fuzzy v2 id": v2Fuzzy !== false ? v2Fuzzy.workspaceId : null,
+		"layout currentWorkspaceId": v1 ? v1.workspaceId : null,
+		"layout onV2WorkspaceRoute": v2Fuzzy !== false,
+		"layout onNewWorkspaceRoute": today("/new-workspace") !== false,
+		"layout onDashboardViewRoute": DASHBOARD_VIEWS.some(
+			(base) => today(base, undefined, true) !== false,
+		),
+	};
+}
+
+function compareAll(): string[] {
+	const state = router.state;
+	const matched = matchLocation(state);
+	const expected = todayValues();
+	return Object.entries(SELECTS)
+		.map(([name, select]): [string, unknown] => [name, select(matched, state)])
+		.filter(([name, helper]) => helper !== expected[name])
 		.map(
-			([name, helper, expected]) =>
-				`${name}: helper=${String(helper)} today=${String(expected)} at location=${state.location.href} resolved=${state.resolvedLocation?.href} isLoading=${state.isLoading}`,
+			([name, helper]) =>
+				`${name}: helper=${String(helper)} today=${String(expected[name])} at location=${state.location.href} resolved=${state.resolvedLocation?.href} isLoading=${state.isLoading}`,
 		);
 }
 
@@ -203,7 +235,9 @@ async function pending(from: Href, to: Href) {
 		router.history.push(to);
 	});
 	expect(router.state.isLoading).toBe(true);
+	expect(router.state.resolvedLocation?.href).toBe(from);
 	expect(mismatches).toEqual([]);
+	expect(rendered).toEqual(todayValues());
 	await act(async () => {
 		release();
 		await (router.latestLoadPromise ?? Promise.resolve());
@@ -211,6 +245,7 @@ async function pending(from: Href, to: Href) {
 	expect(router.state.resolvedLocation?.href).toBe(to);
 	expect(pendingNotifications).toBeGreaterThan(0);
 	expect(mismatches).toEqual([]);
+	expect(rendered).toEqual(todayValues());
 }
 
 describe("active-route selects match router.matchRoute at every notification", () => {

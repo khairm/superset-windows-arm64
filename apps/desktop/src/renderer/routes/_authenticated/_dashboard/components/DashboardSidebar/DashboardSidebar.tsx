@@ -10,14 +10,7 @@ import { OverflowFadeContainer } from "@superset/ui/overflow-fade-container";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { useNavigate } from "@tanstack/react-router";
-import {
-	memo,
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HiOutlineCog6Tooth } from "react-icons/hi2";
 import { NotificationBusPill } from "renderer/components/NotificationBusPill";
 import {
@@ -29,11 +22,7 @@ import {
 import { UpdatesPill } from "renderer/components/UpdatesPill";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useHotkeyDisplay } from "renderer/hotkeys";
-import {
-	isUnder,
-	useActiveRoute,
-	v2WorkspaceIdOf,
-} from "renderer/lib/active-route";
+import { useActiveRoute } from "renderer/lib/active-route";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
@@ -51,6 +40,10 @@ import { DashboardSidebarSessionsSection } from "./components/DashboardSidebarSe
 import { DashboardSidebarWorkspacesHeader } from "./components/DashboardSidebarWorkspacesHeader";
 import { useGettingStartedCard } from "./components/GettingStartedCard";
 import { useV2SetupScriptCard } from "./components/V2SetupScriptCard";
+import {
+	selectActiveV2WorkspaceId,
+	selectIsSettingsOpen,
+} from "./DashboardSidebar.utils";
 import {
 	getBlockedDragProps,
 	useBlockedDragNotice,
@@ -189,11 +182,7 @@ const SortableProjectWrapper = memo(function SortableProjectWrapper({
 	);
 });
 
-// (NAV-LOCAL-RENDER) Memoised, and reads the route as primitives, so a sidebar
-// click renders it once.
-export const DashboardSidebar = memo(function DashboardSidebar({
-	isCollapsed = false,
-}: DashboardSidebarProps) {
+function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 	const { t } = useLingui();
 	const {
 		groups,
@@ -224,13 +213,9 @@ export const DashboardSidebar = memo(function DashboardSidebar({
 	useMigrateLegacySidebarFolders();
 	const navigate = useNavigate();
 	const settingsHotkey = useHotkeyDisplay("OPEN_SETTINGS").text;
-	const isSettingsOpen = useActiveRoute((matched) =>
-		isUnder(matched.pathname, "/settings"),
-	);
+	const isSettingsOpen = useActiveRoute(selectIsSettingsOpen);
 	const { activeHostUrl } = useLocalHostService();
-	const activeV2WorkspaceId = useActiveRoute((matched) =>
-		v2WorkspaceIdOf(matched.pathname, { fuzzy: false }),
-	);
+	const activeV2WorkspaceId = useActiveRoute(selectActiveV2WorkspaceId);
 	const workspacesListCollapsed = useSidebarSectionsCollapseStore(
 		(s) => s.collapsed.workspaces,
 	);
@@ -609,7 +594,8 @@ export const DashboardSidebar = memo(function DashboardSidebar({
 			// partition re-applies on render so the same-tier reorder sticks.
 			const overId = previous[newIndex];
 			const liveOrder = orderedIdsRef.current.filter((id) => id !== movedId);
-			const overLiveIndex = overId === undefined ? -1 : liveOrder.indexOf(overId);
+			const overLiveIndex =
+				overId === undefined ? -1 : liveOrder.indexOf(overId);
 			if (overLiveIndex === -1) return;
 			const insertAt = newIndex > oldIndex ? overLiveIndex + 1 : overLiveIndex;
 			liveOrder.splice(insertAt, 0, movedId);
@@ -767,7 +753,9 @@ export const DashboardSidebar = memo(function DashboardSidebar({
 														aria-label={t({
 															message: "Settings",
 														})}
-														onClick={() => navigate({ to: DEFAULT_SETTINGS_ROUTE })}
+														onClick={() =>
+															navigate({ to: DEFAULT_SETTINGS_ROUTE })
+														}
 														className={cn(
 															"flex size-8 shrink-0 items-center justify-center rounded-md transition-colors",
 															isSettingsOpen
@@ -798,4 +786,8 @@ export const DashboardSidebar = memo(function DashboardSidebar({
 			</DashboardSidebarSectionRenameProvider>
 		</DashboardSidebarSelectionProvider>
 	);
-});
+}
+
+// (NAV-LOCAL-RENDER) Memoised, and reads the route as primitives, so a sidebar
+// click renders it once.
+export const DashboardSidebar = memo(DashboardSidebarInner);

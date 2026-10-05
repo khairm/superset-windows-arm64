@@ -41,7 +41,7 @@ describe("severed auth results", () => {
 		const first = getSeveredOrganizationResult();
 		expect(getSeveredOrganizationResult()).toBe(first);
 		expect(getSeveredOrganizationResult().refetch).toBe(first.refetch);
-		expect(authClient.useActiveOrganization()).toBe(first);
+		expect(authClient.useActiveOrganization).toBe(getSeveredOrganizationResult);
 	});
 
 	test("a CollectionsProvider re-render keeps the context value", async () => {
