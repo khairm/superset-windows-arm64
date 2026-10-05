@@ -1,7 +1,11 @@
 import { msg } from "@lingui/core/macro";
 import { i18n } from "@superset/i18n";
 import type { PortChangedPayload } from "@superset/workspace-client";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import {
+	type UseQueryResult,
+	useQueries,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
@@ -27,6 +31,16 @@ export type {
 
 const PORTS_FALLBACK_REFETCH_INTERVAL_MS = 30_000;
 const PORT_EVENT_CACHE_BATCH_DELAY_MS = 100;
+
+// (NAV-LOCAL-RENDER) Module-level so the combined results keep identity.
+function toPortQueryStates(results: UseQueryResult<HostPortsResult>[]) {
+	return results.map((result) => ({
+		data: result.data,
+		error: result.error,
+		isError: result.isError,
+		isRefetchError: result.isRefetchError,
+	}));
+}
 
 export function useDashboardSidebarPortsData(enabled = true): {
 	workspacePortGroups: DashboardSidebarPortGroup[];
@@ -98,6 +112,7 @@ export function useDashboardSidebarPortsData(enabled = true): {
 				};
 			},
 		})),
+		combine: toPortQueryStates,
 	});
 
 	useEffect(() => {

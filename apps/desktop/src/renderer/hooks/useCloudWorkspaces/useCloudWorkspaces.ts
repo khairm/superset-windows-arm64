@@ -13,6 +13,9 @@ export type CloudWorkspaceRow = RouterOutputs["cloudWorkspace"]["list"][number];
  */
 const PROVISIONING_POLL_MS = 1_000;
 
+// (NAV-LOCAL-RENDER) One empty list, so a disabled query keeps identity.
+const EMPTY_CLOUD_WORKSPACES: CloudWorkspaceRow[] = [];
+
 export interface CloudWorkspacesValue {
 	/** Undefined until the list has been fetched; empty when it never will be. */
 	workspaces: CloudWorkspaceRow[] | undefined;
@@ -49,7 +52,7 @@ export function useCloudWorkspaces(): CloudWorkspacesValue {
 	);
 
 	return {
-		workspaces: query.data ?? (enabled ? undefined : []),
+		workspaces: query.data ?? (enabled ? undefined : EMPTY_CLOUD_WORKSPACES),
 		organizationId,
 	};
 }

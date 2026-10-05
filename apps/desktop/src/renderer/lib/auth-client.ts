@@ -78,22 +78,44 @@ export async function ensureFreshJwt(): Promise<string | null> {
 	return null;
 }
 
-/** What the shim answers locally. Everything else throws. */
-const LOCAL_MEMBERS: Record<string, unknown> = {
-	useSession: () => ({
+const refetchNothing = (..._args: unknown[]): void => undefined;
+
+type SeveredSessionResult = ReturnType<SeveredAuthClient["useSession"]>;
+type SeveredOrganizationResult = ReturnType<
+	SeveredAuthClient["useActiveOrganization"]
+>;
+
+// (NAV-LOCAL-RENDER) Built once: a fresh result per call re-keys every
+// consumer's memo on each AuthenticatedLayout render.
+let severedSessionResult: SeveredSessionResult | null = null;
+let severedOrganizationResult: SeveredOrganizationResult | null = null;
+
+export function getSeveredSessionResult(): SeveredSessionResult {
+	severedSessionResult ??= {
 		data: getLocalSession(),
 		isPending: false,
 		isRefetching: false,
 		error: null,
-		refetch: () => undefined,
-	}),
-	useActiveOrganization: () => ({
+		refetch: refetchNothing,
+	};
+	return severedSessionResult;
+}
+
+export function getSeveredOrganizationResult(): SeveredOrganizationResult {
+	severedOrganizationResult ??= {
 		data: getLocalActiveOrganization(),
 		isPending: false,
 		isRefetching: false,
 		error: null,
-		refetch: () => undefined,
-	}),
+		refetch: refetchNothing,
+	};
+	return severedOrganizationResult;
+}
+
+/** What the shim answers locally. Everything else throws. */
+const LOCAL_MEMBERS: Record<string, unknown> = {
+	useSession: getSeveredSessionResult,
+	useActiveOrganization: getSeveredOrganizationResult,
 	getSession: async () => ({ data: getLocalSession(), error: null }),
 	/**
 	 * Sign-out is reachable from nothing in this build, but a no-op that
