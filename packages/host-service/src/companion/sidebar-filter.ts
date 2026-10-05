@@ -258,6 +258,20 @@ function classifyWorkspace(
 export const MIRROR_MAX_AGE_MS = 1_200_000;
 
 /**
+ * (CLOCK-STEP-FAILS-OPEN) A NEGATIVE age ages out too. Both sides of the age
+ * subtraction are wall clocks and the stamp is written by a different process
+ * from the one reading it, so an NTP correction or a resume can leave a mirror
+ * stamped in the future. Only the upper bound was checked, so such a stamp
+ * read as maximally fresh and kept a mirror in force that the window exists to
+ * discard — and the further ahead the stamp, the longer it held. A stamp that
+ * cannot have been written yet is not evidence about this machine's sidebar
+ * right now, which is the whole precondition this gate tests.
+ */
+export function isMirrorFresh(ageMs: number): boolean {
+	return ageMs >= 0 && ageMs <= MIRROR_MAX_AGE_MS;
+}
+
+/**
  * The one disabled curation, shared by every reason for disabling. Callers of
  * `SidebarCuration` cannot tell these reasons apart and must not: the whole
  * contract of the disabled state is "filter nothing", and three hand-written
@@ -285,35 +299,39 @@ export function createSidebarCuration(
 	organizationId: string,
 ): SidebarCuration {
 	const meta = snapshot.meta;
+	if (meta !== null) {
+		const lastSyncAgeMs = nowMs - meta.lastFullSyncAtMs;
+		// (MIRROR-AGE-OUT) The writer heartbeats the unchanged snapshot every five
+		// minutes (`MIRROR-HEARTBEAT`), so `lastFullSyncAtMs` means "a renderer was
+		// alive at this moment" and not "somebody last dragged a thread". Past the
+		// window that is positive evidence that NO renderer is running — the app is
+		// quit, the machine woke without it, the hook chain is broken — and every
+		// hiding field in these tables is then an opinion from a session that has
+		// ended. `snooze_launch_id` is the sharpest case: it hides a thread only
+		// while it equals the CURRENT launch, so a mirror frozen mid-launch keeps
+		// hiding threads the very next launch would have released, with nothing to
+		// release them. Fail toward SHOWING: too noisy is the permitted direction,
+		// a blocked agent nobody can see is not.
+		if (!isMirrorFresh(lastSyncAgeMs)) {
+			return passThroughCuration(lastSyncAgeMs);
+		}
+	}
+	return createLastKnownSidebarCuration(snapshot, nowMs, organizationId);
+}
+
+// (PR-SWEEP-LAST-KNOWN-MIRROR) No age gate: the PR sweep loader judges the mirror's age itself.
+export function createLastKnownSidebarCuration(
+	snapshot: SidebarMirrorSnapshot,
+	nowMs: number,
+	organizationId: string,
+): SidebarCuration {
+	const meta = snapshot.meta;
 	if (meta === null) {
 		// Bootstrap: nothing has ever been mirrored, so the two tables carry no
 		// information and filtering on them would hide a sidebar we cannot see.
 		return passThroughCuration(null);
 	}
 	const lastSyncAgeMs = nowMs - meta.lastFullSyncAtMs;
-	// (MIRROR-AGE-OUT) The writer heartbeats the unchanged snapshot every five
-	// minutes (`MIRROR-HEARTBEAT`), so `lastFullSyncAtMs` means "a renderer was
-	// alive at this moment" and not "somebody last dragged a thread". Past the
-	// window that is positive evidence that NO renderer is running — the app is
-	// quit, the machine woke without it, the hook chain is broken — and every
-	// hiding field in these tables is then an opinion from a session that has
-	// ended. `snooze_launch_id` is the sharpest case: it hides a thread only
-	// while it equals the CURRENT launch, so a mirror frozen mid-launch keeps
-	// hiding threads the very next launch would have released, with nothing to
-	// release them. Fail toward SHOWING: too noisy is the permitted direction,
-	// a blocked agent nobody can see is not.
-	//
-	// (CLOCK-STEP-FAILS-OPEN) A NEGATIVE age ages out too. Both sides of this
-	// subtraction are wall clocks and the stamp is written by a different process
-	// from the one reading it, so an NTP correction or a resume can leave a mirror
-	// stamped in the future. Only the upper bound was checked, so such a stamp
-	// read as maximally fresh and kept a mirror in force that the window exists to
-	// discard — and the further ahead the stamp, the longer it held. A stamp that
-	// cannot have been written yet is not evidence about this machine's sidebar
-	// right now, which is the whole precondition this gate tests.
-	if (lastSyncAgeMs > MIRROR_MAX_AGE_MS || lastSyncAgeMs < 0) {
-		return passThroughCuration(lastSyncAgeMs);
-	}
 	// (MIRROR-ORG-GATE) The mirror is written per ORG by whichever renderer is
 	// signed in, and `host.db` is per machine — one file that a sign-out and a
 	// sign-in to a different organization both write through. The column has
@@ -327,30 +345,6 @@ export function createSidebarCuration(
 	if (meta.organizationId !== organizationId) {
 		return passThroughCuration(lastSyncAgeMs);
 	}
-	return buildCuration(snapshot, meta, nowMs, lastSyncAgeMs);
-}
-
-// (PR-SWEEP-LAST-KNOWN-MIRROR) No age gate: the PR sweep loader judges the mirror's age itself.
-export function createLastKnownSidebarCuration(
-	snapshot: SidebarMirrorSnapshot,
-	nowMs: number,
-	organizationId: string,
-): SidebarCuration {
-	const meta = snapshot.meta;
-	if (meta === null) return passThroughCuration(null);
-	const lastSyncAgeMs = nowMs - meta.lastFullSyncAtMs;
-	if (meta.organizationId !== organizationId) {
-		return passThroughCuration(lastSyncAgeMs);
-	}
-	return buildCuration(snapshot, meta, nowMs, lastSyncAgeMs);
-}
-
-function buildCuration(
-	snapshot: SidebarMirrorSnapshot,
-	meta: SidebarMirrorMetaRow,
-	nowMs: number,
-	lastSyncAgeMs: number,
-): SidebarCuration {
 	const workspaceById = new Map<string, SidebarWorkspaceMirrorRow>();
 	for (const row of snapshot.workspaces)
 		workspaceById.set(row.workspaceId, row);

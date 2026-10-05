@@ -30,17 +30,15 @@ const { CollectionsProvider, useCollections } = await import(
 afterAll(() => cleanup());
 
 describe("severed auth results", () => {
-	test("the session result and its refetch keep identity across calls", () => {
+	test("the session result keeps identity across calls", () => {
 		const first = getSeveredSessionResult();
 		expect(getSeveredSessionResult()).toBe(first);
-		expect(getSeveredSessionResult().refetch).toBe(first.refetch);
 		expect(authClient.useSession()).toBe(first);
 	});
 
-	test("the organization result and its refetch keep identity across calls", () => {
+	test("the organization result keeps identity across calls", () => {
 		const first = getSeveredOrganizationResult();
 		expect(getSeveredOrganizationResult()).toBe(first);
-		expect(getSeveredOrganizationResult().refetch).toBe(first.refetch);
 		expect(authClient.useActiveOrganization).toBe(getSeveredOrganizationResult);
 	});
 

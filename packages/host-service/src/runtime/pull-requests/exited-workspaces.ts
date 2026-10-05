@@ -1,7 +1,8 @@
 import {
 	createLastKnownSidebarCuration,
-	MIRROR_MAX_AGE_MS,
+	isMirrorFresh,
 	type SidebarCuration,
+	type SidebarMirrorSnapshot,
 	type WorkspaceCurationInput,
 } from "../../companion/sidebar-filter";
 import type { HostDb } from "../../db";
@@ -45,49 +46,35 @@ const STATE_LOG: Record<
 	},
 };
 
-function readSidebarCuration(
+function readMirrorRows(
 	db: HostDb,
-	organizationId: string,
-	nowMs: number,
-): SidebarCuration {
-	const [meta = null] = db.select().from(sidebarMirrorMeta).limit(1).all();
-	const metaOnly = createLastKnownSidebarCuration(
-		{ meta, workspaces: [], projects: [] },
-		nowMs,
-		organizationId,
-	);
-	if (!metaOnly.enabled) return metaOnly;
-	return createLastKnownSidebarCuration(
-		{
-			meta,
-			workspaces: db
-				.select({
-					workspaceId: sidebarWorkspaceState.workspaceId,
-					projectId: sidebarWorkspaceState.projectId,
-					isHidden: sidebarWorkspaceState.isHidden,
-					archivedAt: sidebarWorkspaceState.archivedAt,
-					snoozeUntil: sidebarWorkspaceState.snoozeUntil,
-					snoozeLaunchId: sidebarWorkspaceState.snoozeLaunchId,
-					completedAt: sidebarWorkspaceState.completedAt,
-					deletedAt: sidebarWorkspaceState.deletedAt,
-					pinnedAt: sidebarWorkspaceState.pinnedAt,
-					tabOrder: sidebarWorkspaceState.tabOrder,
-				})
-				.from(sidebarWorkspaceState)
-				.all(),
-			projects: db
-				.select({
-					projectId: sidebarProjectState.projectId,
-					tabOrder: sidebarProjectState.tabOrder,
-					isPinned: sidebarProjectState.isPinned,
-					isCollapsed: sidebarProjectState.isCollapsed,
-				})
-				.from(sidebarProjectState)
-				.all(),
-		},
-		nowMs,
-		organizationId,
-	);
+): Pick<SidebarMirrorSnapshot, "workspaces" | "projects"> {
+	return {
+		workspaces: db
+			.select({
+				workspaceId: sidebarWorkspaceState.workspaceId,
+				projectId: sidebarWorkspaceState.projectId,
+				isHidden: sidebarWorkspaceState.isHidden,
+				archivedAt: sidebarWorkspaceState.archivedAt,
+				snoozeUntil: sidebarWorkspaceState.snoozeUntil,
+				snoozeLaunchId: sidebarWorkspaceState.snoozeLaunchId,
+				completedAt: sidebarWorkspaceState.completedAt,
+				deletedAt: sidebarWorkspaceState.deletedAt,
+				pinnedAt: sidebarWorkspaceState.pinnedAt,
+				tabOrder: sidebarWorkspaceState.tabOrder,
+			})
+			.from(sidebarWorkspaceState)
+			.all(),
+		projects: db
+			.select({
+				projectId: sidebarProjectState.projectId,
+				tabOrder: sidebarProjectState.tabOrder,
+				isPinned: sidebarProjectState.isPinned,
+				isCollapsed: sidebarProjectState.isCollapsed,
+			})
+			.from(sidebarProjectState)
+			.all(),
+	};
 }
 
 function mirrorState(curation: SidebarCuration): MirrorState {
@@ -99,7 +86,7 @@ function mirrorState(curation: SidebarCuration): MirrorState {
 	if (ageMs > PR_SWEEP_MIRROR_LIMIT_MS || ageMs < -PR_SWEEP_MIRROR_LIMIT_MS) {
 		return "expired";
 	}
-	if (ageMs >= 0 && ageMs <= MIRROR_MAX_AGE_MS) return "fresh";
+	if (isMirrorFresh(ageMs)) return "fresh";
 	return "old";
 }
 
@@ -125,14 +112,19 @@ export function createExitedWorkspaceFilterLoader({
 		}
 		const now = nowMs();
 		const elapsed = elapsedMs();
-		const curation = readSidebarCuration(db, organizationId, now);
-		const state = mirrorState(curation);
+		const [meta = null] = db.select().from(sidebarMirrorMeta).limit(1).all();
+		const metaOnly = createLastKnownSidebarCuration(
+			{ meta, workspaces: [], projects: [] },
+			now,
+			organizationId,
+		);
+		const state = mirrorState(metaOnly);
 		const age = {
-			lastSyncAgeMs: curation.lastSyncAgeMs,
+			lastSyncAgeMs: metaOnly.lastSyncAgeMs,
 			lastFullSyncAt:
-				curation.lastSyncAgeMs === null
+				metaOnly.lastSyncAgeMs === null
 					? null
-					: new Date(now - curation.lastSyncAgeMs).toISOString(),
+					: new Date(now - metaOnly.lastSyncAgeMs).toISOString(),
 		};
 		const repeats = state === "old" || state === "expired";
 		if (
@@ -160,6 +152,12 @@ export function createExitedWorkspaceFilterLoader({
 				return () => false;
 			}
 		}
+		if (!metaOnly.enabled) return () => false;
+		const curation = createLastKnownSidebarCuration(
+			{ meta, ...readMirrorRows(db) },
+			now,
+			organizationId,
+		);
 		return (workspace) => curation.workspaceVerdict(workspace) !== "show";
 	};
 }

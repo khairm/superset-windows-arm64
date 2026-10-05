@@ -1,4 +1,5 @@
 import {
+	type AnyRouter,
 	type ParsedLocation,
 	type RegisteredRouter,
 	type RouterState,
@@ -63,4 +64,12 @@ export function useActiveRoute<T extends Primitive>(
 	return useRouterState<RegisteredRouter, Primitive, false>({
 		select: (state) => select(matchLocation(state), state),
 	}) as T;
+}
+
+export function readActiveV2WorkspaceId(router: AnyRouter): string | null {
+	const match = router.matchRoute(
+		{ to: "/v2-workspace/$workspaceId" },
+		{ fuzzy: true },
+	);
+	return match !== false ? match.workspaceId : null;
 }

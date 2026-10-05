@@ -87,30 +87,30 @@ type SeveredOrganizationResult = ReturnType<
 
 // (NAV-LOCAL-RENDER) Built once: a fresh result per call re-keys every
 // consumer's memo on each AuthenticatedLayout render.
-let severedSessionResult: SeveredSessionResult | null = null;
-let severedOrganizationResult: SeveredOrganizationResult | null = null;
+function once<T>(build: () => T): () => T {
+	let value: T | undefined;
+	return () => (value ??= build());
+}
 
-export function getSeveredSessionResult(): SeveredSessionResult {
-	severedSessionResult ??= {
+export const getSeveredSessionResult = once(
+	(): SeveredSessionResult => ({
 		data: getLocalSession(),
 		isPending: false,
 		isRefetching: false,
 		error: null,
 		refetch: refetchNothing,
-	};
-	return severedSessionResult;
-}
+	}),
+);
 
-export function getSeveredOrganizationResult(): SeveredOrganizationResult {
-	severedOrganizationResult ??= {
+export const getSeveredOrganizationResult = once(
+	(): SeveredOrganizationResult => ({
 		data: getLocalActiveOrganization(),
 		isPending: false,
 		isRefetching: false,
 		error: null,
 		refetch: refetchNothing,
-	};
-	return severedOrganizationResult;
-}
+	}),
+);
 
 /** What the shim answers locally. Everything else throws. */
 const LOCAL_MEMBERS: Record<string, unknown> = {

@@ -1,5 +1,6 @@
 import { type AnyRouter, useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
+import { readActiveV2WorkspaceId } from "renderer/lib/active-route";
 import { useDeletingWorkspacesStore } from "renderer/routes/_authenticated/_dashboard/stores/deletingWorkspacesStore";
 import { navigateToV2Workspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
@@ -35,12 +36,7 @@ export function useNavigateAwayFromWorkspace() {
 			workspaceId: string,
 			additionalDeletingWorkspaceIds?: ReadonlySet<string>,
 		) => {
-			const workspaceMatch = router.matchRoute(
-				{ to: "/v2-workspace/$workspaceId" },
-				{ fuzzy: true },
-			);
-			const activeWorkspaceId =
-				workspaceMatch !== false ? workspaceMatch.workspaceId : null;
+			const activeWorkspaceId = readActiveV2WorkspaceId(router);
 			const target = resolveWorkspaceRemovalNavigationTarget({
 				activeWorkspaceId,
 				removedWorkspaceId: workspaceId,

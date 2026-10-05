@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { fakePowerMonitor } from "./fixtures/fakePowerMonitor";
 import {
-	type ScreenLockPowerMonitor,
 	type SystemIdleState,
 	startScreenLock,
 	stopScreenLock,
 	subscribeScreenLock,
 } from "./screen-lock";
-
-type PowerEvent = "lock-screen" | "unlock-screen" | "resume";
 
 const unsubscribers: Array<() => void> = [];
 
@@ -17,31 +15,14 @@ afterEach(() => {
 });
 
 function start(initial: SystemIdleState | Error) {
-	let state: SystemIdleState | Error = initial;
-	const thresholds: number[] = [];
-	const handlers = new Map<PowerEvent, Set<() => void>>();
-	const powerMonitor: ScreenLockPowerMonitor = {
-		getSystemIdleState: (threshold) => {
-			thresholds.push(threshold);
-			if (state instanceof Error) throw state;
-			return state;
-		},
-		on: (event, listener) => {
-			const set = handlers.get(event) ?? new Set<() => void>();
-			set.add(listener);
-			handlers.set(event, set);
-		},
-		removeListener: (event, listener) => {
-			handlers.get(event)?.delete(listener);
-		},
-	};
+	const os = fakePowerMonitor(initial);
 	let now = 100_000;
 	let intervalTick: (() => void) | null = null;
 	let intervalMs: number | null = null;
 	const errors: unknown[] = [];
 
 	const deps = {
-		powerMonitor,
+		powerMonitor: os.powerMonitor,
 		now: () => now,
 		startInterval: (tick: () => void, ms: number) => {
 			intervalTick = tick;
@@ -60,18 +41,10 @@ function start(initial: SystemIdleState | Error) {
 	startScreenLock(deps);
 
 	return {
+		...os,
 		deps,
-		thresholds,
 		errors,
 		intervalMs: () => intervalMs,
-		setOs: (next: SystemIdleState | Error) => {
-			state = next;
-		},
-		emit: (event: PowerEvent) => {
-			for (const listener of handlers.get(event) ?? []) listener();
-		},
-		listenerCount: () =>
-			[...handlers.values()].reduce((sum, set) => sum + set.size, 0),
 		advance: (ms: number) => {
 			now += ms;
 		},

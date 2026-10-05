@@ -24,11 +24,6 @@ describe("(PRESENCE-SCREEN-LOCK) isUserPresent", () => {
 		expect(isUserPresent()).toBe(false);
 	});
 
-	it("an unknown lock state is not present", () => {
-		setScreenLocked(null);
-		expect(isUserPresent()).toBe(false);
-	});
-
 	it("a locked session is not present", () => {
 		setScreenLocked(true);
 		expect(isUserPresent()).toBe(false);

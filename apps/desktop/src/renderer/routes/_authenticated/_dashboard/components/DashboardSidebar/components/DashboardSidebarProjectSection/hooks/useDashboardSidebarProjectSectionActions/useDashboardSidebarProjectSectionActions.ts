@@ -12,6 +12,7 @@ import { useHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
 import { useOpenNewWorkspace } from "renderer/hooks/useOpenNewWorkspace";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences/useV2UserPreferences";
+import { readActiveV2WorkspaceId } from "renderer/lib/active-route";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
@@ -97,13 +98,10 @@ export function useDashboardSidebarProjectSectionActions({
 	// section on each navigation.
 	const router = useRouter<AnyRouter>();
 	const leaveProjectIfActive = () => {
-		const activeWorkspaceMatch = router.matchRoute(
-			{ to: "/v2-workspace/$workspaceId" },
-			{ fuzzy: true },
-		);
-		if (!activeWorkspaceMatch) return;
+		const activeWorkspaceId = readActiveV2WorkspaceId(router);
+		if (activeWorkspaceId === null) return;
 		const active = hostWorkspaces.find(
-			(workspace) => workspace.id === activeWorkspaceMatch.workspaceId,
+			(workspace) => workspace.id === activeWorkspaceId,
 		);
 		if (active?.projectId === project.id) {
 			navigate({ to: "/v2-workspaces" });

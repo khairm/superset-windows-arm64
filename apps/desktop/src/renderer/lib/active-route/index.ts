@@ -1,7 +1,7 @@
 export {
 	isExactly,
 	isUnder,
-	matchLocation,
+	readActiveV2WorkspaceId,
 	useActiveRoute,
 	v1WorkspaceIdOf,
 	v2WorkspaceIdOf,

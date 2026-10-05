@@ -269,13 +269,16 @@ function openPullRequestsSweeper(manager: PullRequestRuntimeManager) {
 }
 
 // Silences the expected warnings the manager logs on handled failures.
-async function withSilencedWarnings<T>(fn: () => Promise<T>): Promise<T> {
-	const original = console.warn;
-	console.warn = () => {};
+async function withSilencedWarnings<T>(
+	fn: () => Promise<T>,
+	methods: ReadonlyArray<"warn" | "error"> = ["warn"],
+): Promise<T> {
+	const originals = methods.map((method) => [method, console[method]] as const);
+	for (const method of methods) console[method] = () => {};
 	try {
 		return await fn();
 	} finally {
-		console.warn = original;
+		for (const [method, original] of originals) console[method] = original;
 	}
 }
 
@@ -2800,6 +2803,63 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 		};
 	}
 
+	// ws-b is completed at start, so the start-up sweeps skip it and every sync
+	// a test then sees comes from the trigger.
+	function trailingScenario(lastFullSyncAtMs: number) {
+		const trigger = createPrSyncTrigger({
+			broadIntervalMs: 300,
+			fileOnlyIntervalMs: 300,
+		});
+		const scenario = createScenario(
+			["ws-b"],
+			mirrorLoader({ lastFullSyncAtMs, completed: ["ws-b"], live: [] }),
+			undefined,
+			trigger,
+		);
+		const setCompletedAt = (completedAt: number | null) => {
+			scenario.db
+				.update(schema.sidebarWorkspaceState)
+				.set({ completedAt })
+				.where(eq(schema.sidebarWorkspaceState.workspaceId, "ws-b"))
+				.run();
+		};
+		let trailingFires = 0;
+		const listenerThrows: unknown[][] = [];
+		return {
+			...scenario,
+			trailingFires: () => trailingFires,
+			listenerThrows: () => listenerThrows,
+			async reExitDuringTrailingWindow() {
+				const error = spyOn(console, "error").mockImplementation(() => {});
+				try {
+					trigger.onChanged((event) => {
+						if (event.trailing) trailingFires += 1;
+					});
+					setCompletedAt(null);
+					trigger.push({ workspaceId: "ws-b" });
+					trigger.push({ workspaceId: "ws-b" });
+					setCompletedAt(Date.now());
+					await waitFor(
+						() => trailingFires === 1 && scenario.headLookups("feat/ws-b") > 0,
+						20_000,
+					);
+					await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
+				} finally {
+					listenerThrows.push(
+						...error.mock.calls.filter(([message]) =>
+							String(message).includes("[pr-sync-trigger] listener threw"),
+						),
+					);
+					error.mockRestore();
+				}
+			},
+			dispose() {
+				scenario.cleanup();
+				trigger.dispose();
+			},
+		};
+	}
+
 	test(
 		"a completed card is never swept while its active sibling is, by both sweeps",
 		async () => {
@@ -2895,34 +2955,6 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 	);
 
 	test(
-		"a mirror 21 min old still skips exited cards, by both sweeps",
-		async () => {
-			const scenario = createScenario(
-				["ws-a"],
-				mirrorLoader({
-					lastFullSyncAtMs: Date.now() - MIRROR_STALE_MS,
-					completed: ["ws-a"],
-					live: [],
-				}),
-			);
-			try {
-				await withSilencedWarnings(() =>
-					scenario.sweeps.syncWorkspaceBranches(),
-				);
-				expect(scenario.refsReadPaths).toEqual([]);
-				await withSilencedWarnings(() =>
-					scenario.sweeps.refreshEligibleProjects(),
-				);
-				expect(scenario.gitCalls()).toBe(0);
-				expect(scenario.ghArgs).toEqual([]);
-			} finally {
-				scenario.cleanup();
-			}
-		},
-		GIT_SPAWN_TIMEOUT_MS,
-	);
-
-	test(
 		"an explicit refresh overlapping a sweep of a one-workspace project runs its own lookup",
 		async () => {
 			let releaseGh: () => void = () => {};
@@ -2965,62 +2997,24 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 		GIT_SPAWN_TIMEOUT_MS,
 	);
 
-	test(
-		"(GIT-LAUNCH-BUDGET-B) exiting a workspace whose watch stays active drops its queued trailing sync",
-		async () => {
-			const trigger = createPrSyncTrigger({
-				broadIntervalMs: 300,
-				fileOnlyIntervalMs: 300,
-			});
-			// Completed at start so the start-up sweeps skip it and every sync
-			// below comes from the trigger.
-			const scenario = createScenario(
-				["ws-b"],
-				mirrorLoader({
-					lastFullSyncAtMs: Date.now(),
-					completed: ["ws-b"],
-					live: [],
-				}),
-				undefined,
-				trigger,
-			);
-			const setCompletedAt = (completedAt: number | null) => {
-				scenario.db
-					.update(schema.sidebarWorkspaceState)
-					.set({ completedAt })
-					.where(eq(schema.sidebarWorkspaceState.workspaceId, "ws-b"))
-					.run();
-			};
-			let trailingFires = 0;
-			const error = spyOn(console, "error");
+	test.each([
+		["fresh", 0],
+		["21 min old", MIRROR_STALE_MS],
+	])(
+		"(GIT-LAUNCH-BUDGET-B) exiting a workspace whose watch stays active drops its queued trailing sync, %s mirror",
+		async (_label, ageMs) => {
+			const scenario = trailingScenario(Date.now() - ageMs);
 			try {
 				await withSilencedWarnings(async () => {
 					scenario.manager.start();
-					trigger.onChanged((event) => {
-						if (event.trailing) trailingFires += 1;
-					});
-					setCompletedAt(null);
-					trigger.push({ workspaceId: "ws-b" });
-					trigger.push({ workspaceId: "ws-b" });
-					setCompletedAt(Date.now());
-					await waitFor(
-						() => trailingFires === 1 && scenario.headLookups("feat/ws-b") > 0,
-						20_000,
-					);
-					await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
-				});
-				expect(trailingFires).toBe(1);
-				expect(
-					error.mock.calls.filter(([message]) =>
-						String(message).includes("[pr-sync-trigger] listener threw"),
-					),
-				).toEqual([]);
+					await scenario.reExitDuringTrailingWindow();
+				}, ["warn", "error"]);
+				expect(scenario.trailingFires()).toBe(1);
+				expect(scenario.listenerThrows()).toEqual([]);
 				expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
 				expect(scenario.headLookups("feat/ws-b")).toBe(1);
 			} finally {
-				error.mockRestore();
-				scenario.cleanup();
-				trigger.dispose();
+				scenario.dispose();
 			}
 		},
 		GIT_SPAWN_TIMEOUT_MS,
@@ -3031,18 +3025,6 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 		const DAY_MS = 24 * HOUR_MS;
 		const EXPIRED_AGE_MS = 25 * HOUR_MS;
 		const WS_A = { id: "ws-a", projectId: PROJECT_ID, type: "worktree" };
-
-		async function quietly<T>(fn: () => Promise<T>): Promise<T> {
-			const { warn, error } = console;
-			console.warn = () => {};
-			console.error = () => {};
-			try {
-				return await fn();
-			} finally {
-				console.warn = warn;
-				console.error = error;
-			}
-		}
 
 		// ws-a is completed and alone in its project, so a skipped PR refresh
 		// launches nothing and a swept one always reads git: the origin/HEAD
@@ -3075,12 +3057,18 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 				},
 				async branchSweepReadsWsA(): Promise<boolean> {
 					scenario.resetCalls();
-					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
+					await withSilencedWarnings(
+						() => scenario.sweeps.syncWorkspaceBranches(),
+						["warn", "error"],
+					);
 					return scenario.refsReadPaths.includes(dir("ws-a"));
 				},
 				async prRefreshLaunches(): Promise<number> {
 					scenario.resetCalls();
-					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					await withSilencedWarnings(
+						() => scenario.sweeps.refreshEligibleProjects(),
+						["warn", "error"],
+					);
 					return scenario.gitCalls() + scenario.ghArgs.length;
 				},
 			};
@@ -3102,63 +3090,8 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 			}
 		}
 
-		function trailingScenario(lastFullSyncAtMs: number) {
-			const trigger = createPrSyncTrigger({
-				broadIntervalMs: 300,
-				fileOnlyIntervalMs: 300,
-			});
-			const scenario = createScenario(
-				["ws-b"],
-				mirrorLoader({ lastFullSyncAtMs, completed: ["ws-b"], live: [] }),
-				undefined,
-				trigger,
-			);
-			const setCompletedAt = (completedAt: number | null) => {
-				scenario.db
-					.update(schema.sidebarWorkspaceState)
-					.set({ completedAt })
-					.where(eq(schema.sidebarWorkspaceState.workspaceId, "ws-b"))
-					.run();
-			};
-			let trailingFires = 0;
-			const listenerThrows: unknown[][] = [];
-			return {
-				...scenario,
-				trailingFires: () => trailingFires,
-				listenerThrows: () => listenerThrows,
-				async reExitDuringTrailingWindow() {
-					const error = spyOn(console, "error").mockImplementation(() => {});
-					try {
-						trigger.onChanged((event) => {
-							if (event.trailing) trailingFires += 1;
-						});
-						setCompletedAt(null);
-						trigger.push({ workspaceId: "ws-b" });
-						trigger.push({ workspaceId: "ws-b" });
-						setCompletedAt(Date.now());
-						await waitFor(
-							() =>
-								trailingFires === 1 && scenario.headLookups("feat/ws-b") > 0,
-							20_000,
-						);
-						await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
-					} finally {
-						listenerThrows.push(
-							...error.mock.calls.filter(([message]) =>
-								String(message).includes("[pr-sync-trigger] listener threw"),
-							),
-						);
-						error.mockRestore();
-					}
-				},
-				dispose() {
-					scenario.cleanup();
-					trigger.dispose();
-				},
-			};
-		}
-
 		test.each([
+			["21 min old", MIRROR_STALE_MS],
 			["23 h old", 23 * HOUR_MS],
 			["stamped 23 h in the future", -23 * HOUR_MS],
 		])(
@@ -3322,7 +3255,7 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 			async () => {
 				const scenario = trailingScenario(Date.now());
 				try {
-					await quietly(async () => {
+					await withSilencedWarnings(async () => {
 						scenario.manager.start();
 						// The start-up sweeps read the mirror fresh; it expires only now.
 						scenario.db
@@ -3330,33 +3263,16 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 							.set({ lastFullSyncAtMs: Date.now() - EXPIRED_AGE_MS })
 							.run();
 						await scenario.reExitDuringTrailingWindow();
-					});
+					}, ["warn", "error"]);
 					expect(scenario.trailingFires()).toBe(1);
 					expect(scenario.listenerThrows()).toEqual([]);
 					expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
 
-					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
+					await withSilencedWarnings(
+						() => scenario.sweeps.syncWorkspaceBranches(),
+						["warn", "error"],
+					);
 					expect(scenario.refsReadPaths).toEqual([dir("ws-b"), dir("ws-b")]);
-				} finally {
-					scenario.dispose();
-				}
-			},
-			GIT_SPAWN_TIMEOUT_MS,
-		);
-
-		test(
-			"(GIT-LAUNCH-BUDGET-B-EXITED) a 21 min mirror still drops the trailing sync of a re-exited card",
-			async () => {
-				const scenario = trailingScenario(Date.now() - MIRROR_STALE_MS);
-				try {
-					await quietly(async () => {
-						scenario.manager.start();
-						await scenario.reExitDuringTrailingWindow();
-					});
-					expect(scenario.trailingFires()).toBe(1);
-					expect(scenario.listenerThrows()).toEqual([]);
-					expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
-					expect(scenario.headLookups("feat/ws-b")).toBe(1);
 				} finally {
 					scenario.dispose();
 				}
@@ -3385,13 +3301,19 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 						Object.assign(new Error("offline"), { code: "ENOTFOUND" }),
 					);
 					expect(scenario.manager.getGithubStatus()).not.toBeNull();
-					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					await withSilencedWarnings(
+						() => scenario.sweeps.refreshEligibleProjects(),
+						["warn", "error"],
+					);
 					expect(scenario.gitCalls()).toBe(0);
 					expect(scenario.ghArgs).toEqual([]);
 
 					gateNow += 61_000;
 					expect(scenario.manager.getGithubStatus()).toBeNull();
-					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					await withSilencedWarnings(
+						() => scenario.sweeps.refreshEligibleProjects(),
+						["warn", "error"],
+					);
 					expect(scenario.gitCalls()).toBeGreaterThan(0);
 					expect(scenario.ghTouched("feat/ws-a")).toBe(true);
 				} finally {
@@ -3414,14 +3336,14 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 				nowMs: Date.now,
 				elapsedMs: () => 0,
 			});
-			await quietly(async () => {
+			await withSilencedWarnings(async () => {
 				expect(before("branch-sweep")(WS_A)).toBe(false);
 				expect(before("pr-refresh")(WS_A)).toBe(false);
 				expect(before("branch-sweep")(WS_A)).toBe(true);
 				expect(before("pr-refresh")(WS_A)).toBe(true);
 				expect(after("branch-sweep")(WS_A)).toBe(false);
 				expect(after("pr-refresh")(WS_A)).toBe(false);
-			});
+			}, ["warn", "error"]);
 		});
 
 		test(
@@ -3440,10 +3362,16 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 					});
 				});
 				try {
-					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
+					await withSilencedWarnings(
+						() => scenario.sweeps.syncWorkspaceBranches(),
+						["warn", "error"],
+					);
 					expect(scenario.refsReadPaths).toEqual([dir("ws-a")]);
 					scenario.resetCalls();
-					await quietly(() => scenario.sweeps.refreshEligibleProjects());
+					await withSilencedWarnings(
+						() => scenario.sweeps.refreshEligibleProjects(),
+						["warn", "error"],
+					);
 					expect(scenario.gitCalls()).toBeGreaterThan(0);
 				} finally {
 					scenario.cleanup();
