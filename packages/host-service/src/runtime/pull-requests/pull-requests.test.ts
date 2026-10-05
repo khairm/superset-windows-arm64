@@ -2992,6 +2992,7 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 					.run();
 			};
 			let trailingFires = 0;
+			const error = spyOn(console, "error");
 			try {
 				await withSilencedWarnings(async () => {
 					scenario.manager.start();
@@ -3009,9 +3010,15 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 					await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
 				});
 				expect(trailingFires).toBe(1);
+				expect(
+					error.mock.calls.filter(([message]) =>
+						String(message).includes("[pr-sync-trigger] listener threw"),
+					),
+				).toEqual([]);
 				expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
 				expect(scenario.headLookups("feat/ws-b")).toBe(1);
 			} finally {
+				error.mockRestore();
 				scenario.cleanup();
 				trigger.dispose();
 			}
