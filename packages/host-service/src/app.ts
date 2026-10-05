@@ -216,10 +216,12 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 				},
 			);
 		},
-		// (PR-SWEEP-SKIPS-EXITED)
+		// (PR-SWEEP-SKIPS-EXITED) (PR-SWEEP-LAST-KNOWN-MIRROR)
 		loadExitedWorkspaceFilter: createExitedWorkspaceFilterLoader({
 			db,
 			organizationId: config.organizationId,
+			nowMs: Date.now,
+			elapsedMs: () => performance.now(),
 		}),
 	});
 	pullRequestRuntime.start();
