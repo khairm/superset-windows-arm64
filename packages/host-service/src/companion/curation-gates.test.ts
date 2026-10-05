@@ -194,8 +194,8 @@ describe("(PR-SWEEP-LAST-KNOWN-MIRROR) createLastKnownSidebarCuration", () => {
 	});
 
 	it.each([
-		[LAUNCH, "snoozed"],
-		["launch-2", "show"],
+		[LAUNCH, "snoozed" as const],
+		["launch-2", "show" as const],
 	])("judges an until-next-launch snooze against the mirror's launch id %s", (appLaunchId, verdict) => {
 		const curation = createLastKnownSidebarCuration(
 			snapshot(
