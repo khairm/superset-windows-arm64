@@ -62,6 +62,7 @@ const {
 const { resetV2NotificationStoreForTest } = await import(
 	"renderer/stores/v2-notifications/resetForTest"
 );
+const { setScreenLocked } = await import("renderer/hooks/useUserPresent");
 
 const HOST = "http://host-a";
 const WORKSPACE = "workspace-1";
@@ -139,6 +140,7 @@ beforeEach(() => {
 	seenCalls = [];
 	presence.hidden = false;
 	presence.hasFocus = () => true;
+	setScreenLocked(false);
 	resetV2NotificationStoreForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
 	// `getCurrentWorkspaceId` reads the route out of the hash, and the test

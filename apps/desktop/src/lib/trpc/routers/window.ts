@@ -3,9 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { msg } from "@lingui/core/macro";
 import { i18n } from "@superset/i18n";
+import { observable } from "@trpc/server/observable";
 import type { BrowserWindow } from "electron";
 import { dialog, Menu } from "electron";
 import { menuEmitter } from "main/lib/menu-events";
+import { subscribeScreenLock } from "main/lib/screen-lock/screen-lock";
 import { getOrg, setOrg } from "main/lib/window-registry/window-registry";
 import { getImageMimeType } from "shared/file-types";
 import { z } from "zod";
@@ -60,6 +62,13 @@ export const createWindowRouter = () => {
 			if (!window) return false;
 			return window.isMaximized();
 		}),
+
+		// (PRESENCE-SCREEN-LOCK)
+		screenLock: publicProcedure.subscription(() =>
+			observable<boolean | null>((emit) =>
+				subscribeScreenLock((locked) => emit.next(locked)),
+			),
+		),
 
 		/** Open a new platform window on the same org as the calling window. */
 		openNew: publicProcedure.mutation(({ ctx }) => {

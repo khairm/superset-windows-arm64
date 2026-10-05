@@ -100,6 +100,7 @@ const { registerWorkspaceHost, unregisterWorkspaceHost } = await import(
 const { useClearActivePaneAttention } = await import(
 	"./useClearActivePaneAttention"
 );
+const { setScreenLocked } = await import("renderer/hooks/useUserPresent");
 
 // biome-ignore lint/suspicious/noExplicitAny: the pane store's viewer data is not the subject here
 type AnyStore = any;
@@ -161,6 +162,7 @@ beforeEach(() => {
 	paneStatus = "review";
 	bindings = new Map([[TERMINAL, { lastEventAt: 5_000 }]]);
 	setPresent(true);
+	setScreenLocked(false);
 	resetV2NotificationStoreForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
 	// A finish the user has not read: the green dot and its instant.

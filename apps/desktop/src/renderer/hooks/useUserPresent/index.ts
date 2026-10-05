@@ -1,1 +1,5 @@
-export { isUserPresent, useUserPresent } from "./useUserPresent";
+export {
+	isUserPresent,
+	setScreenLocked,
+	useUserPresent,
+} from "./useUserPresent";

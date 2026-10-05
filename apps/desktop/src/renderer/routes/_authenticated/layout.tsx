@@ -60,6 +60,7 @@ import { AutoResumeController } from "./components/AutoResumeController/AutoResu
 import { DockBadgeController } from "./components/DockBadgeController";
 import { FileMenuListener } from "./components/FileMenuListener";
 import { GitInitConfirmDialog } from "./components/GitInitConfirmDialog";
+import { ScreenLockSubscriber } from "./components/ScreenLockSubscriber";
 import { TeardownLogsDialog } from "./components/TeardownLogsDialog";
 import { V2NotificationController } from "./components/V2NotificationController";
 import { WindowTitle } from "./components/WindowTitle";
@@ -303,6 +304,7 @@ function AuthenticatedLayout() {
 								<AgentHooks />
 								<FileMenuListener />
 								<V2NotificationController />
+								<ScreenLockSubscriber /* (PRESENCE-SCREEN-LOCK-MOUNT) */ />
 								<AutoResumeController />
 								<DockBadgeController />
 								<StarNagObserver />
