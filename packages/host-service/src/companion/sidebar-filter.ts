@@ -18,9 +18,10 @@
  * `deleted_at`/`archived_at`/`snooze_until` hides a thread that is no longer
  * hidden, and a stale `app_launch_id` keeps an "until next launch" snooze in
  * force forever — so it cannot be answered by any per-row rule. It is answered
- * WHOLESALE, by `(MIRROR-AGE-OUT)` below: past `MIRROR_MAX_AGE_MS` with no
- * renderer heartbeat, this module stops filtering at all rather than serving a
- * dead desktop's last opinion as if it were current.
+ * WHOLESALE, by `(MIRROR-AGE-OUT)` in `createSidebarCuration` below: past
+ * `MIRROR_MAX_AGE_MS` with no renderer heartbeat, it stops filtering at all
+ * rather than serving a dead desktop's last opinion as if it were current.
+ * `createLastKnownSidebarCuration` skips that gate; its caller judges the age.
  *
  * Applied literally to both tables the absence rule would be wrong in one
  * direction and right in the other, because the renderer itself treats the two
@@ -147,10 +148,11 @@ export function workspaceSidebarVerdict(
 export interface SidebarCuration {
 	/**
 	 * False when the mirror is not evidence about this machine's sidebar right
-	 * now — no renderer has ever synced, the last sync is older than
-	 * `MIRROR_MAX_AGE_MS`, or the mirror belongs to a different organization.
-	 * Every predicate below then answers `"show"`, so none of those states can
-	 * fail closed.
+	 * now — no renderer has ever synced, the mirror belongs to a different
+	 * organization, or, from `createSidebarCuration` only, the last sync is
+	 * outside the `MIRROR_MAX_AGE_MS` window. `createLastKnownSidebarCuration`
+	 * skips that age gate. Every predicate below then answers `"show"`, so none
+	 * of those states can fail closed.
 	 */
 	readonly enabled: boolean;
 	/**

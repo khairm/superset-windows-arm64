@@ -3060,6 +3060,12 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 				stepWallClock(ms: number) {
 					setSystemTime(new Date(Date.now() + ms));
 				},
+				setMirrorAge(ms: number) {
+					scenario.db
+						.update(schema.sidebarMirrorMeta)
+						.set({ lastFullSyncAtMs: Date.now() - ms })
+						.run();
+				},
 				async branchSweepReadsWsA(): Promise<boolean> {
 					scenario.resetCalls();
 					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
@@ -3108,22 +3114,35 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 					.run();
 			};
 			let trailingFires = 0;
+			const listenerThrows: unknown[][] = [];
 			return {
 				...scenario,
 				trailingFires: () => trailingFires,
+				listenerThrows: () => listenerThrows,
 				async reExitDuringTrailingWindow() {
-					trigger.onChanged((event) => {
-						if (event.trailing) trailingFires += 1;
-					});
-					setCompletedAt(null);
-					trigger.push({ workspaceId: "ws-b" });
-					trigger.push({ workspaceId: "ws-b" });
-					setCompletedAt(Date.now());
-					await waitFor(
-						() => trailingFires === 1 && scenario.headLookups("feat/ws-b") > 0,
-						20_000,
-					);
-					await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
+					const error = spyOn(console, "error").mockImplementation(() => {});
+					try {
+						trigger.onChanged((event) => {
+							if (event.trailing) trailingFires += 1;
+						});
+						setCompletedAt(null);
+						trigger.push({ workspaceId: "ws-b" });
+						trigger.push({ workspaceId: "ws-b" });
+						setCompletedAt(Date.now());
+						await waitFor(
+							() =>
+								trailingFires === 1 && scenario.headLookups("feat/ws-b") > 0,
+							20_000,
+						);
+						await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
+					} finally {
+						listenerThrows.push(
+							...error.mock.calls.filter(([message]) =>
+								String(message).includes("[pr-sync-trigger] listener threw"),
+							),
+						);
+						error.mockRestore();
+					}
 				},
 				dispose() {
 					scenario.cleanup();
@@ -3186,6 +3205,34 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 					expect(await scenario.branchSweepReadsWsA()).toBe(true);
 					scenario.stepWallClock(7 * DAY_MS);
 					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a backward wall-clock step that reads the mirror as old keeps the used pass",
+			async () => {
+				await withAgedMirror(EXPIRED_AGE_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					scenario.stepWallClock(-2 * HOUR_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					scenario.advance(2 * HOUR_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+				});
+			},
+			GIT_SPAWN_TIMEOUT_MS,
+		);
+
+		test(
+			"a fresh push between two expiries owes the pass again at once",
+			async () => {
+				await withAgedMirror(EXPIRED_AGE_MS, async (scenario) => {
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
+					scenario.setMirrorAge(0);
+					expect(await scenario.branchSweepReadsWsA()).toBe(false);
+					scenario.setMirrorAge(EXPIRED_AGE_MS);
+					expect(await scenario.branchSweepReadsWsA()).toBe(true);
 				});
 			},
 			GIT_SPAWN_TIMEOUT_MS,
@@ -3278,6 +3325,7 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 						await scenario.reExitDuringTrailingWindow();
 					});
 					expect(scenario.trailingFires()).toBe(1);
+					expect(scenario.listenerThrows()).toEqual([]);
 					expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
 
 					await quietly(() => scenario.sweeps.syncWorkspaceBranches());
@@ -3299,6 +3347,7 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 						await scenario.reExitDuringTrailingWindow();
 					});
 					expect(scenario.trailingFires()).toBe(1);
+					expect(scenario.listenerThrows()).toEqual([]);
 					expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
 					expect(scenario.headLookups("feat/ws-b")).toBe(1);
 				} finally {
@@ -3418,12 +3467,35 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 						clock.now += ms;
 						clock.elapsed += ms;
 					},
+					stepWallClock(ms: number) {
+						clock.now += ms;
+					},
+					advanceElapsed(ms: number) {
+						clock.elapsed += ms;
+					},
 					restore() {
 						warn.mockRestore();
 						error.mockRestore();
 					},
 				};
 			}
+
+			test("only elapsed time repeats an old mirror's warning, not a wall-clock step", () => {
+				const probe = fakeClockLoader(MIRROR_STALE_MS);
+				try {
+					probe.load("branch-sweep");
+					expect(probe.warn).toHaveBeenCalledTimes(1);
+					probe.stepWallClock(MIRROR_WARN_INTERVAL_MS);
+					probe.load("branch-sweep");
+					expect(probe.warn).toHaveBeenCalledTimes(1);
+					probe.advanceElapsed(MIRROR_WARN_INTERVAL_MS);
+					probe.load("branch-sweep");
+					expect(probe.warn).toHaveBeenCalledTimes(2);
+					expect(probe.error).not.toHaveBeenCalled();
+				} finally {
+					probe.restore();
+				}
+			});
 
 			test("an old mirror warns on the first call and every 5 min after, not in between", () => {
 				const probe = fakeClockLoader(MIRROR_STALE_MS);

@@ -144,9 +144,9 @@ export function createExitedWorkspaceFilterLoader({
 			const { level, message } = STATE_LOG[state];
 			console[level](`${LOG_PREFIX} ${message}`, age);
 		}
-		if (state !== "expired") {
+		if (state === "fresh" || state === "none") {
 			lastFullPassAtElapsedMs.clear();
-		} else if (slot !== null) {
+		} else if (state === "expired" && slot !== null) {
 			const lastPassAt = lastFullPassAtElapsedMs.get(slot);
 			if (
 				lastPassAt === undefined ||
