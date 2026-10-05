@@ -7,7 +7,7 @@ GlobalRegistrator.register({ url: "http://localhost" });
 	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const { act, cleanup, render } = await import("@testing-library/react");
+const { act, cleanup, render } = await import("@testing-library/react/pure");
 const {
 	createMemoryHistory,
 	createRootRoute,
