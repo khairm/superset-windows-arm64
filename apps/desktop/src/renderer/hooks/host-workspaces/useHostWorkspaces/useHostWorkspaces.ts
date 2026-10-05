@@ -1,9 +1,9 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toQueryStates } from "renderer/hooks/host-projects/utils/toQueryStates";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
+import { useActiveRoute, v2WorkspaceIdOf } from "renderer/lib/active-route";
 import { authClient } from "renderer/lib/auth-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { getHostEventBus } from "renderer/lib/host-event-bus";
@@ -174,7 +174,10 @@ export function useHostWorkspacesSourceWithActivity(
 	// workspace's own access wakes it and re-addresses it, and polling it
 	// before then is a stream of failed requests. The sidebar renders cloud
 	// rows from the cloud row, so nothing else needs a sandbox's served rows.
-	const { workspaceId: openWorkspaceId } = useParams({ strict: false });
+	// (NAV-LOCAL-RENDER) A primitive select; route params re-render on every click.
+	const openWorkspaceId = useActiveRoute((matched) =>
+		v2WorkspaceIdOf(matched.pathname, { fuzzy: true }),
+	);
 	const openSandbox = useMemo(
 		() =>
 			sandboxes.find(

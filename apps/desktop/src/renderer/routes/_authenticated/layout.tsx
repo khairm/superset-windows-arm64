@@ -1,13 +1,7 @@
 import { WorkerPoolContextProvider } from "@pierre/diffs/react";
 import { Button } from "@superset/ui/button";
 import { Spinner } from "@superset/ui/spinner";
-import {
-	createFileRoute,
-	Outlet,
-	useLocation,
-	useNavigate,
-	useRouterState,
-} from "@tanstack/react-router";
+import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import { DndProvider } from "react-dnd";
 import { HiOutlineWifi } from "react-icons/hi2";
@@ -19,11 +13,7 @@ import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useOnlineStatus } from "renderer/hooks/useOnlineStatus";
 import { useSettingsExternalChangeListener } from "renderer/hooks/useSettingsExternalChangeListener";
 import { authClient, getAuthToken } from "renderer/lib/auth-client";
-import {
-	CLOUD_SEVERED_FALLBACK_ROUTE,
-	DEFAULT_SETTINGS_ROUTE,
-	isCloudSeveredRoute,
-} from "renderer/lib/cloud-severed-routes";
+import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { dragDropManager } from "renderer/lib/dnd";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { terminalRuntimeRegistry } from "renderer/lib/terminal/terminal-runtime-registry";
@@ -49,7 +39,6 @@ import { V1ImportModal } from "renderer/routes/_authenticated/components/V1Impor
 import { useForwardedHotkeys } from "renderer/routes/_authenticated/hooks/useForwardedHotkeys";
 import { useZoomHotkeys } from "renderer/routes/_authenticated/hooks/useZoomHotkeys";
 import { WorkspaceInitEffects } from "renderer/screens/main/components/WorkspaceInitEffects";
-import { useSettingsStore } from "renderer/stores/settings-state";
 import { useTabsStore } from "renderer/stores/tabs/store";
 import { useAgentHookListener } from "renderer/stores/tabs/useAgentHookListener";
 import { setPaneWorkspaceRunState } from "renderer/stores/tabs/workspace-run";
@@ -57,9 +46,11 @@ import { useWorkspaceInitStore } from "renderer/stores/workspace-init";
 import { NOTIFICATION_EVENTS } from "shared/constants";
 import { AgentHooks } from "./components/AgentHooks";
 import { AutoResumeController } from "./components/AutoResumeController/AutoResumeController";
+import { CloudSeveredRouteGate } from "./components/CloudSeveredRouteGate";
 import { DockBadgeController } from "./components/DockBadgeController";
 import { FileMenuListener } from "./components/FileMenuListener";
 import { GitInitConfirmDialog } from "./components/GitInitConfirmDialog";
+import { OriginRouteTracker } from "./components/OriginRouteTracker";
 import { TeardownLogsDialog } from "./components/TeardownLogsDialog";
 import { V2NotificationController } from "./components/V2NotificationController";
 import { WindowTitle } from "./components/WindowTitle";
@@ -74,9 +65,6 @@ export const Route = createFileRoute("/_authenticated")({
 });
 
 const signInRedirect = <Redirect to="/sign-in" replace />;
-const cloudSeveredRedirect = (
-	<Redirect to={CLOUD_SEVERED_FALLBACK_ROUTE} replace />
-);
 
 const SESSION_PENDING_TIMEOUT_MS = 15_000;
 
@@ -90,17 +78,6 @@ function AuthenticatedLayout() {
 	const hasLocalToken = !!getAuthToken();
 	const isOnline = useOnlineStatus();
 	const navigate = useNavigate();
-	const location = useLocation();
-	// The onboarding gate below must key off the route being RENDERED, not
-	// `useLocation()`. `location` is the pending navigation, so the instant the
-	// redirect to /onboarding starts, the gate re-opens while `matches` still
-	// holds the route we are leaving — remounting it, and re-firing its own
-	// mount-time redirect, which cancels ours. The two then bounce forever
-	// (DESKTOP-E3). `matches` only advances once the destination commits.
-	const renderedPathname = useRouterState({
-		select: (state) => state.matches[state.matches.length - 1]?.pathname ?? "",
-	});
-	const setOriginRoute = useSettingsStore((s) => s.setOriginRoute);
 	const utils = electronTrpc.useUtils();
 	const shownWorkspaceInitWarningsRef = useRef(new Set<string>());
 	const isV2CloudEnabled = useIsV2CloudEnabled();
@@ -164,12 +141,6 @@ function AuthenticatedLayout() {
 			}
 		},
 	});
-
-	useEffect(() => {
-		if (!location.pathname.startsWith("/settings")) {
-			setOriginRoute(location.pathname);
-		}
-	}, [location.pathname, setOriginRoute]);
 
 	// Workspace initialization progress subscription
 	const updateInitProgress = useWorkspaceInitStore((s) => s.updateProgress);
@@ -275,15 +246,9 @@ function AuthenticatedLayout() {
 	// is always onboarded, so these three gates could only ever fire wrongly —
 	// and two of them pointed at routes that no longer render.
 	//
-	// This is the one place a severed route is stopped. Every entry point to
-	// them is gone, but a saved location or a deep link still arrives here, and
-	// it arrives as a render (not a route load) so the check lives in the
-	// component body where it sees every navigation.
-	if (isCloudSeveredRoute(location.pathname)) {
-		return cloudSeveredRedirect;
-	}
-
-	return (
+	// (NAV-LOCAL-RENDER) Nothing here reads the route: the two leaves below do,
+	// so a navigation never re-renders this provider stack.
+	const providerTree = (
 		<DndProvider manager={dragDropManager}>
 			<CollectionsProvider>
 				<WindowTitle />
@@ -332,5 +297,12 @@ function AuthenticatedLayout() {
 				</LocalHostServiceProvider>
 			</CollectionsProvider>
 		</DndProvider>
+	);
+
+	return (
+		<>
+			<OriginRouteTracker />
+			<CloudSeveredRouteGate>{providerTree}</CloudSeveredRouteGate>
+		</>
 	);
 }
