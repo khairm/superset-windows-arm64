@@ -29,4 +29,22 @@ describe("(PRESENCE-SCREEN-LOCK) window.screenLock", () => {
 		subscription.unsubscribe();
 		expect(values).toEqual([false, true]);
 	});
+
+	it("forwards an unknown lock state as null", async () => {
+		const os = fakePowerMonitor("unknown");
+		startScreenLock({
+			powerMonitor: os.powerMonitor,
+			now: () => 0,
+			startInterval: () => () => {},
+			logger: { info: () => {}, error: () => {} },
+		});
+		const caller = createWindowRouter().createCaller({ senderWindow: null });
+		const stream = await caller.screenLock();
+		const values: Array<boolean | null> = [];
+		const subscription = stream.subscribe({
+			next: (locked) => values.push(locked),
+		});
+		subscription.unsubscribe();
+		expect(values).toEqual([null]);
+	});
 });
