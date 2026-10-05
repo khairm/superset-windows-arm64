@@ -278,6 +278,13 @@ In brief:
   byte). Plain dirs go native, globs filter in JS; re-run the Windows watcher
   tests after any watcher merge (`(WATCHER-NO-NATIVE-GLOBS)`). A
   `fixture-error` line there is a broken test, not the crash.
+- Windows renderer is never backgrounded (`(WIN-NO-BG-THROTTLE)`: constructor
+  `backgroundThrottling: false` + `disable-renderer-backgrounding`). Never
+  `setBackgroundThrottling` after creation (electron#42378 blank window;
+  `browser-manager.ts` still toggles it for browser panes). The page never goes
+  hidden, so away = no focus, hidden, or main's lock state
+  (`(PRESENCE-SCREEN-LOCK)`, unknown = away). Waived: screen-off without lock
+  and non-activating topmost covers count as present.
 
 ## Accepted limitations
 
