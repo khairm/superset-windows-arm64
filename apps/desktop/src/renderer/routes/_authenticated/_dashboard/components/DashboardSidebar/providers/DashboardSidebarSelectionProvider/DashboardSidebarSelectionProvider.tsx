@@ -4,7 +4,9 @@ import {
 	useCallback,
 	useContext,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 import {
@@ -105,6 +107,13 @@ export function DashboardSidebarSelectionProvider({
 		});
 	}, [availableWorkspaceIds]);
 
+	// (NAV-LOCAL-RENDER) A ref, so a click does not re-key the context for
+	// every row. Captured before setSelection: the updater may run later.
+	const activeWorkspaceIdRef = useRef(activeWorkspaceId);
+	useLayoutEffect(() => {
+		activeWorkspaceIdRef.current = activeWorkspaceId;
+	}, [activeWorkspaceId]);
+
 	const selectWorkspaceFromEvent = useCallback(
 		(
 			event: WorkspaceSelectionEvent,
@@ -118,6 +127,7 @@ export function DashboardSidebarSelectionProvider({
 
 			event.preventDefault();
 			event.stopPropagation();
+			const activeWorkspaceId = activeWorkspaceIdRef.current;
 			setSelection((current) =>
 				applyWorkspaceSelection(current, {
 					...options,
@@ -127,7 +137,7 @@ export function DashboardSidebarSelectionProvider({
 			);
 			return true;
 		},
-		[activeWorkspaceId],
+		[],
 	);
 
 	const removeSelectedWorkspaces = useCallback((workspaceIds: string[]) => {

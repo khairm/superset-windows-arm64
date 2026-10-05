@@ -1,4 +1,4 @@
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import { type AnyRouter, useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef } from "react";
 import { useHotkey } from "renderer/hotkeys";
 import { useDeletingWorkspacesStore } from "renderer/routes/_authenticated/_dashboard/stores/deletingWorkspacesStore";
@@ -169,15 +169,20 @@ export function useDashboardSidebarShortcuts(
 	useHotkey("JUMP_TO_WORKSPACE_8", () => switchToWorkspace(7));
 	useHotkey("JUMP_TO_WORKSPACE_9", () => switchToWorkspace(8));
 
-	const matchRoute = useMatchRoute();
-	const currentWorkspaceMatch = matchRoute({
-		to: "/v2-workspace/$workspaceId",
-		fuzzy: true,
-	});
-	const currentWorkspaceId =
-		currentWorkspaceMatch !== false ? currentWorkspaceMatch.workspaceId : null;
+	// (NAV-LOCAL-RENDER) Read at keypress time instead of subscribing.
+	const router = useRouter<AnyRouter>();
+	const readCurrentWorkspaceId = () => {
+		const currentWorkspaceMatch = router.matchRoute(
+			{ to: "/v2-workspace/$workspaceId" },
+			{ fuzzy: true },
+		);
+		return currentWorkspaceMatch !== false
+			? currentWorkspaceMatch.workspaceId
+			: null;
+	};
 
 	useHotkey("PREV_WORKSPACE", () => {
+		const currentWorkspaceId = readCurrentWorkspaceId();
 		if (!currentWorkspaceId || flattenedWorkspaces.length === 0) return;
 		const index = flattenedWorkspaces.findIndex(
 			(w) => w.id === currentWorkspaceId,
@@ -189,6 +194,7 @@ export function useDashboardSidebarShortcuts(
 	});
 
 	useHotkey("NEXT_WORKSPACE", () => {
+		const currentWorkspaceId = readCurrentWorkspaceId();
 		if (!currentWorkspaceId || flattenedWorkspaces.length === 0) return;
 		const index = flattenedWorkspaces.findIndex(
 			(w) => w.id === currentWorkspaceId,

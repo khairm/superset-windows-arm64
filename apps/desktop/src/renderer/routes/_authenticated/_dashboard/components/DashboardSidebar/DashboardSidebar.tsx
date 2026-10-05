@@ -9,7 +9,7 @@ import { useLingui } from "@lingui/react/macro";
 import { OverflowFadeContainer } from "@superset/ui/overflow-fade-container";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import {
 	memo,
 	useCallback,
@@ -29,6 +29,11 @@ import {
 import { UpdatesPill } from "renderer/components/UpdatesPill";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useHotkeyDisplay } from "renderer/hotkeys";
+import {
+	isUnder,
+	useActiveRoute,
+	v2WorkspaceIdOf,
+} from "renderer/lib/active-route";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
@@ -184,7 +189,9 @@ const SortableProjectWrapper = memo(function SortableProjectWrapper({
 	);
 });
 
-export function DashboardSidebar({
+// (NAV-LOCAL-RENDER) Memoised, and reads the route as primitives, so a sidebar
+// click renders it once.
+export const DashboardSidebar = memo(function DashboardSidebar({
 	isCollapsed = false,
 }: DashboardSidebarProps) {
 	const { t } = useLingui();
@@ -216,12 +223,14 @@ export function DashboardSidebar({
 	// background; retries whenever the workspace cache changes.
 	useMigrateLegacySidebarFolders();
 	const navigate = useNavigate();
-	const matchRoute = useMatchRoute();
 	const settingsHotkey = useHotkeyDisplay("OPEN_SETTINGS").text;
-	const isSettingsOpen = !!matchRoute({ to: "/settings", fuzzy: true });
+	const isSettingsOpen = useActiveRoute((matched) =>
+		isUnder(matched.pathname, "/settings"),
+	);
 	const { activeHostUrl } = useLocalHostService();
-	const v2RouteMatch = matchRoute({ to: "/v2-workspace/$workspaceId" });
-	const activeV2WorkspaceId = v2RouteMatch ? v2RouteMatch.workspaceId : null;
+	const activeV2WorkspaceId = useActiveRoute((matched) =>
+		v2WorkspaceIdOf(matched.pathname, { fuzzy: false }),
+	);
 	const workspacesListCollapsed = useSidebarSectionsCollapseStore(
 		(s) => s.collapsed.workspaces,
 	);
@@ -789,4 +798,4 @@ export function DashboardSidebar({
 			</DashboardSidebarSectionRenameProvider>
 		</DashboardSidebarSelectionProvider>
 	);
-}
+});

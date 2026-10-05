@@ -1,5 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
+import { memo } from "react";
 import { LuPlus } from "react-icons/lu";
 import { useOpenNewSession } from "renderer/hooks/useOpenNewWorkspace";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
@@ -57,7 +58,7 @@ interface DashboardSidebarSessionsSectionProps {
  * Sessions never reach the Kanban board: every card is bound to a sidebar
  * project, and a session has none.
  */
-export function DashboardSidebarSessionsSection({
+function DashboardSidebarSessionsSectionInner({
 	sessionWorkspaces,
 	snoozedSessionWorkspaces = [],
 	archivedSessionWorkspaces = [],
@@ -249,3 +250,8 @@ export function DashboardSidebarSessionsSection({
 		</div>
 	);
 }
+
+// (NAV-LOCAL-RENDER) Memoised: a sidebar click must not re-render every row.
+export const DashboardSidebarSessionsSection = memo(
+	DashboardSidebarSessionsSectionInner,
+);
