@@ -32,6 +32,7 @@ import {
 	handleTree,
 } from "./read-api";
 import {
+	createLastKnownSidebarCuration,
 	createSidebarCuration,
 	MIRROR_MAX_AGE_MS,
 	type SidebarMirrorSnapshot,
@@ -141,6 +142,71 @@ describe("(MIRROR-AGE-OUT)", () => {
 		// null, NOT zero: "never synced" and "synced this instant" are opposite
 		// facts and a diagnostic must be able to tell them apart.
 		expect(bootstrap.lastSyncAgeMs).toBeNull();
+	});
+});
+
+describe("(PR-SWEEP-LAST-KNOWN-MIRROR) createLastKnownSidebarCuration", () => {
+	const DAY_PLUS_HOUR_MS = 25 * 3_600_000;
+
+	it.each([
+		[
+			"past the companion window",
+			NOW - MIRROR_MAX_AGE_MS - 1,
+			MIRROR_MAX_AGE_MS + 1,
+		],
+		["over a day old", NOW - DAY_PLUS_HOUR_MS, DAY_PLUS_HOUR_MS],
+		["stamped in the future", NOW + 60_000, -60_000],
+	])("keeps curating a mirror %s and reports its age", (_label, lastFullSyncAtMs, ageMs) => {
+		const curation = createLastKnownSidebarCuration(
+			snapshot(
+				[mirrorWorkspace("w-1", { deletedAt: NOW - 5 })],
+				[mirrorProject("p-git")],
+				{ lastFullSyncAtMs },
+			),
+			NOW,
+			ORG,
+		);
+		expect(curation.enabled).toBe(true);
+		expect(curation.lastSyncAgeMs).toBe(ageMs);
+		expect(curation.workspaceVerdict(branchWorkspace)).toBe("deleted");
+		expect(curation.projectVerdict("p-not-placed-at-all")).toBe(
+			"project_not_in_sidebar",
+		);
+	});
+
+	it.each([
+		["no mirror", { meta: null, workspaces: [], projects: [] }, null],
+		[
+			"another org's mirror",
+			snapshot(
+				[mirrorWorkspace("w-1", { deletedAt: NOW - 5 })],
+				[mirrorProject("p-somebody-elses")],
+				{ organizationId: OTHER_ORG },
+			),
+			1_000,
+		],
+	])("passes everything through for %s", (_label, mirror, ageMs) => {
+		const curation = createLastKnownSidebarCuration(mirror, NOW, ORG);
+		expect(curation.enabled).toBe(false);
+		expect(curation.lastSyncAgeMs).toBe(ageMs);
+		expect(curation.workspaceVerdict(branchWorkspace)).toBe("show");
+		expect(curation.projectVerdict("p-git")).toBe("show");
+	});
+
+	it.each([
+		[LAUNCH, "snoozed"],
+		["launch-2", "show"],
+	])("judges an until-next-launch snooze against the mirror's launch id %s", (appLaunchId, verdict) => {
+		const curation = createLastKnownSidebarCuration(
+			snapshot(
+				[mirrorWorkspace("w-1", { snoozeLaunchId: LAUNCH })],
+				[mirrorProject("p-git")],
+				{ appLaunchId, lastFullSyncAtMs: NOW - DAY_PLUS_HOUR_MS },
+			),
+			NOW,
+			ORG,
+		);
+		expect(curation.workspaceVerdict(branchWorkspace)).toBe(verdict);
 	});
 });
 

@@ -325,7 +325,30 @@ export function createSidebarCuration(
 	if (meta.organizationId !== organizationId) {
 		return passThroughCuration(lastSyncAgeMs);
 	}
+	return buildCuration(snapshot, meta, nowMs, lastSyncAgeMs);
+}
 
+// (PR-SWEEP-LAST-KNOWN-MIRROR) No age gate: the PR sweep loader judges the mirror's age itself.
+export function createLastKnownSidebarCuration(
+	snapshot: SidebarMirrorSnapshot,
+	nowMs: number,
+	organizationId: string,
+): SidebarCuration {
+	const meta = snapshot.meta;
+	if (meta === null) return passThroughCuration(null);
+	const lastSyncAgeMs = nowMs - meta.lastFullSyncAtMs;
+	if (meta.organizationId !== organizationId) {
+		return passThroughCuration(lastSyncAgeMs);
+	}
+	return buildCuration(snapshot, meta, nowMs, lastSyncAgeMs);
+}
+
+function buildCuration(
+	snapshot: SidebarMirrorSnapshot,
+	meta: SidebarMirrorMetaRow,
+	nowMs: number,
+	lastSyncAgeMs: number,
+): SidebarCuration {
 	const workspaceById = new Map<string, SidebarWorkspaceMirrorRow>();
 	for (const row of snapshot.workspaces)
 		workspaceById.set(row.workspaceId, row);
