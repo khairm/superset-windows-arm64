@@ -95,6 +95,23 @@ describe("useSnoozeWake", () => {
 		expect(jest.getTimerCount()).toBe(1);
 	});
 
+	it("keeps the shared interval's phase when rows change but stay timed", () => {
+		const { view, renders } = mountWake([{ snoozeUntil: NOW + HOUR }]);
+		now.mockReturnValue(NOW + 30_000);
+		act(() => {
+			jest.advanceTimersByTime(30_000);
+		});
+
+		view.rerender({ rows: [{ snoozeUntil: NOW + 45_000 }] });
+		const before = renders();
+		now.mockReturnValue(NOW + 60_000);
+		act(() => {
+			jest.advanceTimersByTime(30_000);
+		});
+		expect(renders()).toBe(before + 1);
+		expect(view.result.current).toBe(1);
+	});
+
 	it("subscribes nothing for launch-only snoozes", () => {
 		const subscribe = spyOn(snoozeTicker, "subscribe");
 		mountWake([{ snoozeUntil: null }, {}]);
