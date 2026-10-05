@@ -12,7 +12,7 @@
  * `companionAlertSync` is tested through.
  */
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { WorkspaceState } from "@superset/panes";
 import type { AgentLifecyclePayload } from "@superset/workspace-client";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
@@ -149,6 +149,8 @@ beforeEach(() => {
 		hash: `#/v2-workspace/${WORKSPACE}`,
 	};
 });
+
+afterEach(() => setScreenLocked(null));
 
 describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	it("reports a visible Stop with the OUTCOME instant", async () => {

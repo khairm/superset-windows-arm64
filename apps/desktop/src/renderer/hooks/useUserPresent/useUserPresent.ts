@@ -30,7 +30,7 @@ export function setScreenLocked(next: boolean | null): void {
  * notification code's business, not this hook's.
  */
 export function isUserPresent(): boolean {
-	if (screenLocked !== false) return false;
+	if (screenLocked !== false) return false; // (PRESENCE-SCREEN-LOCK-GATE)
 	if (typeof document !== "undefined" && document.hidden) return false;
 	if (typeof window !== "undefined" && !document.hasFocus()) return false;
 	return true;

@@ -30,6 +30,7 @@ const EVENT_SETTLE_MS = 5_000;
 
 let locked: boolean | null = null;
 let lastEventAt = Number.NEGATIVE_INFINITY;
+let failureLogged = false;
 let running: { deps: Required<ScreenLockDeps>; detach: () => void } | null =
 	null;
 const listeners = new Set<ScreenLockListener>();
@@ -57,8 +58,14 @@ function reread(deps: Required<ScreenLockDeps>): void {
 	try {
 		state = deps.powerMonitor.getSystemIdleState(1);
 	} catch (error) {
+		if (failureLogged) return;
+		failureLogged = true;
 		deps.logger.error("[screen-lock] system idle state read failed", error);
 		return;
+	}
+	if (failureLogged) {
+		failureLogged = false;
+		deps.logger.info("[screen-lock] system idle state read recovered");
 	}
 	if (state === "locked") apply(true, "reread", deps);
 	else if (state === "active" || state === "idle") apply(false, "reread", deps);
@@ -105,6 +112,7 @@ export function stopScreenLock(): void {
 	running = null;
 	locked = null;
 	lastEventAt = Number.NEGATIVE_INFINITY;
+	failureLogged = false;
 }
 
 /** Re-reads the OS, hands `listener` the current value, then every change. */

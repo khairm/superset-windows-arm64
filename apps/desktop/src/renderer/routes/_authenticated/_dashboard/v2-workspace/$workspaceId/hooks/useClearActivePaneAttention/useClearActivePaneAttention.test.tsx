@@ -179,6 +179,7 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	unregisterWorkspaceHost(WORKSPACE, HOST);
+	setScreenLocked(null);
 });
 
 afterAll(() => {

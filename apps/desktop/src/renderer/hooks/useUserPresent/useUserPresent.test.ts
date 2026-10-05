@@ -20,6 +20,10 @@ afterEach(() => {
 });
 
 describe("(PRESENCE-SCREEN-LOCK) isUserPresent", () => {
+	it("is not present before main has ever reported a lock state", () => {
+		expect(isUserPresent()).toBe(false);
+	});
+
 	it("an unknown lock state is not present", () => {
 		setScreenLocked(null);
 		expect(isUserPresent()).toBe(false);

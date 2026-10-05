@@ -64,10 +64,11 @@ export const createWindowRouter = () => {
 		}),
 
 		// (PRESENCE-SCREEN-LOCK)
-		screenLock: publicProcedure.subscription(() =>
-			observable<boolean | null>((emit) =>
-				subscribeScreenLock((locked) => emit.next(locked)),
-			),
+		screenLock: /* (PRESENCE-SCREEN-LOCK-ROUTE) */ publicProcedure.subscription(
+			() =>
+				observable<boolean | null>((emit) =>
+					subscribeScreenLock((locked) => emit.next(locked)),
+				),
 		),
 
 		/** Open a new platform window on the same org as the calling window. */

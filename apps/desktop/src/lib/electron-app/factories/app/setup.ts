@@ -90,7 +90,7 @@ if (PLATFORM.IS_MAC) {
 
 // (WIN-NO-BG-THROTTLE)
 PLATFORM.IS_WINDOWS &&
-	app.commandLine.appendSwitch("disable-renderer-backgrounding");
+	app.commandLine.appendSwitch("disable-renderer-backgrounding"); // (WIN-NO-BG-THROTTLE-SWITCH)
 
 PLATFORM.IS_WINDOWS &&
 	app.setAppUserModelId(

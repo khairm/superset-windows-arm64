@@ -131,6 +131,19 @@ describe("(PRESENCE-SCREEN-LOCK) screen-lock", () => {
 		expect(os.errors).toHaveLength(1);
 	});
 
+	it("a failing read logs once, and again only after a successful read", () => {
+		const os = start(new Error("boom"));
+		os.tick();
+		expect(os.errors).toHaveLength(1);
+
+		os.setOs("active");
+		os.tick();
+		os.setOs(new Error("boom again"));
+		os.tick();
+		os.tick();
+		expect(os.errors).toHaveLength(2);
+	});
+
 	it("lock and unlock events flip the value and notify; the same value does not", () => {
 		const os = start("active");
 		const values = subscribe();

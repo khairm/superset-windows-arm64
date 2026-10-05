@@ -508,7 +508,7 @@ export async function createPlatformWindow({
 			partition: "persist:superset",
 			// (WIN-NO-BG-THROTTLE) Constructor only: a later setBackgroundThrottling
 			// on Windows blanks the window (electron#42378).
-			backgroundThrottling: !PLATFORM.IS_WINDOWS,
+			backgroundThrottling: !PLATFORM.IS_WINDOWS, // (WIN-NO-BG-THROTTLE-PREF)
 		},
 	});
 
