@@ -47,7 +47,7 @@ interface ChangesTabContentProps {
 	onFilterChange: (filter: ChangesFilter) => void;
 	onViewModeChange: (viewMode: ChangesViewMode) => void;
 	onBaseBranchChange: (branchName: string | null) => void;
-	onBranchPickerOpenChange: (open: boolean) => void;
+	onBranchPickerOpenChange: (open: boolean) => void; // (BRANCH-PICKER-ON-OPEN)
 	onRenameBranch: (newName: string) => void;
 	canRenameBranch: boolean;
 }

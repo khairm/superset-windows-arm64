@@ -30,7 +30,7 @@ interface ChangesToolbarProps {
 	baseBranch: string;
 	branches: Branch[];
 	branchesLoading: boolean;
-	onBranchPickerOpenChange: (open: boolean) => void;
+	onBranchPickerOpenChange: (open: boolean) => void; // (BRANCH-PICKER-ON-OPEN)
 	onBaseBranchChange: (branchName: string) => void;
 	currentBranchName: string;
 	canRenameBranch: boolean;
