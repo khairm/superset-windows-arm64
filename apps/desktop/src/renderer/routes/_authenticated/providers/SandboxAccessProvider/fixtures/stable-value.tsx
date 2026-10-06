@@ -18,7 +18,7 @@ mock.module("renderer/hooks/useActiveOrganizationId", () => ({
 	useActiveOrganizationId: () => "org-1",
 }));
 
-const { act, cleanup, render } = await import("@testing-library/react");
+const { act, cleanup, render } = await import("@testing-library/react/pure");
 const { QueryClient, QueryClientProvider } = await import(
 	"@tanstack/react-query"
 );

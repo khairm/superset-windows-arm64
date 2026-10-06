@@ -19,7 +19,7 @@ mock.module(
 	}),
 );
 
-const { act, cleanup, render } = await import("@testing-library/react");
+const { act, cleanup, render } = await import("@testing-library/react/pure");
 const { useState } = await import("react");
 const { authClient, getSeveredOrganizationResult, getSeveredSessionResult } =
 	await import("../auth-client");
