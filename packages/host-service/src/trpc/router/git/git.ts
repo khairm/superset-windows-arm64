@@ -6,8 +6,7 @@ import { z } from "zod";
 import { pullRequests, workspaces } from "../../../db/schema";
 import { createGitEnvResolver } from "../../../runtime/git";
 import { resolveCheckoutIdentity } from "../../../runtime/git/checkout-identity";
-import { findGitEntryUpTree } from "../../../runtime/git/git-entry-probe";
-import { invalidateIsGitRepo, isGitRepo } from "../../../runtime/git/non-git";
+import { isGitRepo, probeGitEntryDiskOnly } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
 import type { HostServiceContext } from "../../../types";
 import { getHostWorkerPool } from "../../../workers/host-worker-pool";
@@ -310,17 +309,12 @@ export const gitRouter = router({
 			return { isGitRepo: await isGitRepo(worktreePath) };
 		}),
 
-	// (HOVER-CARD-COLD-STATS) Disk probe only, never a git launch. "absent" is
-	// definite, so it also drops the host's cached "yes".
+	// (HOVER-CARD-COLD-STATS) Disk probe only, never a git launch.
 	probeIsRepo: queryProcedure
 		.input(z.object({ workspaceId: z.string() }))
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
-			const result = await findGitEntryUpTree(worktreePath).catch(
-				() => "unknown" as const,
-			);
-			if (result === "absent") invalidateIsGitRepo(worktreePath);
-			return { result };
+			return { result: await probeGitEntryDiskOnly(worktreePath) };
 		}),
 
 	listBranches: queryProcedure

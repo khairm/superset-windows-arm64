@@ -6,12 +6,11 @@ import {
 import { eq } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { projects, workspaces } from "../../db/schema.ts";
-import { listGitIgnoredDirs } from "../git/index.ts";
+import { listGitIgnoredDirsForRefresh } from "../git/ignored-dirs-refresh.ts"; // (GIT-WATCH-ATTACH-TASK)
 import { WatchAttachGuard } from "./watch-attach-guard.ts";
 
 export interface WorkspaceFilesystemManagerOptions {
 	db: HostDb;
-	listGitIgnoredDirs?: (rootPath: string) => Promise<string[]>;
 }
 
 export class WorkspaceNotFoundError extends Error {
@@ -30,17 +29,15 @@ export class ProjectNotFoundError extends Error {
 
 export class WorkspaceFilesystemManager {
 	private readonly db: HostDb;
-	private readonly watcherManager: FsWatcherManager;
-	private readonly watchAttachGuard: WatchAttachGuard;
+	private readonly watcherManager = new FsWatcherManager({
+		listGitIgnoredDirs: (rootPath) => listGitIgnoredDirsForRefresh(rootPath),
+		useDefaultIgnores: false,
+	});
+	private readonly watchAttachGuard = new WatchAttachGuard(this.watcherManager);
 	private readonly serviceCache = new Map<string, FsHostService>();
 
 	constructor(options: WorkspaceFilesystemManagerOptions) {
 		this.db = options.db;
-		this.watcherManager = new FsWatcherManager({
-			listGitIgnoredDirs: options.listGitIgnoredDirs ?? listGitIgnoredDirs, // (GIT-WATCH-ATTACH-TASK)
-			useDefaultIgnores: false,
-		});
-		this.watchAttachGuard = new WatchAttachGuard(this.watcherManager);
 	}
 
 	resolveWorkspaceRoot(workspaceId: string): string {

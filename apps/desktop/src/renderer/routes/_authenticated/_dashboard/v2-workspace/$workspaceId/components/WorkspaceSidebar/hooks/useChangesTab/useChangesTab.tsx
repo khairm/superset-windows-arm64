@@ -10,6 +10,10 @@ import { useCallback, useMemo, useState } from "react";
 import { LuGitCompareArrows } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
+import {
+	DiffTooLargePlaceholder,
+	MAX_RENDERABLE_CHANGED_LINES,
+} from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import { useChangeset } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { useOpenInExternalEditor } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useOpenInExternalEditor";
 import { useSidebarDiffRef } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useSidebarDiffRef";
@@ -18,10 +22,6 @@ import { useCollections } from "renderer/routes/_authenticated/providers/Collect
 import type { ChangesFilter } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import { toAbsoluteWorkspacePath } from "shared/absolute-paths";
 import type { SidebarTabDefinition } from "../../types";
-import {
-	DiffTooLargePlaceholder,
-	MAX_RENDERABLE_CHANGED_LINES,
-} from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import { ChangesTabContent } from "./components/ChangesTabContent";
 
 export interface SelectedDiffTarget {
@@ -147,28 +147,15 @@ export function useChangesTab({
 		{
 			enabled: isGitRepo && baseBranchQuery.isFetched,
 			staleTime: Number.POSITIVE_INFINITY,
-			refetchOnWindowFocus: false,
 		},
 	);
 
-	// (BRANCH-PICKER-ON-OPEN) The list loads when the picker first opens and
-	// refetches on later opens; mounting the tab costs nothing.
-	const [branchPickerOpened, setBranchPickerOpened] = useState(false);
+	// (BRANCH-PICKER-ON-OPEN) The list loads each time the picker opens;
+	// mounting the tab costs nothing.
+	const [branchPickerOpen, setBranchPickerOpen] = useState(false);
 	const branches = workspaceTrpc.git.listBranches.useQuery(
 		{ workspaceId },
-		{
-			enabled: isGitRepo && branchPickerOpened,
-			refetchOnWindowFocus: false,
-		},
-	);
-	const refetchBranches = branches.refetch;
-	const handleBranchPickerOpenChange = useCallback(
-		(open: boolean) => {
-			if (!open) return;
-			if (branchPickerOpened) void refetchBranches();
-			else setBranchPickerOpened(true);
-		},
-		[branchPickerOpened, refetchBranches],
+		{ enabled: isGitRepo && branchPickerOpen, staleTime: 0 },
 	);
 
 	const renameBranchMutation = workspaceTrpc.git.renameBranch.useMutation();
@@ -311,7 +298,7 @@ export function useChangesTab({
 			onFilterChange={setFilter}
 			onViewModeChange={setViewMode}
 			onBaseBranchChange={setBaseBranch}
-			onBranchPickerOpenChange={handleBranchPickerOpenChange}
+			onBranchPickerOpenChange={setBranchPickerOpen}
 			onRenameBranch={handleRenameBranch}
 			canRenameBranch={canRenameBranch}
 		/>

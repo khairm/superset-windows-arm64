@@ -1,7 +1,4 @@
-import { execFile } from "node:child_process";
 import { existsSync, type FSWatcher, watch } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { promisify } from "node:util";
 import type { FsWatchEvent } from "@superset/workspace-fs/host";
 import { and, eq, isNull } from "drizzle-orm";
 import type { HostDb } from "../db/index.ts";
@@ -9,8 +6,7 @@ import { workspaces } from "../db/schema.ts";
 import type { WorkspaceFilesystemManager } from "../runtime/filesystem/index.ts";
 import { listGitIgnoredDirsForRefresh } from "../runtime/git/ignored-dirs-refresh.ts";
 import { invalidateIsGitRepo } from "../runtime/git/non-git.ts";
-
-const execFileAsync = promisify(execFile);
+import { gitDirTask } from "../workers/tasks/git-reads.ts";
 
 const RESCAN_INTERVAL_MS = 30_000;
 
@@ -20,19 +16,8 @@ const GIT_DIR_MAX_TRIES = 3;
 export type ResolveGitDir = (worktreePath: string) => Promise<string | null>;
 
 /** Today's inline lookup; any failure is a non-git folder. */
-export const resolveGitDirInline: ResolveGitDir = async (worktreePath) => {
-	try {
-		const { stdout } = await execFileAsync("git", ["rev-parse", "--git-dir"], {
-			cwd: worktreePath,
-		});
-		const raw = stdout.trim();
-		// Use `isAbsolute`/`join` so a Windows drive path (C:\...) isn't
-		// mistaken for relative by a POSIX `startsWith("/")` check.
-		return isAbsolute(raw) ? raw : join(worktreePath, raw);
-	} catch {
-		return null;
-	}
-};
+export const resolveGitDirInline: ResolveGitDir = (worktreePath) =>
+	gitDirTask.handler({ worktreePath }).then((result) => result.gitDir);
 
 /** Debounce window for batches with worktree edits — flush fast, latency matters. */
 export const DEBOUNCE_MS = 300;
@@ -382,11 +367,7 @@ export class GitWatcher {
 		if (this.closed) return;
 		const count = this.interest.get(workspaceId) ?? 0;
 		this.interest.set(workspaceId, count + 1);
-		if (
-			count === 0 &&
-			!this.watched.has(workspaceId) &&
-			!this.attaching.has(workspaceId)
-		) {
+		if (count === 0 && !this.watched.has(workspaceId)) {
 			void this.attachFromDb(workspaceId);
 		}
 	}
@@ -781,12 +762,14 @@ export class GitWatcher {
 		}
 
 		// Retry attaching for still-interested workspaces that never attached.
+		const retries: Promise<void>[] = [];
 		for (const id of this.interest.keys()) {
-			if (this.watched.has(id) || this.attaching.has(id)) continue;
+			if (this.watched.has(id)) continue;
 			const worktreePath = worktreePathById.get(id);
 			if (!worktreePath) continue;
-			await this.attachWatcher(id, worktreePath);
+			retries.push(this.attachWatcher(id, worktreePath));
 		}
+		await Promise.all(retries);
 	}
 
 	private async attachWatcher(
@@ -800,26 +783,6 @@ export class GitWatcher {
 		} finally {
 			this.attaching.delete(workspaceId);
 		}
-	}
-
-	/**
-	 * (GIT-WATCH-PUBLISH) The one commit point for every attach outcome.
-	 * Interest can drop to zero while an attach is in flight; publishing anyway
-	 * would leak a live watcher nothing ever stops (#6729).
-	 */
-	private publish(entry: WatchedWorkspace): boolean {
-		const { workspaceId } = entry;
-		if (
-			this.closed ||
-			this.watched.has(workspaceId) ||
-			!this.interest.has(workspaceId)
-		) {
-			entry.watcher?.close();
-			entry.disposeWorktreeWatch();
-			return false;
-		}
-		this.watched.set(workspaceId, entry);
-		return true;
 	}
 
 	private async attachWatcherOnce(
@@ -855,6 +818,11 @@ export class GitWatcher {
 			gitDir = null;
 		}
 
+		// (GIT-WATCH-PUBLISH) The one interest check for every attach outcome:
+		// interest can drop to zero while the lookup above is in flight, and
+		// publishing anyway would leak a live watcher nothing ever stops
+		// (#6729). Nothing awaits from here to `watched.set`, which the
+		// sync-failure path in startWorktreeWatch also relies on.
 		if (
 			this.closed ||
 			this.watched.has(workspaceId) ||
@@ -866,8 +834,6 @@ export class GitWatcher {
 		// in the .git watcher's error handler closure. This avoids a race where
 		// the error handler could fire before `this.watched.set(...)` runs.
 		// This watch is git-independent and always runs (incl. non-git folders).
-		// No await from here to publish: the sync-failure path in
-		// startWorktreeWatch must see the published entry.
 		const disposeWorktreeWatch = this.startWorktreeWatch(
 			workspaceId,
 			worktreePath,
@@ -882,18 +848,15 @@ export class GitWatcher {
 		);
 
 		if (gitDir === null) {
-			if (
-				this.publish({
-					workspaceId,
-					worktreePath,
-					gitDir: null,
-					watcher: null,
-					disposeWorktreeWatch,
-				})
-			) {
-				// Lets the page's live is-git-repo query see a de-init on open.
-				this.markGitDirDirty(workspaceId); // (GIT-WATCH-PUBLISH)
-			}
+			this.watched.set(workspaceId, {
+				workspaceId,
+				worktreePath,
+				gitDir: null,
+				watcher: null,
+				disposeWorktreeWatch,
+			});
+			// Lets the page's live is-git-repo query see a de-init on open.
+			this.markGitDirDirty(workspaceId); // (GIT-WATCH-PUBLISH)
 			return;
 		}
 
@@ -917,7 +880,7 @@ export class GitWatcher {
 		} catch {
 			// fs.watch failed (e.g. directory doesn't exist). The worktree watch
 			// is still valid, so keep that entry rather than dropping both.
-			this.publish({
+			this.watched.set(workspaceId, {
 				workspaceId,
 				worktreePath,
 				gitDir,
@@ -938,16 +901,13 @@ export class GitWatcher {
 			this.stopWatching(workspaceId);
 		});
 
-		if (
-			!this.publish({
-				workspaceId,
-				worktreePath,
-				gitDir,
-				watcher,
-				disposeWorktreeWatch,
-			})
-		)
-			return;
+		this.watched.set(workspaceId, {
+			workspaceId,
+			worktreePath,
+			gitDir,
+			watcher,
+			disposeWorktreeWatch,
+		});
 		this.notifyWatchState(workspaceId, true);
 		this.refreshIgnoredDirs(workspaceId, worktreePath, true);
 

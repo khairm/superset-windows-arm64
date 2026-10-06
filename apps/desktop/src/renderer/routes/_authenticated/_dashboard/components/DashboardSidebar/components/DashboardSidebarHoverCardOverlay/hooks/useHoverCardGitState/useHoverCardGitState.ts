@@ -1,6 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import type { DiffStats } from "renderer/hooks/host-service/useDiffStats";
+import { useEffect, useRef, useState } from "react";
+import {
+	type DiffStats,
+	getDiffStatsQueryKey,
+	sumDiffStats,
+} from "renderer/hooks/host-service/useDiffStats";
 import { getIsGitRepoQueryKey } from "renderer/hooks/host-service/useIsGitRepo";
 import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -9,8 +13,9 @@ const STABLE_HOVER_MS = 250;
 
 /**
  * (HOVER-CARD-COLD-STATS) Hover reads the host's cold-cached counts and a
- * disk-only git probe once the pointer rests on a row. It never holds a git
- * watch, so sweeping the sidebar attaches nothing.
+ * disk-only git probe. It never holds a git watch, so sweeping the sidebar
+ * attaches nothing. Row switches inside an open card wait for the pointer to
+ * rest; a freshly opened card does not.
  */
 export function useHoverCardGitState(
 	workspaceId: string | null,
@@ -18,10 +23,16 @@ export function useHoverCardGitState(
 	const hostUrl = useWorkspaceHostUrl(workspaceId);
 	const queryClient = useQueryClient();
 	const [stableId, setStableId] = useState<string | null>(null);
+	const previousIdRef = useRef<string | null>(null);
 
 	useEffect(() => {
+		const previousId = previousIdRef.current;
+		previousIdRef.current = workspaceId;
+		if (!workspaceId || previousId === null) {
+			setStableId(workspaceId);
+			return;
+		}
 		setStableId(null);
-		if (!workspaceId) return;
 		const timer = setTimeout(() => setStableId(workspaceId), STABLE_HOVER_MS);
 		return () => clearTimeout(timer);
 	}, [workspaceId]);
@@ -33,6 +44,21 @@ export function useHoverCardGitState(
 		enabled: Boolean(restingId) && Boolean(hostUrl),
 		queryFn: async () => {
 			if (!hostUrl || !restingId) return null;
+			// The active row's watched status, kept fresh by its git:changed
+			// subscription, answers without a request.
+			const live = queryClient
+				.getQueryCache()
+				.find<Parameters<typeof sumDiffStats>[0] | null>({
+					queryKey: getDiffStatsQueryKey(hostUrl, restingId),
+					exact: true,
+				});
+			if (
+				live?.state.data &&
+				live.getObserversCount() > 0 &&
+				!live.state.isInvalidated
+			) {
+				return sumDiffStats(live.state.data);
+			}
 			const { workspaces } = await getHostServiceClientByUrl(
 				hostUrl,
 			).git.getDiffStatsByWorkspaces.query({ workspaceIds: [restingId] });

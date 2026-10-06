@@ -2,11 +2,13 @@
 import { execFile } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import { GIT_PARSE_ENV } from "../../runtime/git/git.ts";
 import { listGitIgnoredDirsOrThrow } from "../../runtime/git/ignored-dirs.ts";
 import { createUserSimpleGit } from "../../runtime/git/simple-git.ts";
 import type { Commit } from "../../trpc/router/git/types.ts";
 import { resolveBaseComparison } from "../../trpc/router/git/utils/git-helpers.ts";
 import { defineWorkerTask } from "../define-worker-task.ts";
+import type { GitTaskEnv } from "./git.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -29,10 +31,7 @@ export const gitDirTask = defineWorkerTask<
 			const { stdout } = await execFileAsync(
 				"git",
 				["rev-parse", "--git-dir"],
-				{
-					cwd: worktreePath,
-					env: { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" },
-				},
+				{ cwd: worktreePath, env: { ...process.env, ...GIT_PARSE_ENV } },
 			);
 			const raw = stdout.trim();
 			return { gitDir: isAbsolute(raw) ? raw : join(worktreePath, raw) };
@@ -47,7 +46,7 @@ export const gitListCommitsTask = defineWorkerTask<
 	{
 		worktreePath: string;
 		baseBranch?: string;
-		gitEnv: Record<string, string>;
+		gitEnv: GitTaskEnv;
 	},
 	Commit[]
 >({
