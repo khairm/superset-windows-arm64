@@ -101,3 +101,16 @@ test("unmount cancels the frame, the after-paint task and the fallback", () => {
 	expect(cleared).toEqual(expect.arrayContaining(pending));
 	expect(timers.size).toBe(0);
 });
+
+test("a different workspace takes its own decision", () => {
+	const { result, rerender } = renderHook(
+		({ workspaceId, gated }) => useInitialOpenGate(workspaceId, gated),
+		{ initialProps: { workspaceId: "ws-a", gated: false } },
+	);
+	expect(result.current).toBe(true);
+	rerender({ workspaceId: "ws-b", gated: true });
+	expect(result.current).toBe(false);
+	act(runFrames);
+	act(() => advance(0));
+	expect(result.current).toBe(true);
+});

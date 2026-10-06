@@ -81,11 +81,21 @@ function rowsReady(container: HTMLElement) {
 }
 
 test("a cached re-open of a large list holds its rows until after the first frame", async () => {
-	const { container, unmount } = render(<ChangesTabContent {...props()} />);
-	expect(rowsReady(container)).toBe("false");
-	await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
-	expect(rowsReady(container)).toBe("true");
-	unmount();
+	const frames: FrameRequestCallback[] = [];
+	const realFrame = globalThis.requestAnimationFrame;
+	globalThis.requestAnimationFrame = (callback) => frames.push(callback);
+	try {
+		const { container, unmount } = render(<ChangesTabContent {...props()} />);
+		expect(rowsReady(container)).toBe("false");
+		await act(async () => {
+			for (const frame of frames.splice(0)) frame(0);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(rowsReady(container)).toBe("true");
+		unmount();
+	} finally {
+		globalThis.requestAnimationFrame = realFrame;
+	}
 });
 
 test("a cold open shows its rows as soon as the data arrives", () => {
