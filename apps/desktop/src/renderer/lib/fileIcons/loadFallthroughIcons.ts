@@ -159,6 +159,7 @@ interface FallthroughIconConfig {
 }
 
 let cached: Promise<FallthroughIconConfig> | null = null;
+let loaded: FallthroughIconConfig | null = null;
 
 /**
  * Layer our richer Material-icon coverage on top of `@pierre/trees`' built-in
@@ -166,16 +167,26 @@ let cached: Promise<FallthroughIconConfig> | null = null;
  * dirs, etc) and a saner generic-file fallback. Result is memoized — the first
  * tree mount pays the sprite-fetch cost, later mounts are a no-op.
  *
- * Apply the result via `model.setIcons({ set, colored, ...result })`.
+ * Apply the result via `model.setIcons({ set, colored, ...result })`, or pass
+ * `getLoadedFallthroughIcons()` into a new model's options.
  */
 export function loadFallthroughIcons(): Promise<FallthroughIconConfig> {
 	if (cached) return cached;
-	cached = doLoad().catch((error) => {
-		// Reset on failure so a future tree mount can retry.
-		cached = null;
-		throw error;
-	});
+	cached = doLoad()
+		.then((config) => {
+			loaded = config;
+			return config;
+		})
+		.catch((error) => {
+			// Reset on failure so a future tree mount can retry.
+			cached = null;
+			throw error;
+		});
 	return cached;
+}
+
+export function getLoadedFallthroughIcons(): FallthroughIconConfig | null {
+	return loaded;
 }
 
 async function doLoad(): Promise<FallthroughIconConfig> {

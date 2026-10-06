@@ -3,6 +3,22 @@ import type { ChangesetFile } from "renderer/routes/_authenticated/_dashboard/v2
 import { filterChangesetFiles } from "./filterChangesetFiles";
 import { shouldShowChangesLoading } from "./shouldShowChangesLoading";
 
+// (WS-OPEN-RENDER) Process-isolated: the fixture mocks ChangesFileList and ChangesToolbar.
+test("only a cached re-open of a large folder-view list holds its rows back", () => {
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"test",
+			`${import.meta.dir}/fixtures/rows-gate.tsx`,
+		],
+		env: { ...process.env, NODE_ENV: "test" },
+	});
+	expect(
+		result.exitCode,
+		result.stdout.toString() + result.stderr.toString(),
+	).toBe(0);
+});
+
 describe("shouldShowChangesLoading", () => {
 	test("shows loading before the first exact-workspace snapshot arrives", () => {
 		expect(shouldShowChangesLoading({ data: undefined, isLoading: true })).toBe(

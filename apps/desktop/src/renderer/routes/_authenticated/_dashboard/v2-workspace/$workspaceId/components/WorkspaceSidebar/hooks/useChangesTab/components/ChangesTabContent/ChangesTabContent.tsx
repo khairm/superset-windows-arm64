@@ -13,9 +13,12 @@ import { ChangesFileList } from "../ChangesFileList";
 import { ChangesToolbar } from "../ChangesToolbar";
 import { ChangesSearchInput } from "./components/ChangesSearchInput";
 import { filterChangesetFiles } from "./filterChangesetFiles";
+import { useInitialOpenGate } from "./hooks/useInitialOpenGate";
 import { shouldShowChangesLoading } from "./shouldShowChangesLoading";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
+
+const ROW_GATE = 30;
 
 interface ChangesTabContentProps {
 	workspaceId: string;
@@ -70,6 +73,12 @@ export const ChangesTabContent = memo(function ChangesTabContent({
 	onRenameBranch,
 	canRenameBranch,
 }: ChangesTabContentProps) {
+	// (WS-OPEN-RENDER) Decided on this mount's first render, before the loading
+	// return: only a cached re-open of a large folder-view list paints first.
+	const rowsReady = useInitialOpenGate(
+		workspaceId,
+		viewMode === "folders" && status.data != null && files.length > ROW_GATE,
+	);
 	const [foldSignal, setFoldSignal] = useState<FoldSignal>({
 		epoch: 0,
 		action: "expand",
@@ -175,6 +184,7 @@ export const ChangesTabContent = memo(function ChangesTabContent({
 				workspaceId={workspaceId}
 				isLoading={isLoading}
 				viewMode={viewMode}
+				rowsReady={rowsReady}
 				worktreePath={worktreePath}
 				selectedFilePath={selectedFilePath}
 				selectedChangeKey={selectedChangeKey}

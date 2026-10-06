@@ -2,26 +2,39 @@ import { msg } from "@lingui/core/macro";
 import { i18n } from "@superset/i18n";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+	ChangesSidebarFileIntent,
+	LinkTier,
+	ModifierEvent,
+} from "renderer/lib/clickPolicy";
 import {
 	type ChangesetFile,
 	getChangesetFileKey,
 } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { toRelativeWorkspacePath } from "shared/absolute-paths";
 import type { FoldSignal } from "../../ChangesFileList";
+import { useStagingMutations } from "../../hooks/useStagingMutations";
 import { FileRow } from "../FileRow";
 import { FolderHeader } from "./components/FolderHeader";
+import { useFileDiscard } from "./hooks/useFileDiscard";
 
 const ROOT_FOLDER_KEY = "";
 const ROOT_FOLDER_LABEL = msg({
 	message: "./",
 });
-// FolderHeader and FileRow are single-line rows (`py-1`, `text-xs`); the
-// virtualizer re-measures each one, so this is only the pre-measure estimate.
-const ESTIMATED_ROW_HEIGHT = 26;
+// (WS-OPEN-RENDER) FolderHeader and FileRow render 24 px (`py-1` plus a 16 px
+// `text-xs` line). An exact estimate means measuring never resizes a row, so
+// the window doesn't re-render and mount more rows on open.
+const ESTIMATED_ROW_HEIGHT = 24;
 const OVERSCAN = 8;
 
 interface ChangesFoldersViewProps {
 	files: ChangesetFile[];
+	/** False while the first open defers rows past the first paint. */
+	rowsReady: boolean;
+	getIntent: (event: ModifierEvent) => ChangesSidebarFileIntent | null;
+	tierForIntent: (intent: ChangesSidebarFileIntent) => LinkTier | null;
+	clickHint: string;
 	workspaceId: string;
 	worktreePath?: string;
 	/** Absolute path of the diff pane's open file — highlights its row. */
@@ -70,6 +83,10 @@ type Row =
  */
 export const ChangesFoldersView = memo(function ChangesFoldersView({
 	files,
+	rowsReady,
+	getIntent,
+	tierForIntent,
+	clickHint,
 	workspaceId,
 	worktreePath,
 	selectedFilePath,
@@ -85,6 +102,8 @@ export const ChangesFoldersView = memo(function ChangesFoldersView({
 			? toRelativeWorkspacePath(worktreePath, selectedFilePath)
 			: selectedFilePath;
 	const [closedFolders, setClosedFolders] = useState<Set<string>>(new Set());
+	const { stageFile, unstageFile } = useStagingMutations(workspaceId);
+	const { requestDiscard, discardDialog } = useFileDiscard(workspaceId);
 
 	const toggleFolder = useCallback((folderPath: string) => {
 		setClosedFolders((prev) => {
@@ -155,50 +174,59 @@ export const ChangesFoldersView = memo(function ChangesFoldersView({
 				className="relative w-full"
 				style={{ height: virtualizer.getTotalSize() }}
 			>
-				{virtualizer.getVirtualItems().map((virtualRow) => {
-					const row = rows[virtualRow.index];
-					if (!row) return null;
-					return (
-						<div
-							key={virtualRow.key}
-							data-index={virtualRow.index}
-							ref={virtualizer.measureElement}
-							className="absolute left-0 w-full"
-							style={{
-								top: virtualRow.start - (virtualizer.options.scrollMargin ?? 0),
-							}}
-						>
-							{row.kind === "folder" ? (
-								<FolderHeader
-									label={
-										row.group.folderPath === ROOT_FOLDER_KEY
-											? i18n._(ROOT_FOLDER_LABEL)
-											: row.group.folderPath
-									}
-									fileCount={row.group.files.length}
-									isOpen={row.isOpen}
-									onToggle={() => toggleFolder(row.group.folderPath)}
-								/>
-							) : (
-								<FileRow
-									file={row.file}
-									workspaceId={workspaceId}
-									worktreePath={worktreePath}
-									hideDir
-									isSelected={
-										row.file.path === selectedRelPath &&
-										(selectedChangeKey == null ||
-											getChangesetFileKey(row.file) === selectedChangeKey)
-									}
-									onSelect={onSelectFile}
-									onOpenFile={onOpenFile}
-									onOpenInEditor={onOpenInEditor}
-								/>
-							)}
-						</div>
-					);
-				})}
+				{rowsReady &&
+					virtualizer.getVirtualItems().map((virtualRow) => {
+						const row = rows[virtualRow.index];
+						if (!row) return null;
+						return (
+							<div
+								key={virtualRow.key}
+								data-index={virtualRow.index}
+								ref={virtualizer.measureElement}
+								className="absolute left-0 w-full"
+								style={{
+									top:
+										virtualRow.start - (virtualizer.options.scrollMargin ?? 0),
+								}}
+							>
+								{row.kind === "folder" ? (
+									<FolderHeader
+										label={
+											row.group.folderPath === ROOT_FOLDER_KEY
+												? i18n._(ROOT_FOLDER_LABEL)
+												: row.group.folderPath
+										}
+										fileCount={row.group.files.length}
+										folderPath={row.group.folderPath}
+										isOpen={row.isOpen}
+										onToggle={toggleFolder}
+									/>
+								) : (
+									<FileRow
+										file={row.file}
+										worktreePath={worktreePath}
+										hideDir
+										isSelected={
+											row.file.path === selectedRelPath &&
+											(selectedChangeKey == null ||
+												getChangesetFileKey(row.file) === selectedChangeKey)
+										}
+										getIntent={getIntent}
+										tierForIntent={tierForIntent}
+										clickHint={clickHint}
+										onSelect={onSelectFile}
+										onOpenFile={onOpenFile}
+										onOpenInEditor={onOpenInEditor}
+										onStageFile={stageFile}
+										onUnstageFile={unstageFile}
+										onRequestDiscard={requestDiscard}
+									/>
+								)}
+							</div>
+						);
+					})}
 			</div>
+			{discardDialog}
 		</div>
 	);
 });

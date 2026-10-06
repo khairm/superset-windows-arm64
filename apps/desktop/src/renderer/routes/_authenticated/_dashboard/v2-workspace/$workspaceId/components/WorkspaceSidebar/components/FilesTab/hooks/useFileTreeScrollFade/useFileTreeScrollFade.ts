@@ -34,6 +34,17 @@ export function useFileTreeScrollFade<T extends HTMLElement>(enabled: boolean) {
 			scroller.style.setProperty("-webkit-mask-image", mask);
 		};
 
+		// (WS-OPEN-RENDER) Every shadow-root mutation would otherwise force a
+		// layout before the first paint; one read per frame is enough.
+		let updateRaf = 0;
+		const scheduleUpdate = () => {
+			if (updateRaf) return;
+			updateRaf = requestAnimationFrame(() => {
+				updateRaf = 0;
+				update();
+			});
+		};
+
 		const resizeObserver = new ResizeObserver(update);
 
 		const attach = (next: HTMLElement | null) => {
@@ -46,7 +57,6 @@ export function useFileTreeScrollFade<T extends HTMLElement>(enabled: boolean) {
 			if (scroller) {
 				scroller.addEventListener("scroll", update, { passive: true });
 				resizeObserver.observe(scroller);
-				update();
 			}
 		};
 
@@ -56,7 +66,7 @@ export function useFileTreeScrollFade<T extends HTMLElement>(enabled: boolean) {
 			)?.shadowRoot;
 			if (!shadowRoot) return;
 			attach(shadowRoot.querySelector<HTMLElement>(SCROLLER_SELECTOR));
-			update();
+			scheduleUpdate();
 		});
 
 		// The shadow root attaches on connect and the scroller mounts (and can
@@ -73,12 +83,14 @@ export function useFileTreeScrollFade<T extends HTMLElement>(enabled: boolean) {
 				return;
 			}
 			attach(shadowRoot.querySelector<HTMLElement>(SCROLLER_SELECTOR));
+			scheduleUpdate();
 			mutationObserver.observe(shadowRoot, { childList: true, subtree: true });
 		};
 		init();
 
 		return () => {
 			cancelAnimationFrame(raf);
+			cancelAnimationFrame(updateRaf);
 			mutationObserver.disconnect();
 			resizeObserver.disconnect();
 			scroller?.removeEventListener("scroll", update);

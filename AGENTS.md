@@ -292,6 +292,9 @@ In brief:
   hidden, so away = no focus, hidden, or main's lock state
   (`(PRESENCE-SCREEN-LOCK)`, unknown = away). Waived: screen-off without lock
   and non-activating topmost covers count as present.
+- Decide the Changes-row paint gate in `ChangesTabContent`, before its
+  loading return (`(WS-OPEN-RENDER)`): `ChangesFileList` mounts only once git
+  status exists, so a gate there also delays cold opens.
 
 ## Accepted limitations
 

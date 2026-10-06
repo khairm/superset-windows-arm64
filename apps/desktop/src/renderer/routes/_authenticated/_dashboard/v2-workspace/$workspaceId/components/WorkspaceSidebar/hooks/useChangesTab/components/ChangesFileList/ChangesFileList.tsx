@@ -4,6 +4,7 @@ import { Trans } from "@lingui/react/macro";
 import { i18n } from "@superset/i18n";
 import { OverflowFadeContainer } from "@superset/ui/overflow-fade-container";
 import { memo, useMemo } from "react";
+import { useChangesSidebarFilePolicy } from "renderer/lib/clickPolicy";
 import type { ChangesetFile } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import type { ChangesViewMode } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import { ChangesFoldersView } from "./components/ChangesFoldersView";
@@ -23,6 +24,8 @@ interface ChangesFileListProps {
 	workspaceId: string;
 	isLoading?: boolean;
 	viewMode: ChangesViewMode;
+	/** False while a large cached re-open holds its folder-view rows back. */
+	rowsReady: boolean;
 	worktreePath?: string;
 	selectedFilePath?: string;
 	selectedChangeKey?: string;
@@ -64,6 +67,7 @@ export const ChangesFileList = memo(function ChangesFileList({
 	workspaceId,
 	isLoading,
 	viewMode,
+	rowsReady,
 	worktreePath,
 	selectedFilePath,
 	selectedChangeKey,
@@ -72,6 +76,8 @@ export const ChangesFileList = memo(function ChangesFileList({
 	onOpenFile,
 	onOpenInEditor,
 }: ChangesFileListProps) {
+	// (WS-OPEN-RENDER) One click policy per list; rows take its stable members.
+	const { getIntent, tierForIntent, hint } = useChangesSidebarFilePolicy();
 	const grouped = useMemo(() => {
 		const groups: Record<GroupKey, ChangesetFile[]> = {
 			unstaged: [],
@@ -151,6 +157,10 @@ export const ChangesFileList = memo(function ChangesFileList({
 						) : (
 							<ChangesFoldersView
 								files={groupFiles}
+								rowsReady={rowsReady}
+								getIntent={getIntent}
+								tierForIntent={tierForIntent}
+								clickHint={hint}
 								workspaceId={workspaceId}
 								worktreePath={worktreePath}
 								selectedFilePath={selectedFilePath}

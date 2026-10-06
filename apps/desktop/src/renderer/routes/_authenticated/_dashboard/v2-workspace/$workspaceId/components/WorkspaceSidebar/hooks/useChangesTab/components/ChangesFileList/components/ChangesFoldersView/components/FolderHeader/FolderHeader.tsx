@@ -1,11 +1,13 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
+import { memo } from "react";
 
 interface FolderHeaderProps {
 	/** Display label — a folder path like "src/components", or "Root Path". */
 	label: string;
+	folderPath: string;
 	fileCount: number;
 	isOpen: boolean;
-	onToggle: () => void;
+	onToggle: (folderPath: string) => void;
 }
 
 /**
@@ -16,8 +18,9 @@ interface FolderHeaderProps {
  * native `title` attribute doesn't render reliably in our Electron renderer —
  * `FileRow` uses the same component for its hover hint).
  */
-export function FolderHeader({
+export const FolderHeader = memo(function FolderHeader({
 	label,
+	folderPath,
 	fileCount,
 	isOpen,
 	onToggle,
@@ -27,7 +30,7 @@ export function FolderHeader({
 			<TooltipTrigger asChild>
 				<button
 					type="button"
-					onClick={onToggle}
+					onClick={() => onToggle(folderPath)}
 					aria-expanded={isOpen}
 					className="flex w-full items-center gap-1.5 py-1 pr-3 pl-3 text-left text-xs text-muted-foreground hover:bg-accent/30"
 				>
@@ -43,4 +46,4 @@ export function FolderHeader({
 			<TooltipContent side="right">{label}</TooltipContent>
 		</Tooltip>
 	);
-}
+});
