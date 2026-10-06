@@ -1,1 +1,1 @@
-export { useIsGitRepo } from "./useIsGitRepo";
+export { getIsGitRepoQueryKey, useIsGitRepo } from "./useIsGitRepo";
