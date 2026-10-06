@@ -57,7 +57,6 @@ export function useFileTreeScrollFade<T extends HTMLElement>(enabled: boolean) {
 			if (scroller) {
 				scroller.addEventListener("scroll", update, { passive: true });
 				resizeObserver.observe(scroller);
-				scheduleUpdate();
 			}
 		};
 
@@ -84,6 +83,7 @@ export function useFileTreeScrollFade<T extends HTMLElement>(enabled: boolean) {
 				return;
 			}
 			attach(shadowRoot.querySelector<HTMLElement>(SCROLLER_SELECTOR));
+			scheduleUpdate();
 			mutationObserver.observe(shadowRoot, { childList: true, subtree: true });
 		};
 		init();

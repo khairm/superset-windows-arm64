@@ -64,10 +64,8 @@ interface FileRowProps {
 	/** Highlight as the diff pane's currently open file. */
 	isSelected?: boolean;
 	getIntent: (event: ModifierEvent) => ChangesSidebarFileIntent | null;
+	tierForIntent: (intent: ChangesSidebarFileIntent) => LinkTier | null;
 	clickHint: string;
-	diffNewTabTier: LinkTier | null;
-	fileTier: LinkTier | null;
-	externalTier: LinkTier | null;
 	onSelect?: (path: string, openInNewTab?: boolean, changeKey?: string) => void;
 	onOpenFile?: (absolutePath: string, openInNewTab?: boolean) => void;
 	onOpenInEditor?: (path: string) => void;
@@ -76,18 +74,16 @@ interface FileRowProps {
 	onRequestDiscard: (file: ChangesetFile) => void;
 }
 
-// (WS-OPEN-RENDER) Policy, mutations and the discard dialog live in the list,
-// so a row mounts no live query or mutation observer of its own.
+// (WS-OPEN-RENDER) Policy, mutations and the discard dialog live above the
+// row, so a row mounts no live query or mutation observer of its own.
 export const FileRow = memo(function FileRow({
 	file,
 	worktreePath,
 	hideDir,
 	isSelected,
 	getIntent,
+	tierForIntent,
 	clickHint,
-	diffNewTabTier,
-	fileTier,
-	externalTier,
 	onSelect,
 	onOpenFile,
 	onOpenInEditor,
@@ -110,6 +106,10 @@ export const FileRow = memo(function FileRow({
 	const canUnstage = file.source.kind === "staged";
 	const canDiscard = canStage;
 	const isDeleteAction = file.status === "untracked" || file.status === "added";
+
+	const diffNewTabTier = tierForIntent("diffNewTab");
+	const fileTier = tierForIntent("file");
+	const externalTier = tierForIntent("external");
 	const fileDrag = useFileDrag({ absolutePath });
 
 	const rowButton = (

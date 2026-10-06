@@ -4,6 +4,7 @@ import { Trans } from "@lingui/react/macro";
 import { i18n } from "@superset/i18n";
 import { OverflowFadeContainer } from "@superset/ui/overflow-fade-container";
 import { memo, useMemo } from "react";
+import { useChangesSidebarFilePolicy } from "renderer/lib/clickPolicy";
 import type { ChangesetFile } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import type { ChangesViewMode } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import { ChangesFoldersView } from "./components/ChangesFoldersView";
@@ -77,7 +78,11 @@ export const ChangesFileList = memo(function ChangesFileList({
 }: ChangesFileListProps) {
 	// (WS-OPEN-RENDER) Rows of a large cached changeset mount after the
 	// workspace paints; headers and counts render at once.
-	const rowsReady = useInitialOpenGate(workspaceId, files.length > ROW_GATE);
+	const rowsReady = useInitialOpenGate(
+		workspaceId,
+		viewMode === "folders" && files.length > ROW_GATE,
+	);
+	const { getIntent, tierForIntent, hint } = useChangesSidebarFilePolicy();
 	const grouped = useMemo(() => {
 		const groups: Record<GroupKey, ChangesetFile[]> = {
 			unstaged: [],
@@ -158,6 +163,9 @@ export const ChangesFileList = memo(function ChangesFileList({
 							<ChangesFoldersView
 								files={groupFiles}
 								rowsReady={rowsReady}
+								getIntent={getIntent}
+								tierForIntent={tierForIntent}
+								clickHint={hint}
 								workspaceId={workspaceId}
 								worktreePath={worktreePath}
 								selectedFilePath={selectedFilePath}

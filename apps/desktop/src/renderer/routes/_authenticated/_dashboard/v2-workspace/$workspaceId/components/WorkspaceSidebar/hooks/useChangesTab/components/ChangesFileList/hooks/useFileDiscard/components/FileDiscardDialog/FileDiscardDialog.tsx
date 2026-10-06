@@ -1,25 +1,28 @@
 import { useLingui } from "@lingui/react/macro";
+import { getBaseName } from "renderer/lib/pathBasename";
 import { DiscardConfirmDialog } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiscardConfirmDialog";
 import type { ChangesetFile } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 
 interface FileDiscardDialogProps {
 	file: ChangesetFile;
-	onCancel: () => void;
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
 	onConfirm: () => void;
 }
 
 export function FileDiscardDialog({
 	file,
-	onCancel,
+	open,
+	onOpenChange,
 	onConfirm,
 }: FileDiscardDialogProps) {
 	const { t } = useLingui();
-	const basename = file.path.slice(file.path.lastIndexOf("/") + 1);
+	const basename = getBaseName(file.path);
 	const isDeleteAction = file.status === "untracked" || file.status === "added";
 	return (
 		<DiscardConfirmDialog
-			open
-			onOpenChange={(open) => !open && onCancel()}
+			open={open}
+			onOpenChange={onOpenChange}
 			title={
 				isDeleteAction
 					? t({
