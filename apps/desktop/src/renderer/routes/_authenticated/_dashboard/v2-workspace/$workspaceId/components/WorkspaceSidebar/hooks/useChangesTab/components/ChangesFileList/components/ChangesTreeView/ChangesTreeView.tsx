@@ -21,7 +21,10 @@ import {
 	useChangesSidebarFilePolicy,
 	usePierreChangesSidebarRowClickPolicy,
 } from "renderer/lib/clickPolicy";
-import { useFallthroughIcons } from "renderer/lib/fileIcons";
+import {
+	useFallthroughIcons,
+	useInitialTreeIcons,
+} from "renderer/lib/fileIcons";
 import {
 	buildCollisionSafeTreePaths,
 	createPierreTreeStyle,
@@ -154,13 +157,15 @@ export const ChangesTreeView = memo(function ChangesTreeView({
 		},
 	});
 
+	// (WS-OPEN-RENDER) Loaded icons go in at construction: no re-sync before paint.
+	const treeIcons = useInitialTreeIcons();
 	const { model } = usePierreFileTree({
 		paths: treePaths,
 		initialExpansion: "open",
 		search: false,
 		unsafeCSS: PIERRE_TREE_UNSAFE_CSS + HOVER_ACTIONS_ROW_CSS,
 		gitStatus: initialGitStatusEntriesRef.current,
-		icons: { set: "complete", colored: true },
+		icons: treeIcons,
 		itemHeight: ITEM_HEIGHT,
 		overscan: 20,
 		stickyFolders: true,
@@ -181,7 +186,7 @@ export const ChangesTreeView = memo(function ChangesTreeView({
 		model.setGitStatus(buildPierreGitStatus(files, toTreePath));
 	}, [model, files, toTreePath]);
 
-	useFallthroughIcons(model);
+	useFallthroughIcons(model, treeIcons);
 
 	// Size the host to Pierre's measured content height (it renders `height:
 	// 100%`, which collapses to 0 inside this section's auto-height container);

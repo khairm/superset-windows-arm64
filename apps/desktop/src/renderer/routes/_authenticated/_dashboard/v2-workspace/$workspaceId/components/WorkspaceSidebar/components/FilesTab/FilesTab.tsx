@@ -28,7 +28,10 @@ import {
 	usePierreRowClickPolicy,
 	useSidebarFilePolicy,
 } from "renderer/lib/clickPolicy";
-import { useFallthroughIcons } from "renderer/lib/fileIcons";
+import {
+	useFallthroughIcons,
+	useInitialTreeIcons,
+} from "renderer/lib/fileIcons";
 import {
 	createPierreTreeStyle,
 	PIERRE_TREE_UNSAFE_CSS,
@@ -123,6 +126,8 @@ export function FilesTab({
 		},
 	});
 
+	// (WS-OPEN-RENDER) Loaded icons go in at construction: no re-sync before paint.
+	const treeIcons = useInitialTreeIcons();
 	const { model } = usePierreFileTree({
 		paths: [],
 		initialExpansion: "closed",
@@ -133,7 +138,7 @@ export function FilesTab({
 			onError: (message) => handlersRef.current.onRenameError(message),
 		},
 		gitStatus: initialGitStatusEntriesRef.current,
-		icons: { set: "complete", colored: true },
+		icons: treeIcons,
 		itemHeight: FILE_EXPLORER_ROW_HEIGHT,
 		overscan: FILE_EXPLORER_OVERSCAN,
 		stickyFolders: true,
@@ -201,7 +206,7 @@ export function FilesTab({
 		);
 	}, [model, fileStatusByPath, folderStatusByPath, ignoredPaths]);
 
-	useFallthroughIcons(model);
+	useFallthroughIcons(model, treeIcons);
 
 	// Reflect external selection changes (e.g. tab switch) back into the model.
 	useEffect(() => {
