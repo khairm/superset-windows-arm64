@@ -545,6 +545,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		} catch (err) {
 			console.warn("[host-service] gitWatcher.close failed:", err);
 		}
+		// Before the pool: a native watcher recovery would otherwise run its
+		// prune listing on a respawned worker.
+		try {
+			await filesystem.close();
+		} catch (err) {
+			console.warn("[host-service] filesystem.close failed:", err);
+		}
 		// Retire the host-worker threads (and reap their in-flight git
 		// children) here rather than leaving them to process.exit(): exit joins
 		// every Worker, and a worker wedged in native code hangs that join

@@ -50,7 +50,7 @@ interface GitWatcherInternals {
 		dirs: ReadonlySet<string>;
 		rulesChanged: boolean;
 	};
-	watched: Map<string, { gitDir: string | null }>;
+	watched: Map<string, { gitDir: string | null; watcher: unknown }>;
 	attaching: Set<string>;
 	interest: Map<string, number>;
 	pendingBatches: Map<string, { hasGitDir: boolean }>;
@@ -628,17 +628,27 @@ describe("(GIT-WATCH-PUBLISH) GitWatcher attach bookkeeping", () => {
 		}
 	}
 
-	test.each([
-		["non-git", null],
-		["fs.watch failure", join(tmpdir(), "missing-git-dir-for-test")],
-	])("an abandoned %s attach publishes nothing", async (_name, gitDir) => {
+	test("an abandoned attach publishes nothing", async () => {
 		const watcher = createAttachWatcher();
 		watcher.watchWorkspace(WORKSPACE);
 		watcher.unwatchWorkspace(WORKSPACE);
-		await settle(gitDir, watcher);
+		await settle(null, watcher);
 
 		expect(internals(watcher).watched.size).toBe(0);
 		expect(streamsOpened).toBe(0);
+		watcher.close();
+	});
+
+	test("an fs.watch failure publishes the worktree watch alone", async () => {
+		const watcher = createAttachWatcher();
+		const gitDir = join(root, "missing-git-dir");
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(gitDir, watcher);
+
+		const entry = internals(watcher).watched.get(WORKSPACE);
+		expect(entry?.gitDir).toBe(gitDir);
+		expect(entry?.watcher).toBeNull();
+		expect(streamsOpened).toBe(1);
 		watcher.close();
 	});
 
@@ -688,6 +698,30 @@ describe("(GIT-WATCH-PUBLISH) GitWatcher attach bookkeeping", () => {
 		expect(inner.watched.size).toBe(0);
 
 		watcher.unwatchWorkspace(WORKSPACE);
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(failure, watcher);
+		await rescanFailing();
+		expect(inner.watched.size).toBe(0);
+
+		await rescanFailing();
+		expect(inner.watched.get(WORKSPACE)?.gitDir).toBeNull();
+		watcher.close();
+	});
+
+	test("a lookup that fails after unwatch records no strike", async () => {
+		const watcher = createAttachWatcher();
+		const inner = internals(watcher);
+		const failure = new Error("task timed out");
+		const rescanFailing = async () => {
+			const rescanning = inner.rescan();
+			await settle(failure, watcher);
+			await rescanning;
+		};
+
+		watcher.watchWorkspace(WORKSPACE);
+		watcher.unwatchWorkspace(WORKSPACE);
+		await settle(failure, watcher);
+
 		watcher.watchWorkspace(WORKSPACE);
 		await settle(failure, watcher);
 		await rescanFailing();

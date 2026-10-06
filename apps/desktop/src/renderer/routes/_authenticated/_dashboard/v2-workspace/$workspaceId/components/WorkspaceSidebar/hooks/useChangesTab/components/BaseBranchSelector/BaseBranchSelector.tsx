@@ -35,14 +35,13 @@ export function BaseBranchSelector({
 		return branches.filter((b) => b.name.toLowerCase().includes(lower));
 	}, [branches, search]);
 
+	const handleOpenChange = (next: boolean) => {
+		setOpen(next);
+		onOpenChange(next); // (BRANCH-PICKER-ON-OPEN)
+	};
+
 	return (
-		<Popover
-			open={open}
-			onOpenChange={(next) => {
-				setOpen(next);
-				onOpenChange(next); // (BRANCH-PICKER-ON-OPEN)
-			}}
-		>
+		<Popover open={open} onOpenChange={handleOpenChange}>
 			<PopoverTrigger asChild>
 				{/* Same chip as the commit-filter trigger beside it, so "vs" sits
 				    between two equal paddings instead of hugging the branch. */}
@@ -79,7 +78,7 @@ export function BaseBranchSelector({
 								className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
 								onClick={() => {
 									onChange(branch.name);
-									setOpen(false);
+									handleOpenChange(false);
 									setSearch("");
 								}}
 							>

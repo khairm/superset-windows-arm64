@@ -504,6 +504,7 @@ export const gitRouter = router({
 		}),
 
 	getBaseBranch: queryProcedure
+		.meta({ timeoutMs: 15_000 })
 		.input(z.object({ workspaceId: z.string() }))
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);

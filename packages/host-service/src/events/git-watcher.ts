@@ -805,6 +805,9 @@ export class GitWatcher {
 			gitDir = await this.resolveGitDir(worktreePath);
 			this.gitDirFailures.delete(workspaceId);
 		} catch (error) {
+			// A late rejection for a workspace nobody holds must not re-seed the
+			// count stopWatching cleared, or the next watch falls back early.
+			if (this.closed || !this.interest.has(workspaceId)) return;
 			const failures = (this.gitDirFailures.get(workspaceId) ?? 0) + 1;
 			if (failures < GIT_DIR_MAX_TRIES) {
 				this.gitDirFailures.set(workspaceId, failures);
@@ -826,7 +829,7 @@ export class GitWatcher {
 		if (
 			this.closed ||
 			this.watched.has(workspaceId) ||
-			!this.interest.has(workspaceId)
+			!this.interest.has(workspaceId) // (GIT-WATCH-PUBLISH)
 		)
 			return;
 
