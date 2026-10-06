@@ -11,6 +11,7 @@ import { WatchAttachGuard } from "./watch-attach-guard.ts";
 
 export interface WorkspaceFilesystemManagerOptions {
 	db: HostDb;
+	listGitIgnoredDirs?: (rootPath: string) => Promise<string[]>;
 }
 
 export class WorkspaceNotFoundError extends Error {
@@ -29,15 +30,17 @@ export class ProjectNotFoundError extends Error {
 
 export class WorkspaceFilesystemManager {
 	private readonly db: HostDb;
-	private readonly watcherManager = new FsWatcherManager({
-		listGitIgnoredDirs,
-		useDefaultIgnores: false,
-	});
-	private readonly watchAttachGuard = new WatchAttachGuard(this.watcherManager);
+	private readonly watcherManager: FsWatcherManager;
+	private readonly watchAttachGuard: WatchAttachGuard;
 	private readonly serviceCache = new Map<string, FsHostService>();
 
 	constructor(options: WorkspaceFilesystemManagerOptions) {
 		this.db = options.db;
+		this.watcherManager = new FsWatcherManager({
+			listGitIgnoredDirs: options.listGitIgnoredDirs ?? listGitIgnoredDirs, // (GIT-WATCH-ATTACH-TASK)
+			useDefaultIgnores: false,
+		});
+		this.watchAttachGuard = new WatchAttachGuard(this.watcherManager);
 	}
 
 	resolveWorkspaceRoot(workspaceId: string): string {

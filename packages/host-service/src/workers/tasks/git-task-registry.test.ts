@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import * as gitTaskModule from "./git.ts";
 import { gitTasks } from "./git.ts";
+import * as gitReadTaskModule from "./git-reads.ts";
+import { gitReadTasks } from "./git-reads.ts";
 
 function isWorkerTaskDefinition(
 	value: unknown,
@@ -13,9 +15,16 @@ function isWorkerTaskDefinition(
 	);
 }
 
-describe("gitTasks registry", () => {
+const registries: Array<
+	[string, Record<string, unknown>, ReadonlyArray<{ type: string }>]
+> = [
+	["gitTasks", gitTaskModule, gitTasks],
+	["gitReadTasks", gitReadTaskModule, gitReadTasks],
+];
+
+describe.each(registries)("%s registry", (_name, module, registeredTasks) => {
 	test("registers every exported worker task", () => {
-		const exported = Object.entries(gitTaskModule)
+		const exported = Object.entries(module)
 			.filter(([, value]) => isWorkerTaskDefinition(value))
 			.map(([name, value]) => ({
 				name,
@@ -24,14 +33,14 @@ describe("gitTasks registry", () => {
 
 		expect(exported.length).toBeGreaterThan(0);
 
-		const registered = new Set(gitTasks.map((task) => task.type));
+		const registered = new Set(registeredTasks.map((task) => task.type));
 		const missing = exported.filter((task) => !registered.has(task.type));
 
 		expect(missing.map((task) => `${task.name} (${task.type})`)).toEqual([]);
 	});
 
 	test("has no duplicate task types", () => {
-		const types = gitTasks.map((task) => task.type);
+		const types = registeredTasks.map((task) => task.type);
 		expect(types).toEqual([...new Set(types)]);
 	});
 });
