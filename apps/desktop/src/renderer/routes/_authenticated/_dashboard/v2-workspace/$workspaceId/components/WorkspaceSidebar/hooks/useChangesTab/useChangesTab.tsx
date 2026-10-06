@@ -140,14 +140,35 @@ export function useChangesTab({
 		[isGitRepo, setBaseBranchMutation, workspaceId],
 	);
 
+	// (GIT-COMMITS-TASK) One fetch once the base is known; git:changed
+	// invalidates it (useGitStatus), so it never refetches on its own.
 	const commits = workspaceTrpc.git.listCommits.useQuery(
 		{ workspaceId, baseBranch: baseBranch ?? undefined },
-		{ enabled: isGitRepo, refetchOnWindowFocus: true },
+		{
+			enabled: isGitRepo && baseBranchQuery.isFetched,
+			staleTime: Number.POSITIVE_INFINITY,
+			refetchOnWindowFocus: false,
+		},
 	);
 
+	// (BRANCH-PICKER-ON-OPEN) The list loads when the picker first opens and
+	// refetches on later opens; mounting the tab costs nothing.
+	const [branchPickerOpened, setBranchPickerOpened] = useState(false);
 	const branches = workspaceTrpc.git.listBranches.useQuery(
 		{ workspaceId },
-		{ enabled: isGitRepo, refetchInterval: 30_000, refetchOnWindowFocus: true },
+		{
+			enabled: isGitRepo && branchPickerOpened,
+			refetchOnWindowFocus: false,
+		},
+	);
+	const refetchBranches = branches.refetch;
+	const handleBranchPickerOpenChange = useCallback(
+		(open: boolean) => {
+			if (!open) return;
+			if (branchPickerOpened) void refetchBranches();
+			else setBranchPickerOpened(true);
+		},
+		[branchPickerOpened, refetchBranches],
 	);
 
 	const renameBranchMutation = workspaceTrpc.git.renameBranch.useMutation();
@@ -290,6 +311,7 @@ export function useChangesTab({
 			onFilterChange={setFilter}
 			onViewModeChange={setViewMode}
 			onBaseBranchChange={setBaseBranch}
+			onBranchPickerOpenChange={handleBranchPickerOpenChange}
 			onRenameBranch={handleRenameBranch}
 			canRenameBranch={canRenameBranch}
 		/>

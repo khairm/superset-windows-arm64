@@ -11,14 +11,19 @@ type Branch =
 
 interface BaseBranchSelectorProps {
 	branches: Branch[];
+	/** First fetch in flight; the list loads when the picker opens. */
+	loading: boolean;
 	currentValue: string;
 	onChange: (branchName: string) => void;
+	onOpenChange: (open: boolean) => void;
 }
 
 export function BaseBranchSelector({
 	branches,
+	loading,
 	currentValue,
 	onChange,
+	onOpenChange,
 }: BaseBranchSelectorProps) {
 	const { t } = useLingui();
 	const [open, setOpen] = useState(false);
@@ -31,7 +36,13 @@ export function BaseBranchSelector({
 	}, [branches, search]);
 
 	return (
-		<Popover open={open} onOpenChange={setOpen}>
+		<Popover
+			open={open}
+			onOpenChange={(next) => {
+				setOpen(next);
+				onOpenChange(next); // (BRANCH-PICKER-ON-OPEN)
+			}}
+		>
 			<PopoverTrigger asChild>
 				{/* Same chip as the commit-filter trigger beside it, so "vs" sits
 				    between two equal paddings instead of hugging the branch. */}
@@ -80,7 +91,11 @@ export function BaseBranchSelector({
 						))}
 						{filtered.length === 0 && (
 							<div className="px-2 py-3 text-center text-sm text-muted-foreground">
-								<Trans>No branches found</Trans>
+								{loading ? (
+									<Trans>Loading...</Trans>
+								) : (
+									<Trans>No branches found</Trans>
+								)}
 							</div>
 						)}
 					</div>

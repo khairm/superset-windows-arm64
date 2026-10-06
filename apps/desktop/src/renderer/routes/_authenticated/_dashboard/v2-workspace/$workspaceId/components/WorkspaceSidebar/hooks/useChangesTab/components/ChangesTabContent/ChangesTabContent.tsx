@@ -25,7 +25,10 @@ interface ChangesTabContentProps {
 		isLoading: boolean;
 	};
 	commits: { data: RouterOutputs["git"]["listCommits"] | undefined };
-	branches: { data: RouterOutputs["git"]["listBranches"] | undefined };
+	branches: {
+		data: RouterOutputs["git"]["listBranches"] | undefined;
+		isFetching: boolean;
+	};
 	filter: ChangesFilter;
 	viewMode: ChangesViewMode;
 	baseBranch: string | null;
@@ -44,6 +47,7 @@ interface ChangesTabContentProps {
 	onFilterChange: (filter: ChangesFilter) => void;
 	onViewModeChange: (viewMode: ChangesViewMode) => void;
 	onBaseBranchChange: (branchName: string | null) => void;
+	onBranchPickerOpenChange: (open: boolean) => void;
 	onRenameBranch: (newName: string) => void;
 	canRenameBranch: boolean;
 }
@@ -67,6 +71,7 @@ export const ChangesTabContent = memo(function ChangesTabContent({
 	onFilterChange,
 	onViewModeChange,
 	onBaseBranchChange,
+	onBranchPickerOpenChange,
 	onRenameBranch,
 	canRenameBranch,
 }: ChangesTabContentProps) {
@@ -148,6 +153,8 @@ export const ChangesTabContent = memo(function ChangesTabContent({
 					onToggleSearch={toggleSearch}
 					baseBranch={baseBranch ?? status.data.defaultBranch.name}
 					branches={branches.data?.branches ?? []}
+					branchesLoading={branches.isFetching && !branches.data}
+					onBranchPickerOpenChange={onBranchPickerOpenChange}
 					// Picking the repo default clears the override (null) instead of
 					// pinning it, so the workspace follows a later default change.
 					onBaseBranchChange={(branchName) =>
