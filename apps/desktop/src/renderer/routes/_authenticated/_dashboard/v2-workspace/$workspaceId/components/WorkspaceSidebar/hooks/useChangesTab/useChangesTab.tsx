@@ -10,6 +10,10 @@ import { useCallback, useMemo, useState } from "react";
 import { LuGitCompareArrows } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
+import {
+	DiffTooLargePlaceholder,
+	MAX_RENDERABLE_CHANGED_LINES,
+} from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import { useChangeset } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { useOpenInExternalEditor } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useOpenInExternalEditor";
 import { useSidebarDiffRef } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useSidebarDiffRef";
@@ -18,10 +22,6 @@ import { useCollections } from "renderer/routes/_authenticated/providers/Collect
 import type { ChangesFilter } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import { toAbsoluteWorkspacePath } from "shared/absolute-paths";
 import type { SidebarTabDefinition } from "../../types";
-import {
-	DiffTooLargePlaceholder,
-	MAX_RENDERABLE_CHANGED_LINES,
-} from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import { ChangesTabContent } from "./components/ChangesTabContent";
 
 export interface SelectedDiffTarget {
@@ -140,14 +140,22 @@ export function useChangesTab({
 		[isGitRepo, setBaseBranchMutation, workspaceId],
 	);
 
+	// (GIT-COMMITS-TASK) One fetch once the base is known; git:changed
+	// invalidates it (useGitStatus), so it never refetches on its own.
 	const commits = workspaceTrpc.git.listCommits.useQuery(
 		{ workspaceId, baseBranch: baseBranch ?? undefined },
-		{ enabled: isGitRepo, refetchOnWindowFocus: true },
+		{
+			enabled: isGitRepo && baseBranchQuery.isFetched,
+			staleTime: Number.POSITIVE_INFINITY,
+		},
 	);
 
+	// (BRANCH-PICKER-ON-OPEN) The list loads each time the picker opens;
+	// mounting the tab costs nothing.
+	const [branchPickerOpen, setBranchPickerOpen] = useState(false);
 	const branches = workspaceTrpc.git.listBranches.useQuery(
 		{ workspaceId },
-		{ enabled: isGitRepo, refetchInterval: 30_000, refetchOnWindowFocus: true },
+		{ enabled: isGitRepo && branchPickerOpen, staleTime: 0 },
 	);
 
 	const renameBranchMutation = workspaceTrpc.git.renameBranch.useMutation();
@@ -290,6 +298,7 @@ export function useChangesTab({
 			onFilterChange={setFilter}
 			onViewModeChange={setViewMode}
 			onBaseBranchChange={setBaseBranch}
+			onBranchPickerOpenChange={setBranchPickerOpen}
 			onRenameBranch={handleRenameBranch}
 			canRenameBranch={canRenameBranch}
 		/>

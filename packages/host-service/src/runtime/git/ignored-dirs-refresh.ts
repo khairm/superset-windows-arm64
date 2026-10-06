@@ -6,8 +6,9 @@ const REFRESH_LISTING_BUDGET_MS = 10_000;
 
 export async function listGitIgnoredDirsForRefresh(
 	rootPath: string,
+	budgetMs = REFRESH_LISTING_BUDGET_MS,
 ): Promise<string[]> {
-	const signal = AbortSignal.timeout(REFRESH_LISTING_BUDGET_MS);
+	const signal = AbortSignal.timeout(budgetMs);
 	try {
 		return await getHostWorkerPool().run(
 			gitIgnoredDirsTask,
@@ -17,7 +18,7 @@ export async function listGitIgnoredDirsForRefresh(
 	} catch (error) {
 		if (signal.aborted) {
 			throw new Error(
-				`ignored-dir listing exceeded ${REFRESH_LISTING_BUDGET_MS / 1000} s (queue + run)`,
+				`ignored-dir listing exceeded ${budgetMs / 1000} s (queue + run)`,
 			);
 		}
 		throw error;

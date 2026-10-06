@@ -126,7 +126,10 @@ export function DashboardSidebarWorkspaceItem({
 	// moved off the per-row git query (it is populated for the active row only).
 	const { diffStats } = useSidebarWorkspaceStatus(id);
 	// (NON-GIT WORKSPACE) flag the icon once we positively know it is non-git.
-	const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert");
+	// Rows hold no git watch; hover and open refresh the shared answer.
+	const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert", {
+		live: false, // (SIDEBAR-ROW-NO-GIT-WATCH)
+	});
 	const tabChips = useV2WorkspaceTabChips(id);
 	const workspaceAgentsRowEnabled = useWorkspaceAgentsRowEnabled();
 	// (TAB-CHIPS) When the chip experiment is off, preserve the old single name

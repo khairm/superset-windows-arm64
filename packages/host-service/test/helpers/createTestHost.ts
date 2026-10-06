@@ -12,6 +12,7 @@ import type { HostDb } from "../../src/db";
 import * as schema from "../../src/db/schema";
 import type { TokenSource } from "../../src/providers/git/LocalGitCredentialProvider/credential-remedy";
 import type { AppRouter as HostAppRouter } from "../../src/trpc/router";
+import { resetHostWorkerPoolForTests } from "../../src/workers/host-worker-pool";
 import {
 	createFakeApiClient,
 	FakeApiAuthProvider,
@@ -126,6 +127,7 @@ export async function createTestHost(
 				},
 	};
 
+	resetHostWorkerPoolForTests();
 	const result = createApp(createOptions);
 	await result.claudeAccounts.start();
 

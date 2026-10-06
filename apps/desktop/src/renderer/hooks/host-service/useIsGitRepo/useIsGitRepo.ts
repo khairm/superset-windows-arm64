@@ -4,6 +4,13 @@ import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useWorkspaceEvent } from "../useWorkspaceEvent";
 import { useWorkspaceHostUrl } from "../useWorkspaceHostUrl";
 
+export function getIsGitRepoQueryKey(
+	hostUrl: string | null,
+	workspaceId: string,
+) {
+	return ["is-git-repo", hostUrl, workspaceId] as const;
+}
+
 /**
  * (NON-GIT WORKSPACE) True when the workspace's worktree is a real git repo.
  *
@@ -13,11 +20,15 @@ import { useWorkspaceHostUrl } from "../useWorkspaceHostUrl";
  * `useDiffStats` ergonomics (host client by URL + tanstack query + `git:changed`
  * live invalidation) so a mid-session `git init`/de-init is re-detected.
  */
-export function useIsGitRepo(workspaceId: string, enabled = true): boolean {
+export function useIsGitRepo(
+	workspaceId: string,
+	enabled = true,
+	{ live = true }: { live?: boolean } = {},
+): boolean {
 	const hostUrl = useWorkspaceHostUrl(workspaceId);
 	const queryClient = useQueryClient();
 	const queryKey = useMemo(
-		() => ["is-git-repo", hostUrl, workspaceId] as const,
+		() => getIsGitRepoQueryKey(hostUrl, workspaceId),
 		[hostUrl, workspaceId],
 	);
 
@@ -40,7 +51,13 @@ export function useIsGitRepo(workspaceId: string, enabled = true): boolean {
 		void queryClient.invalidateQueries({ queryKey });
 	}, [queryClient, queryKey]);
 
-	useWorkspaceEvent("git:changed", workspaceId, invalidate, queryEnabled);
+	// `live: false` shares the cached answer without holding a host git watch.
+	useWorkspaceEvent(
+		"git:changed",
+		workspaceId,
+		invalidate,
+		queryEnabled && live, // (SIDEBAR-ROW-NO-GIT-WATCH)
+	);
 
 	// Default true until the query resolves: only hide git UI once we positively
 	// know the folder is non-git.

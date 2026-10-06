@@ -10,6 +10,7 @@ import {
 	gitWorktreeRemoveTask,
 	gitWorktreeStateTask,
 } from "./tasks/git.ts";
+import { gitDirTask } from "./tasks/git-reads.ts";
 import { WorkerTaskRunner } from "./WorkerTaskRunner.ts";
 
 const WORKER_ENTRY = path.resolve(import.meta.dirname, "host-worker.ts");
@@ -252,6 +253,15 @@ describe("HostWorkerPool", () => {
 		expect(runner?.getWorkerCount()).toBe(0);
 	});
 
+	test("a disposed pool refuses new work instead of respawning a worker", async () => {
+		const pool = makePool();
+		await pool.dispose();
+		await expect(
+			pool.run(gitDirTask, { worktreePath: os.tmpdir() }),
+		).rejects.toThrow("disposed");
+		expect(() => pool.getRunner()).toThrow("disposed");
+	});
+
 	test("missing bundle falls back to inline execution", async () => {
 		const worktreePath = makeFixtureRepo();
 		const pool = makePool({ scriptPathResolver: () => null });
@@ -424,5 +434,21 @@ describe("HostWorkerPool", () => {
 		} finally {
 			await runner.dispose();
 		}
+	}, 20_000);
+
+	test("(GIT-WATCH-ATTACH-TASK) gitDirTask resolves through the production pool", async () => {
+		const pool = makePool();
+		const run = (worktreePath: string) =>
+			pool.run(gitDirTask, { worktreePath }, { timeoutMs: 10_000 });
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "git-dir-task-"));
+		const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "git-dir-task-"));
+		fixtureDirs.push(repo, nonRepo);
+		execFileSync("git", ["init", "-q"], { cwd: repo, stdio: "pipe" });
+
+		const { gitDir } = await run(repo);
+		expect(pool.getMode()).toBe("worker");
+		expect(gitDir && path.resolve(gitDir)).toBe(path.join(repo, ".git"));
+		expect(await run(nonRepo)).toEqual({ gitDir: null });
+		expect(await run(path.join(nonRepo, "missing"))).toEqual({ gitDir: null });
 	}, 20_000);
 });

@@ -6,7 +6,8 @@ import {
 import { eq } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { projects, workspaces } from "../../db/schema.ts";
-import { listGitIgnoredDirs } from "../git/index.ts";
+import { listGitIgnoredDirsForRefresh } from "../git/ignored-dirs-refresh.ts"; // (GIT-WATCH-ATTACH-TASK)
+import { probeGitEntryDiskOnly } from "../git/non-git.ts";
 import { WatchAttachGuard } from "./watch-attach-guard.ts";
 
 export interface WorkspaceFilesystemManagerOptions {
@@ -30,7 +31,12 @@ export class ProjectNotFoundError extends Error {
 export class WorkspaceFilesystemManager {
 	private readonly db: HostDb;
 	private readonly watcherManager = new FsWatcherManager({
-		listGitIgnoredDirs,
+		// A non-git root has nothing to prune; skip the listing so its
+		// certain `ls-files` failure neither launches nor logs.
+		listGitIgnoredDirs: async (rootPath) =>
+			(await probeGitEntryDiskOnly(rootPath)) === "absent"
+				? []
+				: listGitIgnoredDirsForRefresh(rootPath),
 		useDefaultIgnores: false,
 	});
 	private readonly watchAttachGuard = new WatchAttachGuard(this.watcherManager);

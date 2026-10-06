@@ -35,6 +35,7 @@ import { registerBrowserCdpRoute } from "./runtime/browser-bridge/browser-cdp-ro
 import { WorkspaceFilesystemManager } from "./runtime/filesystem";
 import type { GitCredentialProvider } from "./runtime/git";
 import { createGitEnvResolver, createGitFactory } from "./runtime/git";
+import { resolveGitDirInWorker } from "./runtime/git/attach-git-reads";
 import { runMainWorkspaceSweep } from "./runtime/main-workspace-sweep";
 import { runProjectBackfill } from "./runtime/project-backfill";
 import { PullRequestRuntimeManager } from "./runtime/pull-requests";
@@ -180,13 +181,19 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		broadIntervalMs: 5_000,
 		fileOnlyIntervalMs: 30_000,
 	});
-	const gitWatcher = new GitWatcher(db, filesystem, (workspaceId, watched) => {
-		if (watched) gitStatusStore.attach(workspaceId);
-		else {
-			gitStatusStore.drop(workspaceId);
-			prSyncTrigger.cancelWorkspace(workspaceId); // (GIT-LAUNCH-BUDGET-B-CANCEL)
-		}
-	});
+	const gitWatcher = new GitWatcher(
+		db,
+		filesystem,
+		(workspaceId, watched) => {
+			if (watched) gitStatusStore.attach(workspaceId);
+			else {
+				gitStatusStore.drop(workspaceId);
+				prSyncTrigger.cancelWorkspace(workspaceId); // (GIT-LAUNCH-BUDGET-B-CANCEL)
+			}
+		},
+		undefined,
+		resolveGitDirInWorker, // (GIT-WATCH-ATTACH-TASK)
+	);
 	gitWatcher.onChanged((event) => {
 		gitStatusStore.recordChange(event.workspaceId, event.paths);
 	});
@@ -537,6 +544,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			gitWatcher.close();
 		} catch (err) {
 			console.warn("[host-service] gitWatcher.close failed:", err);
+		}
+		// Before the pool: a native watcher recovery would otherwise run its
+		// prune listing on a respawned worker.
+		try {
+			await filesystem.close();
+		} catch (err) {
+			console.warn("[host-service] filesystem.close failed:", err);
 		}
 		// Retire the host-worker threads (and reap their in-flight git
 		// children) here rather than leaving them to process.exit(): exit joins

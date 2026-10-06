@@ -68,23 +68,33 @@ export function useDiffStats(
 		Boolean(workspaceId) && Boolean(hostUrl),
 	);
 
-	return useMemo<DiffStats | null>(() => {
-		if (!status) return null;
+	return useMemo<DiffStats | null>(
+		() => (status ? sumDiffStats(status) : null),
+		[status],
+	);
+}
 
-		const byPath = new Map<
-			string,
-			{ additions: number | null; deletions: number | null }
-		>();
-		for (const file of status.againstBase) byPath.set(file.path, file);
-		for (const file of status.staged) byPath.set(file.path, file);
-		for (const file of status.unstaged) byPath.set(file.path, file);
+interface FileCounts {
+	path: string;
+	additions: number | null;
+	deletions: number | null;
+}
 
-		let additions = 0;
-		let deletions = 0;
-		for (const file of byPath.values()) {
-			additions += file.additions ?? 0;
-			deletions += file.deletions ?? 0;
-		}
-		return { additions, deletions };
-	}, [status]);
+export function sumDiffStats(status: {
+	againstBase: FileCounts[];
+	staged: FileCounts[];
+	unstaged: FileCounts[];
+}): DiffStats {
+	const byPath = new Map<string, FileCounts>();
+	for (const file of status.againstBase) byPath.set(file.path, file);
+	for (const file of status.staged) byPath.set(file.path, file);
+	for (const file of status.unstaged) byPath.set(file.path, file);
+
+	let additions = 0;
+	let deletions = 0;
+	for (const file of byPath.values()) {
+		additions += file.additions ?? 0;
+		deletions += file.deletions ?? 0;
+	}
+	return { additions, deletions };
 }

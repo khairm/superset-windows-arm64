@@ -8,6 +8,21 @@ import {
 	spyOn,
 	test,
 } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import simpleGit from "simple-git";
+import { resolveGitDirInWorker } from "../runtime/git/attach-git-reads";
+import {
+	findGitEntryUpTree,
+	resetGitEntryProbeForTests,
+} from "../runtime/git/git-entry-probe";
+import {
+	isGitRepo,
+	probeIsGitRepo,
+	resetIsGitRepoCacheForTests,
+	setIsGitRepoProbeForTests,
+} from "../runtime/git/non-git";
 import {
 	collectWorktreeBatchPaths,
 	DEBOUNCE_MS,
@@ -17,6 +32,7 @@ import {
 	GitWatcher,
 	isStatusRelevantGitDirEvent,
 	MAX_WORKTREE_PATHS_PER_BATCH,
+	type ResolveGitDir,
 } from "./git-watcher";
 
 /**
@@ -34,6 +50,12 @@ interface GitWatcherInternals {
 		dirs: ReadonlySet<string>;
 		rulesChanged: boolean;
 	};
+	watched: Map<string, { gitDir: string | null; watcher: unknown }>;
+	attaching: Set<string>;
+	interest: Map<string, number>;
+	pendingBatches: Map<string, { hasGitDir: boolean }>;
+	rescan(): Promise<void>;
+	flushBatch(workspaceId: string): void;
 }
 
 function createWatcher(): GitWatcher {
@@ -523,5 +545,240 @@ describe("(HOST-LAUNCH-IGNORED-FAIL) GitWatcher ignored-dir refresh", () => {
 		expect(ruleRefreshes).toBe(scenario.ruleRefreshes);
 		expect(refreshFailures.length).toBe(scenario.logged);
 		expect([...state.dirs].sort()).toEqual(scenario.dirs);
+	});
+});
+
+describe("(GIT-WATCH-PUBLISH) GitWatcher attach bookkeeping", () => {
+	const WORKSPACE = "workspace-1";
+
+	type GitDirOutcome = string | null | Error;
+
+	let root: string;
+	let calls: number;
+	let pending: Array<(outcome: GitDirOutcome) => void>;
+	let streamsOpened: number;
+	let streamsClosed: number;
+	let warn: ReturnType<typeof spyOn<Console, "warn">>;
+
+	beforeEach(async () => {
+		root = await mkdtemp(join(tmpdir(), "git-watch-attach-"));
+		calls = 0;
+		pending = [];
+		streamsOpened = 0;
+		streamsClosed = 0;
+		warn = spyOn(console, "warn").mockImplementation(() => {});
+	});
+	afterEach(async () => {
+		warn.mockRestore();
+		await rm(root, { recursive: true, force: true });
+	});
+
+	const pendingGitDir: ResolveGitDir = () => {
+		calls += 1;
+		return new Promise<string | null>((resolve, reject) => {
+			pending.push((outcome) =>
+				outcome instanceof Error ? reject(outcome) : resolve(outcome),
+			);
+		});
+	};
+
+	function createAttachWatcher(
+		resolveGitDir: ResolveGitDir = pendingGitDir,
+	): GitWatcher {
+		const row = { id: WORKSPACE, worktreePath: root };
+		const db = {
+			select: () => ({
+				from: () => ({ where: () => ({ get: () => row, all: () => [row] }) }),
+			}),
+		};
+		const filesystem = {
+			isWatchAttachBackingOff: () => false,
+			refreshWatcherIgnores: async () => false,
+			getServiceForWorkspace: () => ({
+				watchPath: () => {
+					streamsOpened += 1;
+					return {
+						[Symbol.asyncIterator]: () => ({
+							next: () => new Promise(() => {}),
+							return: async () => {
+								streamsClosed += 1;
+								return { done: true, value: undefined };
+							},
+						}),
+					};
+				},
+			}),
+		};
+		return new GitWatcher(
+			db as unknown as ConstructorParameters<typeof GitWatcher>[0],
+			filesystem as unknown as ConstructorParameters<typeof GitWatcher>[1],
+			() => {},
+			async () => [],
+			resolveGitDir,
+		);
+	}
+
+	async function settle(outcome: GitDirOutcome, watcher: GitWatcher) {
+		const resolve = pending.shift();
+		if (!resolve) throw new Error("no git-dir lookup in flight");
+		resolve(outcome);
+		const inner = internals(watcher);
+		while (inner.attaching.size > 0) {
+			await new Promise((r) => setTimeout(r, 0));
+		}
+	}
+
+	test("an abandoned attach publishes nothing", async () => {
+		const watcher = createAttachWatcher();
+		watcher.watchWorkspace(WORKSPACE);
+		watcher.unwatchWorkspace(WORKSPACE);
+		await settle(null, watcher);
+
+		expect(internals(watcher).watched.size).toBe(0);
+		expect(streamsOpened).toBe(0);
+		watcher.close();
+	});
+
+	test("an fs.watch failure publishes the worktree watch alone", async () => {
+		const watcher = createAttachWatcher();
+		const gitDir = join(root, "missing-git-dir");
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(gitDir, watcher);
+
+		const entry = internals(watcher).watched.get(WORKSPACE);
+		expect(entry?.gitDir).toBe(gitDir);
+		expect(entry?.watcher).toBeNull();
+		expect(streamsOpened).toBe(1);
+		watcher.close();
+	});
+
+	test("an unwatch then rewatch during an attach reuses it and publishes once", async () => {
+		const watcher = createAttachWatcher();
+		watcher.watchWorkspace(WORKSPACE);
+		watcher.unwatchWorkspace(WORKSPACE);
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(null, watcher);
+
+		expect(calls).toBe(1);
+		expect(internals(watcher).watched.size).toBe(1);
+		expect(streamsOpened).toBe(1);
+		watcher.close();
+	});
+
+	test("rescan skips an in-flight attach and stops a watch nothing holds", async () => {
+		const watcher = createAttachWatcher();
+		const inner = internals(watcher);
+		watcher.watchWorkspace(WORKSPACE);
+		await inner.rescan();
+		expect(calls).toBe(1);
+
+		await settle(null, watcher);
+		expect(inner.watched.size).toBe(1);
+
+		inner.interest.clear();
+		await inner.rescan();
+		expect(inner.watched.size).toBe(0);
+		expect(streamsClosed).toBe(1);
+		watcher.close();
+	});
+
+	test("three tries total before a non-git fallback; a stop resets the count", async () => {
+		const watcher = createAttachWatcher();
+		const inner = internals(watcher);
+		const failure = new Error("task timed out");
+		const rescanFailing = async () => {
+			const rescanning = inner.rescan();
+			await settle(failure, watcher);
+			await rescanning;
+		};
+
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(failure, watcher);
+		await rescanFailing();
+		expect(inner.watched.size).toBe(0);
+
+		watcher.unwatchWorkspace(WORKSPACE);
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(failure, watcher);
+		await rescanFailing();
+		expect(inner.watched.size).toBe(0);
+
+		await rescanFailing();
+		expect(inner.watched.get(WORKSPACE)?.gitDir).toBeNull();
+		watcher.close();
+	});
+
+	test("a lookup that fails after unwatch records no strike", async () => {
+		const watcher = createAttachWatcher();
+		const inner = internals(watcher);
+		const failure = new Error("task timed out");
+		const rescanFailing = async () => {
+			const rescanning = inner.rescan();
+			await settle(failure, watcher);
+			await rescanning;
+		};
+
+		watcher.watchWorkspace(WORKSPACE);
+		watcher.unwatchWorkspace(WORKSPACE);
+		await settle(failure, watcher);
+
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(failure, watcher);
+		await rescanFailing();
+		expect(inner.watched.size).toBe(0);
+
+		await rescanFailing();
+		expect(inner.watched.get(WORKSPACE)?.gitDir).toBeNull();
+		watcher.close();
+	});
+
+	test("a non-git publish emits one catch-up", async () => {
+		const watcher = createAttachWatcher();
+		const inner = internals(watcher);
+		const events: GitChangedEvent[] = [];
+		watcher.onChanged((event) => events.push(event));
+		watcher.watchWorkspace(WORKSPACE);
+		await settle(null, watcher);
+
+		expect(inner.pendingBatches.get(WORKSPACE)?.hasGitDir).toBe(true);
+		inner.flushBatch(WORKSPACE);
+		expect(events).toEqual([{ workspaceId: WORKSPACE }]);
+		watcher.close();
+	});
+
+	test("(GIT-WATCH-ATTACH-TASK) opening a folder de-inited off screen drops the cached yes without a git launch", async () => {
+		await simpleGit(root).init();
+		let gitChecks = 0;
+		setIsGitRepoProbeForTests((dir) =>
+			probeIsGitRepo(dir, {
+				entryProbe: findGitEntryUpTree,
+				gitCheck: async () => {
+					gitChecks += 1;
+					return true;
+				},
+			}),
+		);
+		const watcher = createAttachWatcher(resolveGitDirInWorker);
+		const inner = internals(watcher);
+		try {
+			expect(await isGitRepo(root)).toBe(true);
+			await rm(join(root, ".git"), { recursive: true, force: true });
+
+			watcher.watchWorkspace(WORKSPACE);
+			const deadline = Date.now() + 5_000;
+			while (!inner.watched.has(WORKSPACE)) {
+				if (Date.now() > deadline) throw new Error("attach did not publish");
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+
+			expect(inner.watched.get(WORKSPACE)?.gitDir).toBeNull();
+			expect(inner.pendingBatches.get(WORKSPACE)?.hasGitDir).toBe(true);
+			expect(await isGitRepo(root)).toBe(false);
+			expect(gitChecks).toBe(1);
+		} finally {
+			watcher.close();
+			resetIsGitRepoCacheForTests();
+			resetGitEntryProbeForTests();
+		}
 	});
 });

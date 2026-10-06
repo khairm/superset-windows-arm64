@@ -1,10 +1,10 @@
 import { Popover, PopoverAnchor, PopoverContent } from "@superset/ui/popover";
 import type { RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
-import { useDiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
 import { DashboardSidebarWorkspaceHoverCardContent } from "../DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceHoverCardContent";
 import "./DashboardSidebarHoverCardOverlay.css";
+import { useHoverCardGitState } from "./hooks/useHoverCardGitState";
 
 type Measurable = { getBoundingClientRect(): DOMRect };
 
@@ -33,7 +33,7 @@ export function DashboardSidebarHoverCardOverlay({
 		payload !== null &&
 		!contextMenuOpen &&
 		!hoverCardSuppressed;
-	const diffStats = useDiffStats(hoveredId ?? "");
+	const diffStats = useHoverCardGitState(open ? hoveredId : null); // (HOVER-CARD-COLD-STATS)
 
 	// Suppress the transform transition until Radix has placed the popover at
 	// its real anchor — otherwise the initial jump from the off-screen measuring

@@ -109,6 +109,27 @@ export function invalidateIsGitRepo(dirPath: string): void {
 	inFlight.delete(key);
 }
 
+/**
+ * (GIT-WATCH-ATTACH-TASK) Disk-only answer that never launches git. A definite
+ * "absent" drops a cached "yes"; a cached "no" and an in-flight check stay.
+ */
+export async function probeGitEntryDiskOnly(
+	dirPath: string,
+): Promise<GitEntryProbeResult> {
+	let entry: GitEntryProbeResult;
+	try {
+		entry = await findGitEntryUpTree(dirPath);
+	} catch (error) {
+		console.error("[non-git] disk probe threw", { dir: dirPath, error });
+		return "unknown";
+	}
+	if (entry === "absent") {
+		const key = normalizeRepoPathKey(dirPath);
+		if (cache.get(key)?.value === true) cache.delete(key);
+	}
+	return entry;
+}
+
 export function setIsGitRepoProbeForTests(
 	fn: (dirPath: string) => Promise<boolean>,
 ): void {

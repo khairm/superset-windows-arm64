@@ -136,6 +136,7 @@ export function resolveHostWorkerScriptPath(): string | null {
 
 export class HostWorkerPool {
 	private runner: WorkerTaskRunner | null = null;
+	private disposed = false;
 	private inlineOnly = false;
 	private warnedInline = false;
 	private crashTimestamps: number[] = [];
@@ -169,6 +170,9 @@ export class HostWorkerPool {
 	}
 
 	getRunner(): WorkerTaskRunner | null {
+		if (this.disposed) {
+			throw new Error("[host-worker-pool] disposed; refusing new work");
+		}
 		if (this.inlineOnly) return null;
 		if (this.runner) return this.runner;
 		const scriptPath = this.scriptPathResolver();
@@ -302,6 +306,7 @@ export class HostWorkerPool {
 	}
 
 	async dispose(): Promise<void> {
+		this.disposed = true;
 		const runners = [this.runner, ...this.drainingRunners.splice(0)];
 		this.runner = null;
 		await Promise.all(runners.map((r) => r?.dispose()));
@@ -350,4 +355,9 @@ let pool: HostWorkerPool | null = null;
 export function getHostWorkerPool(): HostWorkerPool {
 	if (!pool) pool = new HostWorkerPool();
 	return pool;
+}
+
+/** For test hosts that boot several apps in one process; each app disposes the pool. */
+export function resetHostWorkerPoolForTests(): void {
+	pool = null;
 }

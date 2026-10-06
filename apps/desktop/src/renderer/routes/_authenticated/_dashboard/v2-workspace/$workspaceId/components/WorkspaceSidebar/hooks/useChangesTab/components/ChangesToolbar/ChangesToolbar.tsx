@@ -29,6 +29,8 @@ interface ChangesToolbarProps {
 	onToggleSearch: () => void;
 	baseBranch: string;
 	branches: Branch[];
+	branchesLoading: boolean;
+	onBranchPickerOpenChange: (open: boolean) => void; // (BRANCH-PICKER-ON-OPEN)
 	onBaseBranchChange: (branchName: string) => void;
 	currentBranchName: string;
 	canRenameBranch: boolean;
@@ -56,6 +58,8 @@ export function ChangesToolbar({
 	onToggleSearch,
 	baseBranch,
 	branches,
+	branchesLoading,
+	onBranchPickerOpenChange,
 	onBaseBranchChange,
 	currentBranchName,
 	canRenameBranch,
@@ -90,8 +94,10 @@ export function ChangesToolbar({
 						<span className="shrink-0 text-muted-foreground/60">vs</span>{" "}
 						<BaseBranchSelector
 							branches={branches}
+							loading={branchesLoading}
 							currentValue={baseBranch}
 							onChange={onBaseBranchChange}
+							onOpenChange={onBranchPickerOpenChange}
 						/>
 					</Trans>
 				</span>
