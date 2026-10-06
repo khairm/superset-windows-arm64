@@ -14,6 +14,26 @@ const execFileAsync = promisify(execFile);
 
 const RESCAN_INTERVAL_MS = 30_000;
 
+/** Consecutive git-dir timeouts/aborts before an attach falls back to non-git. */
+const GIT_DIR_MAX_TRIES = 3;
+
+export type ResolveGitDir = (worktreePath: string) => Promise<string | null>;
+
+/** Today's inline lookup; any failure is a non-git folder. */
+export const resolveGitDirInline: ResolveGitDir = async (worktreePath) => {
+	try {
+		const { stdout } = await execFileAsync("git", ["rev-parse", "--git-dir"], {
+			cwd: worktreePath,
+		});
+		const raw = stdout.trim();
+		// Use `isAbsolute`/`join` so a Windows drive path (C:\...) isn't
+		// mistaken for relative by a POSIX `startsWith("/")` check.
+		return isAbsolute(raw) ? raw : join(worktreePath, raw);
+	} catch {
+		return null;
+	}
+};
+
 /** Debounce window for batches with worktree edits — flush fast, latency matters. */
 export const DEBOUNCE_MS = 300;
 
@@ -316,6 +336,11 @@ export class GitWatcher {
 	private closed = false;
 	private readonly onWatchStateChange: GitWatchStateListener;
 	private readonly listIgnoredDirs: (rootPath: string) => Promise<string[]>;
+	private readonly resolveGitDir: ResolveGitDir;
+	/** Attaches in flight; a second attach for the same id is never started. */
+	private readonly attaching = new Set<string>();
+	private readonly gitDirFailures = new Map<string, number>();
+	private orphanLogged = false;
 
 	constructor(
 		db: HostDb,
@@ -324,11 +349,13 @@ export class GitWatcher {
 		listIgnoredDirs: (
 			rootPath: string,
 		) => Promise<string[]> = listGitIgnoredDirsForRefresh,
+		resolveGitDir: ResolveGitDir = resolveGitDirInline, // (GIT-WATCH-ATTACH-TASK)
 	) {
 		this.db = db;
 		this.filesystem = filesystem;
 		this.onWatchStateChange = onWatchStateChange;
 		this.listIgnoredDirs = listIgnoredDirs;
+		this.resolveGitDir = resolveGitDir;
 	}
 
 	start(): void {
@@ -355,7 +382,11 @@ export class GitWatcher {
 		if (this.closed) return;
 		const count = this.interest.get(workspaceId) ?? 0;
 		this.interest.set(workspaceId, count + 1);
-		if (count === 0 && !this.watched.has(workspaceId)) {
+		if (
+			count === 0 &&
+			!this.watched.has(workspaceId) &&
+			!this.attaching.has(workspaceId)
+		) {
 			void this.attachFromDb(workspaceId);
 		}
 	}
@@ -420,6 +451,7 @@ export class GitWatcher {
 			this.notifyWatchState(workspaceId, false);
 		}
 		this.ignoredDirs.delete(workspaceId);
+		this.gitDirFailures.delete(workspaceId);
 		this.discardBatch(workspaceId);
 	}
 
@@ -735,12 +767,22 @@ export class GitWatcher {
 		// client unwatches or its socket closes — self-healing, unlike a
 		// leaked live watcher.
 		for (const id of [...this.watched.keys()]) {
-			if (!existingIds.has(id)) this.stopWatching(id);
+			if (!existingIds.has(id)) {
+				this.stopWatching(id);
+			} else if (!this.interest.has(id)) {
+				if (!this.orphanLogged) {
+					this.orphanLogged = true;
+					console.warn("[git-watcher] stopping a watch nothing holds", {
+						workspaceId: id,
+					});
+				}
+				this.stopWatching(id);
+			}
 		}
 
 		// Retry attaching for still-interested workspaces that never attached.
 		for (const id of this.interest.keys()) {
-			if (this.watched.has(id)) continue;
+			if (this.watched.has(id) || this.attaching.has(id)) continue;
 			const worktreePath = worktreePathById.get(id);
 			if (!worktreePath) continue;
 			await this.attachWatcher(id, worktreePath);
@@ -748,6 +790,39 @@ export class GitWatcher {
 	}
 
 	private async attachWatcher(
+		workspaceId: string,
+		worktreePath: string,
+	): Promise<void> {
+		if (this.attaching.has(workspaceId)) return;
+		this.attaching.add(workspaceId);
+		try {
+			await this.attachWatcherOnce(workspaceId, worktreePath);
+		} finally {
+			this.attaching.delete(workspaceId);
+		}
+	}
+
+	/**
+	 * (GIT-WATCH-PUBLISH) The one commit point for every attach outcome.
+	 * Interest can drop to zero while an attach is in flight; publishing anyway
+	 * would leak a live watcher nothing ever stops (#6729).
+	 */
+	private publish(entry: WatchedWorkspace): boolean {
+		const { workspaceId } = entry;
+		if (
+			this.closed ||
+			this.watched.has(workspaceId) ||
+			!this.interest.has(workspaceId)
+		) {
+			entry.watcher?.close();
+			entry.disposeWorktreeWatch();
+			return false;
+		}
+		this.watched.set(workspaceId, entry);
+		return true;
+	}
+
+	private async attachWatcherOnce(
 		workspaceId: string,
 		worktreePath: string,
 	): Promise<void> {
@@ -759,34 +834,40 @@ export class GitWatcher {
 
 		if (this.filesystem.isWatchAttachBackingOff(worktreePath)) return;
 
-		// Resolve the `.git` directory. Failure here means the folder is not a
-		// git repo (NON-GIT WORKSPACE) — that must NOT skip the worktree-root fs
-		// watch below; only the `.git/`-specific watch is git-dependent. So we
-		// keep going with `gitDir = null`.
-		let gitDir: string | null = null;
+		// A null git dir is a NON-GIT WORKSPACE: the worktree-root watch below
+		// still runs. A rejection is the lookup failing (timeout/abort), not
+		// git: rescan retries, then the attach falls back to non-git.
+		let gitDir: string | null;
 		try {
-			const { stdout } = await execFileAsync(
-				"git",
-				["rev-parse", "--git-dir"],
-				{ cwd: worktreePath },
+			gitDir = await this.resolveGitDir(worktreePath);
+			this.gitDirFailures.delete(workspaceId);
+		} catch (error) {
+			const failures = (this.gitDirFailures.get(workspaceId) ?? 0) + 1;
+			if (failures < GIT_DIR_MAX_TRIES) {
+				this.gitDirFailures.set(workspaceId, failures);
+				return;
+			}
+			this.gitDirFailures.delete(workspaceId);
+			console.warn(
+				"[git-watcher] git-dir lookup kept failing; watching as non-git",
+				{ workspaceId, error },
 			);
-			const raw = stdout.trim();
-			// `git` returns the git-dir relative to the worktree; resolve it.
-			// Use `isAbsolute`/`join` so a Windows drive path (C:\...) isn't
-			// mistaken for relative by a POSIX `startsWith("/")` check.
-			gitDir = isAbsolute(raw) ? raw : join(worktreePath, raw);
-		} catch {
-			// Not a git repo or path doesn't exist — no `.git/` watch, but the
-			// worktree-root watch (file tree / change detection) still runs.
 			gitDir = null;
 		}
 
-		if (this.closed || this.watched.has(workspaceId)) return;
+		if (
+			this.closed ||
+			this.watched.has(workspaceId) ||
+			!this.interest.has(workspaceId)
+		)
+			return;
 
 		// Start the worktree watch first so we have a dispose handle to capture
 		// in the .git watcher's error handler closure. This avoids a race where
 		// the error handler could fire before `this.watched.set(...)` runs.
 		// This watch is git-independent and always runs (incl. non-git folders).
+		// No await from here to publish: the sync-failure path in
+		// startWorktreeWatch must see the published entry.
 		const disposeWorktreeWatch = this.startWorktreeWatch(
 			workspaceId,
 			worktreePath,
@@ -800,17 +881,19 @@ export class GitWatcher {
 			},
 		);
 
-		// NON-GIT WORKSPACE: no `.git/` dir to watch, but the worktree-root watch
-		// above (file tree / change detection) is already live. Register with a
-		// null `.git/` watcher and stop — the only git-dependent step is below.
 		if (gitDir === null) {
-			this.watched.set(workspaceId, {
-				workspaceId,
-				worktreePath,
-				gitDir: null,
-				watcher: null,
-				disposeWorktreeWatch,
-			});
+			if (
+				this.publish({
+					workspaceId,
+					worktreePath,
+					gitDir: null,
+					watcher: null,
+					disposeWorktreeWatch,
+				})
+			) {
+				// Lets the page's live is-git-repo query see a de-init on open.
+				this.markGitDirDirty(workspaceId); // (GIT-WATCH-PUBLISH)
+			}
 			return;
 		}
 
@@ -834,7 +917,7 @@ export class GitWatcher {
 		} catch {
 			// fs.watch failed (e.g. directory doesn't exist). The worktree watch
 			// is still valid, so keep that entry rather than dropping both.
-			this.watched.set(workspaceId, {
+			this.publish({
 				workspaceId,
 				worktreePath,
 				gitDir,
@@ -855,34 +938,21 @@ export class GitWatcher {
 			this.stopWatching(workspaceId);
 		});
 
-		// Recheck interest: watchWorkspace()/unwatchWorkspace() can flip the
-		// refcount to zero while the DB lookup + `git rev-parse` subprocess
-		// above were in flight (fast tab close, effect re-run). Committing to
-		// `watched` anyway would leak a live watcher forever — nothing but
-		// archival/deletion would ever tear it down, reintroducing #6729 one
-		// race at a time. Don't commit what's no longer wanted.
 		if (
-			this.closed ||
-			this.watched.has(workspaceId) ||
-			!this.interest.has(workspaceId)
-		) {
-			disposeWorktreeWatch();
-			watcher.close();
+			!this.publish({
+				workspaceId,
+				worktreePath,
+				gitDir,
+				watcher,
+				disposeWorktreeWatch,
+			})
+		)
 			return;
-		}
-
-		this.watched.set(workspaceId, {
-			workspaceId,
-			worktreePath,
-			gitDir,
-			watcher,
-			disposeWorktreeWatch,
-		});
 		this.notifyWatchState(workspaceId, true);
 		this.refreshIgnoredDirs(workspaceId, worktreePath, true);
 
 		// A change can land in the gap between watchWorkspace() and this line
-		// (the DB lookup + `git rev-parse` above are async) and go unobserved —
+		// (the DB lookup + git-dir lookup above are async) and go unobserved —
 		// fs.watch only reports events from here forward. One coalesced
 		// catch-up emit closes that window; consumers already treat every
 		// git:changed as "re-check status", so a possibly-redundant emit costs

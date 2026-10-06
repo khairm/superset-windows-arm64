@@ -35,6 +35,10 @@ import { registerBrowserCdpRoute } from "./runtime/browser-bridge/browser-cdp-ro
 import { WorkspaceFilesystemManager } from "./runtime/filesystem";
 import type { GitCredentialProvider } from "./runtime/git";
 import { createGitEnvResolver, createGitFactory } from "./runtime/git";
+import {
+	listGitIgnoredDirsInWorker,
+	resolveGitDirInWorker,
+} from "./runtime/git/attach-git-reads";
 import { runMainWorkspaceSweep } from "./runtime/main-workspace-sweep";
 import { runProjectBackfill } from "./runtime/project-backfill";
 import { PullRequestRuntimeManager } from "./runtime/pull-requests";
@@ -171,7 +175,10 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		});
 	const execGh: ExecGh = options.execGh ?? defaultExecGh;
 
-	const filesystem = new WorkspaceFilesystemManager({ db });
+	const filesystem = new WorkspaceFilesystemManager({
+		db,
+		listGitIgnoredDirs: listGitIgnoredDirsInWorker, // (GIT-WATCH-ATTACH-TASK)
+	});
 	// GitWatcher is the single source of truth for `.git/` and worktree fs
 	// activity per workspace. Both EventBus (broadcasts to clients) and the
 	// pull-requests runtime (event-driven branch sync, rate-limited through
@@ -180,13 +187,19 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		broadIntervalMs: 5_000,
 		fileOnlyIntervalMs: 30_000,
 	});
-	const gitWatcher = new GitWatcher(db, filesystem, (workspaceId, watched) => {
-		if (watched) gitStatusStore.attach(workspaceId);
-		else {
-			gitStatusStore.drop(workspaceId);
-			prSyncTrigger.cancelWorkspace(workspaceId); // (GIT-LAUNCH-BUDGET-B-CANCEL)
-		}
-	});
+	const gitWatcher = new GitWatcher(
+		db,
+		filesystem,
+		(workspaceId, watched) => {
+			if (watched) gitStatusStore.attach(workspaceId);
+			else {
+				gitStatusStore.drop(workspaceId);
+				prSyncTrigger.cancelWorkspace(workspaceId); // (GIT-LAUNCH-BUDGET-B-CANCEL)
+			}
+		},
+		undefined,
+		resolveGitDirInWorker, // (GIT-WATCH-ATTACH-TASK)
+	);
 	gitWatcher.onChanged((event) => {
 		gitStatusStore.recordChange(event.workspaceId, event.paths);
 	});
