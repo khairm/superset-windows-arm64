@@ -6,7 +6,8 @@ import { z } from "zod";
 import { pullRequests, workspaces } from "../../../db/schema";
 import { createGitEnvResolver } from "../../../runtime/git";
 import { resolveCheckoutIdentity } from "../../../runtime/git/checkout-identity";
-import { isGitRepo } from "../../../runtime/git/non-git";
+import { findGitEntryUpTree } from "../../../runtime/git/git-entry-probe";
+import { invalidateIsGitRepo, isGitRepo } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
 import type { HostServiceContext } from "../../../types";
 import { getHostWorkerPool } from "../../../workers/host-worker-pool";
@@ -17,11 +18,13 @@ import {
 	gitDiffPatchTask,
 	gitDiffSideBlobTask,
 	gitFetchBaseRefTask,
+	gitPrHeadBaseTask,
 	gitPushTask,
 	gitStagePathsTask,
 	gitStatusPartialTask,
 	gitStatusSnapshotTask,
 } from "../../../workers/tasks/git";
+import { gitListCommitsTask } from "../../../workers/tasks/git-reads";
 import { protectedProcedure, queryProcedure, router } from "../../index";
 import { rethrowWorkerTaskAbort } from "../../worker-abort";
 import { resolveGithubRepo } from "../workspace-creation/shared/project-helpers";
@@ -45,7 +48,6 @@ import {
 	assertSafeRelativePath,
 	getDefaultBranchName,
 	loadFileDiffContent,
-	resolveBaseComparison,
 	resolveDiffCategoryRefs,
 } from "./utils/git-helpers";
 import { emptyGitStatusSnapshot } from "./utils/git-status";
@@ -308,6 +310,19 @@ export const gitRouter = router({
 			return { isGitRepo: await isGitRepo(worktreePath) };
 		}),
 
+	// (HOVER-CARD-COLD-STATS) Disk probe only, never a git launch. "absent" is
+	// definite, so it also drops the host's cached "yes".
+	probeIsRepo: queryProcedure
+		.input(z.object({ workspaceId: z.string() }))
+		.query(async ({ ctx, input }) => {
+			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			const result = await findGitEntryUpTree(worktreePath).catch(
+				() => "unknown" as const,
+			);
+			if (result === "absent") invalidateIsGitRepo(worktreePath);
+			return { result };
+		}),
+
 	listBranches: queryProcedure
 		.input(z.object({ workspaceId: z.string() }))
 		.query(async ({ ctx, input }) => {
@@ -442,33 +457,18 @@ export const gitRouter = router({
 			if (!(await isGitRepo(worktreePath))) {
 				return { commits: [] as Commit[] };
 			}
-			const git = await ctx.git(worktreePath);
-
-			const base = await resolveBaseComparison(git, input.baseBranch);
-			const baseRef = base?.baseRef ?? "HEAD";
-
-			const commits: Commit[] = [];
-			try {
-				const raw = await git.raw([
-					"log",
-					`${baseRef}..HEAD`,
-					"--format=%H\t%h\t%s\t%an\t%ae\t%aI",
-				]);
-				for (const line of raw.trim().split("\n")) {
-					if (!line) continue;
-					const [hash, shortHash, message, author, authorEmail, date] =
-						line.split("\t");
-					commits.push({
-						hash: hash ?? "",
-						shortHash: shortHash ?? "",
-						message: message ?? "",
-						author: author ?? "",
-						authorEmail: authorEmail ?? "",
-						date: date ?? "",
-					});
-				}
-			} catch {}
-
+			// (GIT-COMMITS-TASK) fifo, not coalesce: a joined run could have read
+			// HEAD before a new commit, and the renderer holds this list until
+			// the next git event.
+			const commits = await getHostWorkerPool().run(
+				gitListCommitsTask,
+				{
+					worktreePath,
+					baseBranch: input.baseBranch,
+					gitEnv: await resolveGitTaskEnv(ctx, worktreePath),
+				},
+				{ strategy: "fifo", timeoutMs: 15_000 },
+			);
 			return { commits };
 		}),
 
@@ -516,19 +516,14 @@ export const gitRouter = router({
 			if (!(await isGitRepo(worktreePath))) {
 				return { baseBranch: null as string | null };
 			}
-			const git = await ctx.git(worktreePath);
-			const currentBranch = (
-				await git.revparse(["--abbrev-ref", "HEAD"]).catch(() => "")
-			).trim();
-			if (!currentBranch || currentBranch === "HEAD") {
-				return { baseBranch: null as string | null };
-			}
-			const configured = (
-				await git
-					.raw(["config", `branch.${currentBranch}.base`])
-					.catch(() => "")
-			).trim();
-			return { baseBranch: (configured || null) as string | null };
+			// (GIT-BASE-BRANCH-TASK) fifo: a coalesced run could return the base
+			// from before a branch switch.
+			const { configuredBase } = await getHostWorkerPool().run(
+				gitPrHeadBaseTask,
+				{ worktreePath, gitEnv: await resolveGitTaskEnv(ctx, worktreePath) },
+				{ strategy: "fifo", timeoutMs: 10_000 },
+			);
+			return { baseBranch: configuredBase };
 		}),
 
 	setBaseBranch: protectedProcedure
