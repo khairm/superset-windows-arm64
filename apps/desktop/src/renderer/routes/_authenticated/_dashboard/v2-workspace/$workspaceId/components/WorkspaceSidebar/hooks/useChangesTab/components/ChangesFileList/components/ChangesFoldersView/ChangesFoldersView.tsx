@@ -13,10 +13,10 @@ import {
 } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { toRelativeWorkspacePath } from "shared/absolute-paths";
 import type { FoldSignal } from "../../ChangesFileList";
-import { useFileDiscard } from "../../hooks/useFileDiscard";
 import { useStagingMutations } from "../../hooks/useStagingMutations";
 import { FileRow } from "../FileRow";
 import { FolderHeader } from "./components/FolderHeader";
+import { useFileDiscard } from "./hooks/useFileDiscard";
 
 const ROOT_FOLDER_KEY = "";
 const ROOT_FOLDER_LABEL = msg({

@@ -10,7 +10,6 @@ import type { ChangesViewMode } from "renderer/routes/_authenticated/providers/C
 import { ChangesFoldersView } from "./components/ChangesFoldersView";
 import { ChangesSection } from "./components/ChangesSection";
 import { ChangesTreeView } from "./components/ChangesTreeView";
-import { useInitialOpenGate } from "./hooks/useInitialOpenGate";
 
 /** Pulse from the toolbar's expand-all / collapse-all buttons. `epoch` is 0 until the first press. */
 export interface FoldSignal {
@@ -25,6 +24,8 @@ interface ChangesFileListProps {
 	workspaceId: string;
 	isLoading?: boolean;
 	viewMode: ChangesViewMode;
+	/** False while a large cached re-open holds its folder-view rows back. */
+	rowsReady: boolean;
 	worktreePath?: string;
 	selectedFilePath?: string;
 	selectedChangeKey?: string;
@@ -39,8 +40,6 @@ interface ChangesFileListProps {
 }
 
 type GroupKey = ChangesetFile["source"]["kind"];
-
-const ROW_GATE = 30;
 
 const GROUP_ORDER: GroupKey[] = [
 	"unstaged",
@@ -68,6 +67,7 @@ export const ChangesFileList = memo(function ChangesFileList({
 	workspaceId,
 	isLoading,
 	viewMode,
+	rowsReady,
 	worktreePath,
 	selectedFilePath,
 	selectedChangeKey,
@@ -76,12 +76,7 @@ export const ChangesFileList = memo(function ChangesFileList({
 	onOpenFile,
 	onOpenInEditor,
 }: ChangesFileListProps) {
-	// (WS-OPEN-RENDER) Rows of a large cached changeset mount after the
-	// workspace paints; headers and counts render at once.
-	const rowsReady = useInitialOpenGate(
-		workspaceId,
-		viewMode === "folders" && files.length > ROW_GATE,
-	);
+	// (WS-OPEN-RENDER) One click policy per list; rows take its stable members.
 	const { getIntent, tierForIntent, hint } = useChangesSidebarFilePolicy();
 	const grouped = useMemo(() => {
 		const groups: Record<GroupKey, ChangesetFile[]> = {
