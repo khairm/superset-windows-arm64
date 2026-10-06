@@ -196,7 +196,11 @@ In brief:
   host.db `claude_account_schedules`: fires even with Auto-switch off, target
   must be enabled and alive, temporary failures retry 30 min, red in the menu;
   a pick that changes the account or card-exit retire cancels; fallback waits
-  10 min after a fire.
+  10 min after a fire. Accounts the Pi's `/accounts/ip-state` reports cut off
+  or getting an IP are never picked or fallen back to; a pinned one falls back
+  (`(CLAUDE-ACCOUNT-IP-STATE)`).
+- **Usage page stubbed** — `usage.quota` returns an empty list and calls no
+  provider; usage lives in the usage tray and round screen (`(USAGE-PAGE-STUB)`).
 - **Unused upstream features hidden** — browser panes, page watchers, the v3
   local chat pane and port scanning are off behind one `const` each in
   `packages/shared/src/fork-disabled-features.ts`

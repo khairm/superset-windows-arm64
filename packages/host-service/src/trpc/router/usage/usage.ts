@@ -15,60 +15,21 @@ import {
 	provisionClaudeAccount,
 	provisionCodexAccount,
 } from "./account-provisioning";
-import { fetchAgyAccounts } from "./agy-quota";
-import { fetchClaudeAccounts, readDefaultLoginEmail } from "./claude";
-import { fetchCodexAccounts } from "./codex";
+import { readDefaultLoginEmail } from "./claude";
 import {
 	getDefaultAccountSelections,
 	setDefaultAccountSelection,
 } from "./default-account";
-import { fetchGrokAccounts } from "./grok-quota";
 import { countAgentPrsByDay } from "./history/agent-prs";
-import { fetchOpencodeAccounts } from "./opencode-quota";
 import { removeClaudeProfile, removeCodexHome } from "./profile-remove";
 import { discoverClaudeProfiles, discoverCodexHomes } from "./profiles";
 import { validateSessionAccount } from "./session-account/session-account";
 import type { UsageAccount } from "./types";
 
-/**
- * Agent quota endpoints are undocumented and rate-limit-sensitive, so
- * results are cached briefly and concurrent callers share one in-flight
- * request. The cached promise is evicted on rejection so a failure does not
- * replay for the whole TTL.
- */
-// >=5 min: Anthropic 429-blacklists faster pollers of the oauth/usage
-// endpoint (ccusage deprecated its live gauge over this; CodexBar #30930).
-const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
-
-let cachedQuota: { promise: Promise<UsageAccount[]>; cachedAt: number } | null =
-	null;
-
-function loadAccounts(): Promise<UsageAccount[]> {
-	return Promise.all([
-		fetchClaudeAccounts(),
-		fetchCodexAccounts(),
-		fetchGrokAccounts(),
-		fetchAgyAccounts(),
-		fetchOpencodeAccounts(),
-	]).then((groups) => groups.flat());
-}
-
-function getQuota(forceRefresh: boolean): Promise<UsageAccount[]> {
-	if (
-		!forceRefresh &&
-		cachedQuota &&
-		Date.now() - cachedQuota.cachedAt < QUOTA_CACHE_TTL_MS
-	) {
-		return cachedQuota.promise;
-	}
-
-	const promise = loadAccounts();
-	const entry = { promise, cachedAt: Date.now() };
-	cachedQuota = entry;
-	promise.catch(() => {
-		if (cachedQuota === entry) cachedQuota = null;
-	});
-	return promise;
+// (USAGE-PAGE-STUB) Usage lives in the usage tray and the round screen; no
+// provider quota endpoint is ever called from here.
+function getQuota(_forceRefresh: boolean): Promise<UsageAccount[]> {
+	return Promise.resolve([]);
 }
 
 export const usageRouter = router({
@@ -265,9 +226,6 @@ export const usageRouter = router({
 			if (pointer === input.selection) {
 				setDefaultAccountSelection(ctx.db, input.agent, null);
 			}
-			// The quota cache still lists the removed account; drop it so the
-			// next query re-discovers.
-			cachedQuota = null;
 			return { success: true as const };
 		}),
 

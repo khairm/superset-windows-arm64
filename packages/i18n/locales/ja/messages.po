@@ -9272,10 +9272,6 @@ msgstr "良いアプローチ"
 msgid "Nice, open a PR when ready."
 msgstr "いいですね。準備ができたらPRを作成してください。"
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "このホストに{0}のログインがありません — サインインすると使用量が表示されます。"
-
 msgid "No access to this host"
 msgstr "このホストへのアクセス権がありません"
 
@@ -10006,9 +10002,6 @@ msgstr "100以上のコーディングエージェントを並列実行できる
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "{0}の公式ドキュメント。端末上で100以上のコーディングエージェントを並列実行する方法をご紹介します。"
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "公式クォータ · 5分ごとに更新"
 
 msgid "offline"
 msgstr "オフライン"
@@ -16133,6 +16126,9 @@ msgstr "使用量"
 
 msgid "Usage is out of date"
 msgstr "使用状況が古くなっています"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "使用量は、システムトレイの使用量アプリと丸型ディスプレイに表示されるようになりました。"
 
 msgid "Usage sections"
 msgstr "使用量セクション"

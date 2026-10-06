@@ -9272,10 +9272,6 @@ msgstr "思路不错"
 msgid "Nice, open a PR when ready."
 msgstr "不错，准备好就开个PR。"
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "此主机上没有{0}登录——登录后用量会显示在这里。"
-
 msgid "No access to this host"
 msgstr "没有此主机的访问权限"
 
@@ -10006,9 +10002,6 @@ msgstr "{0} 官方文档。这款应用可并行运行 100 多个编程代理。
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "{0} 官方文档。了解如何在您的设备上并行运行 100 多个编程代理。"
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "官方配额 · 每5分钟刷新"
 
 msgid "offline"
 msgstr "离线"
@@ -16133,6 +16126,9 @@ msgstr "用量"
 
 msgid "Usage is out of date"
 msgstr "用量数据已过时"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "用量现在显示在系统托盘的用量应用和圆形屏幕上。"
 
 msgid "Usage sections"
 msgstr "用量分区"

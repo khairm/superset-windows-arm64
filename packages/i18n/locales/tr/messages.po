@@ -9272,10 +9272,6 @@ msgstr "Güzel yaklaşım"
 msgid "Nice, open a PR when ready."
 msgstr "Güzel, hazır olduğunda bir PR aç."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "Bu host'ta {0} oturumu yok — oturum açın, kullanım burada görünsün."
-
 msgid "No access to this host"
 msgstr "Bu host'a erişim yok"
 
@@ -10006,9 +10002,6 @@ msgstr "100'den fazla kodlama ajanını paralel çalıştıran {0} uygulamasın�
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "{0} resmi belgeleri. Bilgisayarınızda 100'den fazla kodlama ajanını paralel çalıştırmayı öğrenin."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Resmî kota · her 5 dakikada bir yenilenir"
 
 msgid "offline"
 msgstr "çevrimdışı"
@@ -16133,6 +16126,9 @@ msgstr "Kullanım"
 
 msgid "Usage is out of date"
 msgstr "Kullanım verileri güncel değil"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Kullanım artık sistem tepsisindeki kullanım uygulamasında ve yuvarlak ekranda gösteriliyor."
 
 msgid "Usage sections"
 msgstr "Kullanım bölümleri"

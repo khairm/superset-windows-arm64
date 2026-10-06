@@ -9272,10 +9272,6 @@ msgstr "Хороший подход"
 msgid "Nice, open a PR when ready."
 msgstr "Отлично, открой PR, когда будет готово."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "На этом хосте нет входов {0} — войдите, и данные появятся здесь."
-
 msgid "No access to this host"
 msgstr "Нет доступа к этому хосту"
 
@@ -10006,9 +10002,6 @@ msgstr "Официальная документация {0} — приложен
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "Официальная документация {0}. Узнайте, как параллельно запускать более 100 агентов программирования на своём компьютере."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Официальная квота · обновляется каждые 5 мин"
 
 msgid "offline"
 msgstr "офлайн"
@@ -16133,6 +16126,9 @@ msgstr "Использование"
 
 msgid "Usage is out of date"
 msgstr "Данные об использовании устарели"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Использование теперь отображается в приложении использования в системном трее и на круглом экране."
 
 msgid "Usage sections"
 msgstr "Разделы использования"

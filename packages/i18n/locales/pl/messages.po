@@ -9272,10 +9272,6 @@ msgstr "Dobre podejście"
 msgid "Nice, open a PR when ready."
 msgstr "Świetnie, otwórz PR, gdy będzie gotowy."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "Brak logowań {0} na tym hoście — zaloguj się, a zużycie pojawi się tutaj."
-
 msgid "No access to this host"
 msgstr "Brak dostępu do tego hosta"
 
@@ -10006,9 +10002,6 @@ msgstr "Oficjalna dokumentacja {0}, aplikacji do równoległego uruchamiania pon
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "Oficjalna dokumentacja {0}. Dowiedz się, jak uruchamiać ponad 100 agentów programistycznych równolegle na swoim komputerze."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Oficjalny limit · odświeżany co 5 min"
 
 msgid "offline"
 msgstr "offline"
@@ -16133,6 +16126,9 @@ msgstr "Zużycie"
 
 msgid "Usage is out of date"
 msgstr "Dane o wykorzystaniu są nieaktualne"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Użycie jest teraz wyświetlane w aplikacji użycia w zasobniku systemowym i na okrągłym ekranie."
 
 msgid "Usage sections"
 msgstr "Sekcje zużycia"

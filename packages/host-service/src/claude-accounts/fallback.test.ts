@@ -24,6 +24,7 @@ function account(overrides: Partial<PiAccount> = {}): PiAccount {
 		sevenResetsAt: null,
 		fableResetsAt: null,
 		fableInUse: false,
+		ipState: "own",
 		...overrides,
 	};
 }
@@ -84,5 +85,42 @@ describe("FallbackPolicy", () => {
 			action: "fallback",
 			reason: "Fable weekly usage 99% crossed tray line 99%",
 		});
+	});
+
+	for (const ipState of ["cut_off", "getting_ip"] as const) {
+		it(`falls back from a ${ipState} account even on stale data`, () => {
+			const policy = new FallbackPolicy(log);
+			expect(
+				policy.evaluate(
+					account({ ipState, lastSuccess: new Date(0).toISOString() }),
+					triggers,
+					31 * 60 * 1000,
+				),
+			).toEqual({
+				action: "fallback",
+				reason: `pinned account has no working IP (${ipState})`,
+			});
+		});
+	}
+
+	it("keeps an account on the home IP eligible", () => {
+		const policy = new FallbackPolicy(log);
+		expect(
+			policy.evaluate(account({ ipState: "home" }), triggers, 1_000_000),
+		).toEqual({
+			action: "suppress",
+			reason: "account remains below tray trigger lines",
+		});
+	});
+
+	it("keeps a disabled cut-off account suppressed", () => {
+		const policy = new FallbackPolicy(log);
+		expect(
+			policy.evaluate(
+				account({ enabled: false, ipState: "cut_off" }),
+				triggers,
+				1_000_000,
+			),
+		).toEqual({ action: "suppress", reason: "pinned account is disabled" });
 	});
 });

@@ -11,7 +11,11 @@ import { mapConcurrent } from "../lib/map-concurrent";
 import { listUndisposedTerminalIdsByWorkspaceId } from "../terminal/terminal";
 import { beginWorkspaceRetirement } from "../terminal/workspace-launch-fence";
 import { clearLegacyClaudeDefaultAccount } from "../trpc/router/usage/default-account";
-import { FallbackPolicy, type TrayTriggers } from "./fallback";
+import {
+	FallbackPolicy,
+	noWorkingIpState,
+	type TrayTriggers,
+} from "./fallback";
 import {
 	ClaudeProfileJanitor,
 	type DisposalFailureMode,
@@ -596,6 +600,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 					{ cause: error },
 				);
 			}
+			const noIp =
+				identity.kind === "tray"
+					? machineDefaultNoIpMessage(identity.slug, roster)
+					: null;
+			if (noIp) throw new Error(noIp);
 			credentialTransition =
 				identity.kind === "absent"
 					? { credentialAction: "keep" }
@@ -877,6 +886,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 						type: _type,
 						fableResetsAt: _fableReset,
 						fableInUse: _fableInUse,
+						ipState: _ipState,
 						...account
 					}) => account,
 				),
@@ -1182,6 +1192,14 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				"The machine default is signed out",
 			);
 		}
+		const noIp =
+			identity.kind === "tray"
+				? machineDefaultNoIpMessage(
+						identity.slug,
+						this.pi.getAccountsLastGood(),
+					)
+				: null;
+		if (noIp) return retryOutcome("default-unavailable", noIp);
 		return this.switchForSchedule(schedule, row, null, identity.credentials);
 	}
 
@@ -1667,7 +1685,8 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			? accountHealthMessage(account, `Pinned Claude account '${slug}'`)
 			: null;
 		if (accountHealth) {
-			if (switchPending) {
+			// (CLAUDE-ACCOUNT-IP-STATE) getting_ip is a pin in progress, not a rejection.
+			if (switchPending && account?.ipState !== "getting_ip") {
 				await this.removeRejectedPendingSwitchCredentials(workspaceId, slug);
 				current = null;
 				this.setWarningCause(workspaceId, "renewal", null, { emit: false });
@@ -2868,10 +2887,31 @@ function pendingSwitchMessage(slug: string): string {
 	return `The switch to Claude account '${slug}' is waiting for the Pi. This workspace is still using the previous account's last-good token.`;
 }
 
+// (CLAUDE-ACCOUNT-IP-STATE)
+function noWorkingIpMessage(account: PiAccount, label: string): string | null {
+	const noIpState = noWorkingIpState(account);
+	return noIpState ? `${label} has no working IP (${noIpState}).` : null;
+}
+
+function machineDefaultNoIpMessage(
+	slug: string,
+	roster: readonly PiAccount[] | null,
+): string | null {
+	const account = roster ? findClaudeAccount(roster, slug) : undefined;
+	return account
+		? noWorkingIpMessage(
+				account,
+				`The machine-default Claude account '${slug}'`,
+			)
+		: null;
+}
+
 function accountHealthMessage(
 	account: PiAccount,
 	label: string,
 ): string | null {
+	const noIp = noWorkingIpMessage(account, label);
+	if (noIp) return noIp;
 	if (account.dead) {
 		return `${label} needs re-login${account.deadReason ? `: ${account.deadReason}` : "."}`;
 	}

@@ -10,8 +10,10 @@ import {
 	seedWorkspace,
 	servePiFake,
 	type WireAccount,
+	type WireIpState,
 	WORKSPACE_IDS,
 	wireAccount,
+	wireIpState,
 	writeGlobalClaudeState,
 	writeGlobalCredentials,
 } from "../../test/helpers/claude-accounts-fixture";
@@ -87,6 +89,7 @@ async function setupService(options: { now?: () => number } = {}) {
 
 async function setupFallbackService(options: {
 	roster: WireAccount[];
+	ipStates?: Record<string, WireIpState["state"]>;
 	workspaceSlugs: string[];
 	autoSwitch?: boolean;
 	awaitInitialBackgroundWork?: boolean;
@@ -131,7 +134,7 @@ async function setupFallbackService(options: {
 			managedCredentials(slug),
 		);
 	}
-	const pi = await servePiFake(world.root, options.roster);
+	const pi = await servePiFake(world.root, options.roster, options.ipStates);
 	servers.push(pi.server);
 	const service = createClaudeAccountsService({
 		db: world.db,
@@ -731,6 +734,9 @@ describe("Claude account service transitions", () => {
 				if (path === "/accounts") {
 					return Response.json([wireAccount("claude123")]);
 				}
+				if (path === "/accounts/ip-state") {
+					return Response.json([wireIpState("claude123")]);
+				}
 				if (path.endsWith("/token")) {
 					return new Response(null, { status: 503 });
 				}
@@ -1055,6 +1061,82 @@ describe("Claude automatic fallback safeguards", () => {
 		const state = await service.getWorkspaceState(WORKSPACE_IDS[0]);
 		expect(state.state).toBe("pinned");
 		expect(state.warning?.message).toContain("needs re-login");
+	});
+
+	test("permanently falls back from a cut-off pinned account", async () => {
+		const { world, service } = await setupFallbackService({
+			roster: [wireAccount("claude12"), wireAccount("claude123")],
+			ipStates: { claude123: "cut_off" },
+			workspaceSlugs: ["claude123"],
+		});
+		await waitFor(
+			() =>
+				world.events.some(
+					(event) =>
+						event.type === "claude-account-state-changed" &&
+						event.cause === "auto-fallback",
+				),
+			"cut-off fallback was not emitted",
+		);
+
+		const state = await service.getWorkspaceState(WORKSPACE_IDS[0]);
+		expect(state.state).toBe("following");
+		expect(state.slug).toBeNull();
+	});
+
+	test("does not fall back onto a machine default that is getting an IP", async () => {
+		const { world, service } = await setupFallbackService({
+			roster: [
+				wireAccount("claude12"),
+				wireAccount("claude123", { five_pct: 95 }),
+			],
+			ipStates: { claude12: "getting_ip" },
+			workspaceSlugs: ["claude123"],
+		});
+		await waitFor(
+			() =>
+				world.log.warnEntries.some((entry) =>
+					entry.message.includes("machine default is unavailable"),
+				),
+			"getting-IP machine-default suppression was not observed",
+		);
+
+		const state = await service.getWorkspaceState(WORKSPACE_IDS[0]);
+		expect(state.state).toBe("pinned");
+		expect(state.warning?.message).toContain("has no working IP (getting_ip)");
+	});
+
+	test("refuses a manual pick of a cut-off account", async () => {
+		const { service } = await setupFallbackService({
+			roster: [wireAccount("claude12"), wireAccount("claude123")],
+			ipStates: { claude123: "cut_off" },
+			workspaceSlugs: ["claude12"],
+		});
+
+		await expect(
+			service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123"),
+		).rejects.toThrow(
+			"Claude account 'claude123' has no working IP (cut_off).",
+		);
+	});
+
+	test("refuses a manual switch to Following onto a cut-off machine default", async () => {
+		const { world, service } = await setupFallbackService({
+			roster: [wireAccount("claude12"), wireAccount("claude123")],
+			ipStates: { claude12: "cut_off" },
+			workspaceSlugs: ["claude123"],
+		});
+
+		await expect(
+			service.setWorkspaceAccount(WORKSPACE_IDS[0], null),
+		).rejects.toThrow(
+			"The machine-default Claude account 'claude12' has no working IP (cut_off).",
+		);
+		expect(
+			world.db.query.workspaces
+				.findFirst({ where: eq(workspaces.id, WORKSPACE_IDS[0]) })
+				.sync()?.claudeAccountSlug,
+		).toBe("claude123");
 	});
 });
 

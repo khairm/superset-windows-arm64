@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type {
 	ClaudeAccessToken,
+	ClaudeAccountIpState,
 	ClaudeAccountsLogger,
 	PiAccount,
 } from "./types";
@@ -77,6 +78,29 @@ const accountSchema = z
 	})
 	.strict();
 const accountsSchema = z.array(accountSchema);
+
+// (CLAUDE-ACCOUNT-IP-STATE)
+const ipStateEntrySchema = z
+	.object({
+		slug: accountSlugSchema,
+		mode: z.enum(["own", "home"]),
+		state: z.enum(["own", "home", "getting_ip", "cut_off"]),
+		ip: z.string().min(1).nullable(),
+		cut_off_reason: z
+			.enum([
+				"repick_died",
+				"no_unused",
+				"spares_failing",
+				"no_list",
+				"login_rejected",
+				"provider_down",
+			])
+			.nullable(),
+		cut_off_until: isoTimestamp.nullable(),
+		route_version: z.number().int().positive(),
+	})
+	.strict();
+const ipStateSchema = z.array(ipStateEntrySchema);
 
 const tokenEnvelopeSchema = z
 	.object({
@@ -202,7 +226,10 @@ export class PiClient {
 	}
 
 	private async requestAccounts(): Promise<PiAccount[]> {
-		const raw = await this.getJson("/accounts", ACCOUNTS_TIMEOUT_MS);
+		const [raw, rawIpStates] = await Promise.all([
+			this.getJson("/accounts", ACCOUNTS_TIMEOUT_MS),
+			this.getJson("/accounts/ip-state", ACCOUNTS_TIMEOUT_MS),
+		]);
 		const parsed = accountsSchema.safeParse(raw);
 		if (!parsed.success) {
 			throw new PiRequestError(
@@ -210,6 +237,7 @@ export class PiClient {
 				{ retryable: false },
 			);
 		}
+		const ipStates = parseIpStates(rawIpStates, parsed.data);
 		const accounts = parsed.data.map(
 			(account): PiAccount => ({
 				slug: account.slug,
@@ -226,6 +254,10 @@ export class PiClient {
 				sevenResetsAt: account.seven_resets_at,
 				fableResetsAt: account.fable_resets_at,
 				fableInUse: account.fable_in_use,
+				ipState:
+					account.type === "claude"
+						? requireIpState(ipStates, account.slug)
+						: null,
 			}),
 		);
 		this.lastGoodAccounts = accounts;
@@ -355,4 +387,47 @@ export class PiClient {
 			});
 		}
 	}
+}
+
+function parseIpStates(
+	raw: unknown,
+	accounts: ReadonlyArray<{ slug: string; type: "claude" | "codex" }>,
+): Map<string, ClaudeAccountIpState> {
+	const parsed = ipStateSchema.safeParse(raw);
+	if (!parsed.success) {
+		throw new PiRequestError(
+			`Pi /accounts/ip-state response failed validation: ${z.prettifyError(parsed.error)}`,
+			{ retryable: false },
+		);
+	}
+	const claudeSlugs = new Set(
+		accounts
+			.filter((account) => account.type === "claude")
+			.map((account) => account.slug),
+	);
+	const states = new Map<string, ClaudeAccountIpState>();
+	for (const entry of parsed.data) {
+		if (!claudeSlugs.has(entry.slug) || states.has(entry.slug)) {
+			throw new PiRequestError(
+				`Pi /accounts/ip-state entry ${entry.slug} is not a Claude account in /accounts or is listed twice`,
+				{ retryable: false },
+			);
+		}
+		states.set(entry.slug, entry.state);
+	}
+	return states;
+}
+
+function requireIpState(
+	states: ReadonlyMap<string, ClaudeAccountIpState>,
+	slug: string,
+): ClaudeAccountIpState {
+	const state = states.get(slug);
+	if (!state) {
+		throw new PiRequestError(
+			`Pi /accounts/ip-state has no entry for Claude account ${slug}`,
+			{ retryable: false },
+		);
+	}
+	return state;
 }

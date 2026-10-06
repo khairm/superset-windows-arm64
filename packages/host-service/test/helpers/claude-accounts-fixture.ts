@@ -212,9 +212,35 @@ export function wireAccount(
 	};
 }
 
+export interface WireIpState {
+	slug: string;
+	mode: "own" | "home";
+	state: "own" | "home" | "getting_ip" | "cut_off";
+	ip: string | null;
+	cut_off_reason: string | null;
+	cut_off_until: string | null;
+	route_version: number;
+}
+
+export function wireIpState(
+	slug: string,
+	state: WireIpState["state"] = "own",
+): WireIpState {
+	return {
+		slug,
+		mode: state === "home" ? "home" : "own",
+		state,
+		ip: state === "getting_ip" ? null : "203.0.113.10",
+		cut_off_reason: state === "cut_off" ? "no_unused" : null,
+		cut_off_until: null,
+		route_version: 1,
+	};
+}
+
 export async function servePiFake(
 	root: string,
 	accounts: readonly WireAccount[],
+	ipStates: Readonly<Record<string, WireIpState["state"]>> = {},
 ) {
 	const pushKeyPath = join(root, "push-key.txt");
 	await writeFile(pushKeyPath, "test-key\n", "utf8");
@@ -229,6 +255,15 @@ export async function servePiFake(
 			if (!available) return new Response(null, { status: failureStatus });
 			const path = new URL(request.url).pathname;
 			if (path === "/accounts") return Response.json(currentAccounts);
+			if (path === "/accounts/ip-state") {
+				return Response.json(
+					currentAccounts
+						.filter((account) => account.type === "claude")
+						.map((account) =>
+							wireIpState(account.slug, ipStates[account.slug]),
+						),
+				);
+			}
 			const slug = path.split("/")[2];
 			if (path.endsWith("/token") && slug) {
 				if (!tokenAvailable) {

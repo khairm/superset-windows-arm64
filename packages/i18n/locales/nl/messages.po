@@ -9272,10 +9272,6 @@ msgstr "Goede aanpak"
 msgid "Nice, open a PR when ready."
 msgstr "Mooi, open een PR als het klaar is."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "Geen {0}-logins op deze host — log in en het gebruik verschijnt hier."
-
 msgid "No access to this host"
 msgstr "Geen toegang tot deze host"
 
@@ -10006,9 +10002,6 @@ msgstr "Officiële documentatie van {0}, de app voor meer dan 100 parallelle pro
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "Officiële documentatie van {0}. Leer hoe je meer dan 100 programmeeragenten parallel op je computer uitvoert."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Officieel quotum · ververst elke 5 min"
 
 msgid "offline"
 msgstr "offline"
@@ -16133,6 +16126,9 @@ msgstr "Gebruik"
 
 msgid "Usage is out of date"
 msgstr "De gebruiksgegevens zijn verouderd"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Gebruik wordt nu getoond in de gebruiksapp in het systeemvak en op het ronde scherm."
 
 msgid "Usage sections"
 msgstr "Onderdelen van gebruik"

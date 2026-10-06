@@ -9272,10 +9272,6 @@ msgstr "Dobrý přístup"
 msgid "Nice, open a PR when ready."
 msgstr "Super, až budeš mít hotovo, otevři PR."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "Na tomto hostu nejsou žádná přihlášení {0} — přihlaste se a využití se objeví tady."
-
 msgid "No access to this host"
 msgstr "K tomuto hostu nemáte přístup"
 
@@ -10006,9 +10002,6 @@ msgstr "Oficiální dokumentace {0}, aplikace pro paralelní spouštění více 
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "Oficiální dokumentace {0}. Naučte se na svém počítači paralelně spouštět více než 100 programovacích agentů."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Oficiální kvóta · obnovuje se každých 5 min"
 
 msgid "offline"
 msgstr "offline"
@@ -16133,6 +16126,9 @@ msgstr "Využití"
 
 msgid "Usage is out of date"
 msgstr "Údaje o využití jsou zastaralé"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Využití se nyní zobrazuje v aplikaci využití v systémové liště a na kulatém displeji."
 
 msgid "Usage sections"
 msgstr "Sekce využití"

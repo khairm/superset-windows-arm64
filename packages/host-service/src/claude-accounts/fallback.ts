@@ -63,6 +63,13 @@ export class FallbackPolicy {
 		if (!account.enabled) {
 			return { action: "suppress", reason: "pinned account is disabled" };
 		}
+		const noIpState = noWorkingIpState(account);
+		if (noIpState) {
+			return {
+				action: "fallback",
+				reason: `pinned account has no working IP (${noIpState})`,
+			};
+		}
 		const lastSuccess = account.lastSuccess
 			? Date.parse(account.lastSuccess)
 			: Number.NaN;
@@ -119,6 +126,15 @@ export class FallbackPolicy {
 					: "account remains below tray trigger lines",
 		};
 	}
+}
+
+// (CLAUDE-ACCOUNT-IP-STATE)
+export function noWorkingIpState(
+	account: PiAccount,
+): "getting_ip" | "cut_off" | null {
+	return account.ipState === "getting_ip" || account.ipState === "cut_off"
+		? account.ipState
+		: null;
 }
 
 function effectivePercentage(

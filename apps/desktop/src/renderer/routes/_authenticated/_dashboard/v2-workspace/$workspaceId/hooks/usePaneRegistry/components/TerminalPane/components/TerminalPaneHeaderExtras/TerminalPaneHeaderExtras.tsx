@@ -9,7 +9,6 @@ import {
 	terminalRichInputOpenStore,
 	useTerminalRichInputOpen,
 } from "../../richInputOpenStore";
-import { TerminalAccountUsage } from "./components/TerminalAccountUsage";
 import { TerminalConnectionIndicator } from "./components/TerminalConnectionIndicator";
 import { TerminalIdCopyMenu } from "./components/TerminalIdCopyMenu";
 import { TerminalPageWatchChip } from "./components/TerminalPageWatchChip";
@@ -59,11 +58,7 @@ export function TerminalPaneHeaderExtras({
 
 	return (
 		<div className="flex items-center gap-1">
-			<TerminalAccountUsage
-				key={`${workspaceId}:${terminalId}`}
-				workspaceId={workspaceId}
-				terminalId={terminalId}
-			/>
+			{/* (USAGE-PAGE-STUB) usage ring hidden: usage.quota is stubbed. To restore, re-add <TerminalAccountUsage> here from upstream. */}
 			<TerminalSubagentsMenu
 				workspaceId={workspaceId}
 				terminalId={terminalId}

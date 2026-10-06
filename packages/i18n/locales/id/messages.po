@@ -9272,10 +9272,6 @@ msgstr "Pendekatan yang bagus"
 msgid "Nice, open a PR when ready."
 msgstr "Bagus, buka PR kalau sudah siap."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "Tidak ada login {0} di host ini — masuk dan penggunaannya akan muncul di sini."
-
 msgid "No access to this host"
 msgstr "Tidak ada akses ke host ini"
 
@@ -10006,9 +10002,6 @@ msgstr "Dokumentasi resmi {0}, aplikasi untuk menjalankan lebih dari 100 agen pe
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "Dokumentasi resmi {0}. Pelajari cara menjalankan lebih dari 100 agen pemrograman secara paralel di perangkat Anda."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Kuota resmi · disegarkan tiap 5 menit"
 
 msgid "offline"
 msgstr "offline"
@@ -16133,6 +16126,9 @@ msgstr "Penggunaan"
 
 msgid "Usage is out of date"
 msgstr "Data penggunaan sudah tidak mutakhir"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Penggunaan kini ditampilkan di aplikasi penggunaan pada baki sistem dan di layar bundar."
 
 msgid "Usage sections"
 msgstr "Bagian penggunaan"

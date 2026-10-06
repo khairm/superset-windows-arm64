@@ -76,10 +76,15 @@ export interface ClaudeAccountRosterEntry {
 	lastSuccess: string | null;
 }
 
+// (CLAUDE-ACCOUNT-IP-STATE)
+export type ClaudeAccountIpState = "own" | "home" | "getting_ip" | "cut_off";
+
 export interface PiAccount extends ClaudeAccountRosterEntry {
 	type: "claude" | "codex";
 	fableResetsAt: string | null;
 	fableInUse: boolean;
+	/** null for Codex accounts. */
+	ipState: ClaudeAccountIpState | null;
 }
 
 export interface ClaudeAccessToken {

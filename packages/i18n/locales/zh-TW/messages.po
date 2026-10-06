@@ -9272,10 +9272,6 @@ msgstr "想法不錯"
 msgid "Nice, open a PR when ready."
 msgstr "不錯，準備好就開個PR。"
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "此主機上沒有{0}登入——登入後用量會顯示在這裡。"
-
 msgid "No access to this host"
 msgstr "沒有此主機的存取權限"
 
@@ -10006,9 +10002,6 @@ msgstr "{0} 官方文件。這款應用程式可並行運行 100 多個編程代
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "{0} 官方文件。瞭解如何在您的設備上並行運行 100 多個編程代理。"
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "官方配額 · 每5分鐘重新整理"
 
 msgid "offline"
 msgstr "離線"
@@ -16133,6 +16126,9 @@ msgstr "用量"
 
 msgid "Usage is out of date"
 msgstr "用量資料已過期"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "用量現在會顯示在系統匣的用量應用程式和圓形螢幕上。"
 
 msgid "Usage sections"
 msgstr "用量分區"

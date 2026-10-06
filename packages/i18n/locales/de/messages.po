@@ -9272,10 +9272,6 @@ msgstr "Guter Ansatz"
 msgid "Nice, open a PR when ready."
 msgstr "Super, öffne einen PR, wenn es so weit ist."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "Keine {0}-Anmeldungen auf diesem Host — melde dich an, dann erscheint die Nutzung hier."
-
 msgid "No access to this host"
 msgstr "Kein Zugriff auf diesen Host"
 
@@ -10006,9 +10002,6 @@ msgstr "Offizielle Dokumentation zu {0}, der App für mehr als 100 parallele Cod
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "Offizielle Dokumentation zu {0}. Erfahre, wie du mehr als 100 Coding-Agenten parallel auf deinem Rechner ausführst."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Offizielles Kontingent · aktualisiert sich alle 5 Min."
 
 msgid "offline"
 msgstr "offline"
@@ -16133,6 +16126,9 @@ msgstr "Nutzung"
 
 msgid "Usage is out of date"
 msgstr "Die Nutzungsdaten sind veraltet"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Die Nutzung wird jetzt in der Nutzungs-App im Infobereich der Taskleiste und auf dem runden Display angezeigt."
 
 msgid "Usage sections"
 msgstr "Nutzungsbereiche"

@@ -9272,10 +9272,6 @@ msgstr "Cách tiếp cận hay"
 msgid "Nice, open a PR when ready."
 msgstr "Tốt, mở PR khi sẵn sàng nhé."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "Chưa có lần đăng nhập {0} nào trên host này — hãy đăng nhập và mức sử dụng sẽ hiện ở đây."
-
 msgid "No access to this host"
 msgstr "Không có quyền truy cập host này"
 
@@ -10006,9 +10002,6 @@ msgstr "Tài liệu chính thức của {0}, ứng dụng chạy song song hơn 
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "Tài liệu chính thức của {0}. Tìm hiểu cách chạy song song hơn 100 tác tử lập trình trên máy của bạn."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "Hạn mức chính thức · làm mới mỗi 5 phút"
 
 msgid "offline"
 msgstr "ngoại tuyến"
@@ -16133,6 +16126,9 @@ msgstr "Mức sử dụng"
 
 msgid "Usage is out of date"
 msgstr "Dữ liệu sử dụng đã cũ"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "Mức sử dụng hiện được hiển thị trong ứng dụng sử dụng ở khay hệ thống và trên màn hình tròn."
 
 msgid "Usage sections"
 msgstr "Các mục mức sử dụng"

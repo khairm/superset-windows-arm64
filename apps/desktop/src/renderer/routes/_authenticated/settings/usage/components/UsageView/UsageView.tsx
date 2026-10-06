@@ -535,13 +535,10 @@ export function UsageView({
 		<div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-3 px-6 py-4">
 			<LeaderboardCard hostUrl={hostUrl} />
 			<div className="flex items-center gap-2">
-				<span className="ml-auto text-[10px] text-muted-foreground">
-					<Trans>Official quota · refreshes every 5 min</Trans>
-				</span>
 				<Button
 					variant="ghost"
 					size="sm"
-					className="h-6 gap-1 px-1.5 text-[10px] text-muted-foreground"
+					className="ml-auto h-6 gap-1 px-1.5 text-[10px] text-muted-foreground"
 					aria-pressed={hideEmails}
 					onClick={() => setHideEmails((hidden) => !hidden)}
 				>
@@ -601,10 +598,10 @@ export function UsageView({
 								<Trans>Reading usage…</Trans>
 							</div>
 						) : agentAccounts.length === 0 ? (
+							// (USAGE-PAGE-STUB) the host returns no quota for any provider.
 							<div className="rounded-lg border border-dashed px-3 py-2 text-[11px] text-muted-foreground">
 								<Trans>
-									No {AGENT_LABELS[agent]} logins on this host — sign in and
-									usage appears here.
+									Usage now shows in the usage tray and on the round screen.
 								</Trans>
 							</div>
 						) : (

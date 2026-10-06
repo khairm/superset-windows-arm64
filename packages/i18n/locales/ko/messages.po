@@ -9272,10 +9272,6 @@ msgstr "좋은 접근"
 msgid "Nice, open a PR when ready."
 msgstr "좋아요, 준비되면 PR을 올려 주세요."
 
-#. placeholder {0}: AGENT_LABELS[agent]
-msgid "No {0} logins on this host — sign in and usage appears here."
-msgstr "이 호스트에 {0} 로그인이 없습니다 — 로그인하면 사용량이 여기에 표시됩니다."
-
 msgid "No access to this host"
 msgstr "이 호스트에 접근할 수 없습니다"
 
@@ -10006,9 +10002,6 @@ msgstr "100개 이상의 코딩 에이전트를 병렬로 실행하는 앱, {0}�
 #. placeholder {0}: COMPANY.NAME
 msgid "Official documentation for {0}. Learn how to run 100+ coding agents in parallel on your machine."
 msgstr "{0} 공식 문서입니다. 기기에서 100개 이상의 코딩 에이전트를 병렬로 실행하는 방법을 알아보세요."
-
-msgid "Official quota · refreshes every 5 min"
-msgstr "공식 할당량 · 5분마다 갱신"
 
 msgid "offline"
 msgstr "오프라인"
@@ -16133,6 +16126,9 @@ msgstr "사용량"
 
 msgid "Usage is out of date"
 msgstr "사용량 정보가 오래되었습니다"
+
+msgid "Usage now shows in the usage tray and on the round screen."
+msgstr "이제 사용량은 시스템 트레이의 사용량 앱과 원형 화면에 표시됩니다."
 
 msgid "Usage sections"
 msgstr "사용량 섹션"
