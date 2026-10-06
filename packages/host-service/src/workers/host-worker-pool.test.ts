@@ -253,6 +253,15 @@ describe("HostWorkerPool", () => {
 		expect(runner?.getWorkerCount()).toBe(0);
 	});
 
+	test("a disposed pool refuses new work instead of respawning a worker", async () => {
+		const pool = makePool();
+		await pool.dispose();
+		await expect(
+			pool.run(gitDirTask, { worktreePath: os.tmpdir() }),
+		).rejects.toThrow("disposed");
+		expect(() => pool.getRunner()).toThrow("disposed");
+	});
+
 	test("missing bundle falls back to inline execution", async () => {
 		const worktreePath = makeFixtureRepo();
 		const pool = makePool({ scriptPathResolver: () => null });
