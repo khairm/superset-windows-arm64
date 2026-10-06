@@ -1,5 +1,4 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { errorMessage } from "@superset/i18n/errors";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -16,10 +15,8 @@ import {
 	DropdownMenuShortcut,
 	DropdownMenuTrigger,
 } from "@superset/ui/dropdown-menu";
-import { toast } from "@superset/ui/sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
-import { workspaceTrpc } from "@superset/workspace-client";
 import {
 	ChevronDown,
 	ExternalLink,
@@ -31,13 +28,14 @@ import {
 	Trash2,
 	Undo2,
 } from "lucide-react";
-import { memo, useState } from "react";
+import { memo } from "react";
 import {
+	type ChangesSidebarFileIntent,
+	type LinkTier,
+	type ModifierEvent,
 	modifierLabel,
-	useChangesSidebarFilePolicy,
 } from "renderer/lib/clickPolicy";
 import { FileIcon } from "renderer/lib/fileIcons";
-import { DiscardConfirmDialog } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiscardConfirmDialog";
 import { StatusIndicator } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/StatusIndicator";
 import {
 	type ChangesetFile,
@@ -45,7 +43,6 @@ import {
 } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { toAbsoluteWorkspacePath } from "shared/absolute-paths";
 import { useFileDrag } from "../../hooks/useFileDrag";
-import { useStagingMutations } from "../../hooks/useStagingMutations";
 import { DiffStatText } from "../DiffStatText";
 import { PathActionsMenuItems } from "../PathActionsMenuItems";
 import { StageToggleButton } from "../StageToggleButton";
@@ -61,26 +58,42 @@ function splitPath(path: string): { dir: string; basename: string } {
 
 interface FileRowProps {
 	file: ChangesetFile;
-	workspaceId: string;
 	worktreePath?: string;
 	/** Hide the directory prefix — used when the row sits under a folder group. */
 	hideDir?: boolean;
 	/** Highlight as the diff pane's currently open file. */
 	isSelected?: boolean;
+	getIntent: (event: ModifierEvent) => ChangesSidebarFileIntent | null;
+	clickHint: string;
+	diffNewTabTier: LinkTier | null;
+	fileTier: LinkTier | null;
+	externalTier: LinkTier | null;
 	onSelect?: (path: string, openInNewTab?: boolean, changeKey?: string) => void;
 	onOpenFile?: (absolutePath: string, openInNewTab?: boolean) => void;
 	onOpenInEditor?: (path: string) => void;
+	onStageFile: (file: ChangesetFile) => void;
+	onUnstageFile: (file: ChangesetFile) => void;
+	onRequestDiscard: (file: ChangesetFile) => void;
 }
 
+// (WS-OPEN-RENDER) Policy, mutations and the discard dialog live in the list,
+// so a row mounts no live query or mutation observer of its own.
 export const FileRow = memo(function FileRow({
 	file,
-	workspaceId,
 	worktreePath,
 	hideDir,
 	isSelected,
+	getIntent,
+	clickHint,
+	diffNewTabTier,
+	fileTier,
+	externalTier,
 	onSelect,
 	onOpenFile,
 	onOpenInEditor,
+	onStageFile,
+	onUnstageFile,
+	onRequestDiscard,
 }: FileRowProps) {
 	const { t } = useLingui();
 	const { dir: fullDir, basename } = splitPath(file.path);
@@ -96,35 +109,7 @@ export const FileRow = memo(function FileRow({
 	const canStage = file.source.kind === "unstaged";
 	const canUnstage = file.source.kind === "staged";
 	const canDiscard = canStage;
-	const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 	const isDeleteAction = file.status === "untracked" || file.status === "added";
-	const utils = workspaceTrpc.useUtils();
-	const discardMutation = workspaceTrpc.git.discardChanges.useMutation({
-		onSuccess: () => {
-			void utils.git.getStatus.invalidate({ workspaceId });
-			void utils.git.getDiff.invalidate({ workspaceId });
-		},
-		onError: (err) => {
-			toast.error(
-				t({
-					message: "Couldn't discard changes",
-				}),
-				{
-					description: errorMessage(err),
-				},
-			);
-		},
-	});
-	const confirmDiscard = () => {
-		setShowDiscardConfirm(false);
-		discardMutation.mutate({ workspaceId, filePath: file.path });
-	};
-	const { stageFile, unstageFile } = useStagingMutations(workspaceId);
-
-	const policy = useChangesSidebarFilePolicy();
-	const diffNewTabTier = policy.tierForIntent("diffNewTab");
-	const fileTier = policy.tierForIntent("file");
-	const externalTier = policy.tierForIntent("external");
 	const fileDrag = useFileDrag({ absolutePath });
 
 	const rowButton = (
@@ -137,7 +122,7 @@ export const FileRow = memo(function FileRow({
 				)}
 				{...fileDrag}
 				onClick={(e) => {
-					const intent = policy.getIntent(e);
+					const intent = getIntent(e);
 					if (intent === "external") onOpenInEditor?.(file.path);
 					else if (intent === "file" && absolutePath)
 						onOpenFile?.(absolutePath, false);
@@ -183,7 +168,7 @@ export const FileRow = memo(function FileRow({
 								className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-destructive"
 								onClick={(e) => {
 									e.stopPropagation();
-									setShowDiscardConfirm(true);
+									onRequestDiscard(file);
 								}}
 							>
 								<Undo2 className="size-3.5" />
@@ -195,12 +180,12 @@ export const FileRow = memo(function FileRow({
 					</Tooltip>
 				)}
 				{canStage && (
-					<StageToggleButton action="stage" onClick={() => stageFile(file)} />
+					<StageToggleButton action="stage" onClick={() => onStageFile(file)} />
 				)}
 				{canUnstage && (
 					<StageToggleButton
 						action="unstage"
-						onClick={() => unstageFile(file)}
+						onClick={() => onUnstageFile(file)}
 					/>
 				)}
 				<DropdownMenu>
@@ -268,7 +253,7 @@ export const FileRow = memo(function FileRow({
 						{canStage && (
 							<>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => stageFile(file)}>
+								<DropdownMenuItem onSelect={() => onStageFile(file)}>
 									<Plus />
 									<Trans>Stage file</Trans>
 								</DropdownMenuItem>
@@ -277,7 +262,7 @@ export const FileRow = memo(function FileRow({
 						{canUnstage && (
 							<>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => unstageFile(file)}>
+								<DropdownMenuItem onSelect={() => onUnstageFile(file)}>
 									<Minus />
 									<Trans>Unstage file</Trans>
 								</DropdownMenuItem>
@@ -295,7 +280,7 @@ export const FileRow = memo(function FileRow({
 				<ContextMenuTrigger asChild>
 					<TooltipTrigger asChild>{rowButton}</TooltipTrigger>
 				</ContextMenuTrigger>
-				<TooltipContent side="right">{policy.hint}</TooltipContent>
+				<TooltipContent side="right">{clickHint}</TooltipContent>
 			</Tooltip>
 			<ContextMenuContent className="w-64">
 				<ContextMenuItem
@@ -355,13 +340,13 @@ export const FileRow = memo(function FileRow({
 				)}
 				{(canStage || canUnstage) && <ContextMenuSeparator />}
 				{canStage && (
-					<ContextMenuItem onSelect={() => stageFile(file)}>
+					<ContextMenuItem onSelect={() => onStageFile(file)}>
 						<Plus />
 						<Trans>Stage file</Trans>
 					</ContextMenuItem>
 				)}
 				{canUnstage && (
-					<ContextMenuItem onSelect={() => unstageFile(file)}>
+					<ContextMenuItem onSelect={() => onUnstageFile(file)}>
 						<Minus />
 						<Trans>Unstage file</Trans>
 					</ContextMenuItem>
@@ -369,7 +354,7 @@ export const FileRow = memo(function FileRow({
 				{canDiscard && (
 					<ContextMenuItem
 						variant="destructive"
-						onSelect={() => setShowDiscardConfirm(true)}
+						onSelect={() => onRequestDiscard(file)}
 					>
 						{isDeleteAction ? <Trash2 /> : <Undo2 />}
 						{isDeleteAction
@@ -380,40 +365,6 @@ export const FileRow = memo(function FileRow({
 					</ContextMenuItem>
 				)}
 			</ContextMenuContent>
-			<DiscardConfirmDialog
-				open={showDiscardConfirm}
-				onOpenChange={setShowDiscardConfirm}
-				title={
-					isDeleteAction
-						? t({
-								message: `Delete "${basename}"?`,
-							})
-						: t({
-								message: `Discard changes to "${basename}"?`,
-							})
-				}
-				description={
-					isDeleteAction
-						? t({
-								message:
-									"This will permanently delete this file. This action cannot be undone.",
-							})
-						: t({
-								message:
-									"This will revert all changes to this file. This action cannot be undone.",
-							})
-				}
-				confirmLabel={
-					isDeleteAction
-						? t({
-								message: "Delete",
-							})
-						: t({
-								message: "Discard",
-							})
-				}
-				onConfirm={confirmDiscard}
-			/>
 		</ContextMenu>
 	);
 });

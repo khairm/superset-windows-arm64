@@ -1,27 +1,42 @@
 import { msg } from "@lingui/core/macro";
+import { useLingui } from "@lingui/react/macro";
 import { i18n } from "@superset/i18n";
-import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import { errorMessage } from "@superset/i18n/errors";
+import { toast } from "@superset/ui/sonner";
+import { workspaceTrpc } from "@superset/workspace-client";
+import {
+	defaultRangeExtractor,
+	useVirtualizer,
+	type VirtualItem,
+} from "@tanstack/react-virtual";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useChangesSidebarFilePolicy } from "renderer/lib/clickPolicy";
 import {
 	type ChangesetFile,
 	getChangesetFileKey,
 } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { toRelativeWorkspacePath } from "shared/absolute-paths";
 import type { FoldSignal } from "../../ChangesFileList";
+import { useStagingMutations } from "../../hooks/useStagingMutations";
 import { FileRow } from "../FileRow";
+import { FileDiscardDialog } from "./components/FileDiscardDialog";
 import { FolderHeader } from "./components/FolderHeader";
 
 const ROOT_FOLDER_KEY = "";
 const ROOT_FOLDER_LABEL = msg({
 	message: "./",
 });
-// FolderHeader and FileRow are single-line rows (`py-1`, `text-xs`); the
-// virtualizer re-measures each one, so this is only the pre-measure estimate.
-const ESTIMATED_ROW_HEIGHT = 26;
+// (WS-OPEN-RENDER) FolderHeader and FileRow render 24 px (`py-1` plus a 16 px
+// `text-xs` line). An exact estimate means measuring never resizes a row, so
+// the window doesn't re-render and mount more rows on open.
+const ESTIMATED_ROW_HEIGHT = 24;
+const NO_ITEMS: VirtualItem[] = [];
 const OVERSCAN = 8;
 
 interface ChangesFoldersViewProps {
 	files: ChangesetFile[];
+	/** False while the first open defers rows past the first paint. */
+	rowsReady: boolean;
 	workspaceId: string;
 	worktreePath?: string;
 	/** Absolute path of the diff pane's open file — highlights its row. */
@@ -70,6 +85,7 @@ type Row =
  */
 export const ChangesFoldersView = memo(function ChangesFoldersView({
 	files,
+	rowsReady,
 	workspaceId,
 	worktreePath,
 	selectedFilePath,
@@ -85,6 +101,36 @@ export const ChangesFoldersView = memo(function ChangesFoldersView({
 			? toRelativeWorkspacePath(worktreePath, selectedFilePath)
 			: selectedFilePath;
 	const [closedFolders, setClosedFolders] = useState<Set<string>>(new Set());
+	const { t } = useLingui();
+
+	// (WS-OPEN-RENDER) One click policy, mutation set and discard dialog per
+	// list: per-row copies cost a live query and three mutation observers per
+	// row on every open.
+	const filePolicy = useChangesSidebarFilePolicy();
+	const diffNewTabTier = filePolicy.tierForIntent("diffNewTab");
+	const fileTier = filePolicy.tierForIntent("file");
+	const externalTier = filePolicy.tierForIntent("external");
+	const { stageFile, unstageFile } = useStagingMutations(workspaceId);
+	const [discardTarget, setDiscardTarget] = useState<ChangesetFile | null>(
+		null,
+	);
+	const utils = workspaceTrpc.useUtils();
+	const discardMutation = workspaceTrpc.git.discardChanges.useMutation({
+		onSuccess: () => {
+			void utils.git.getStatus.invalidate({ workspaceId });
+			void utils.git.getDiff.invalidate({ workspaceId });
+		},
+		onError: (err) => {
+			toast.error(
+				t({
+					message: "Couldn't discard changes",
+				}),
+				{
+					description: errorMessage(err),
+				},
+			);
+		},
+	});
 
 	const toggleFolder = useCallback((folderPath: string) => {
 		setClosedFolders((prev) => {
@@ -149,13 +195,15 @@ export const ChangesFoldersView = memo(function ChangesFoldersView({
 		getItemKey: (index) => rows[index]?.key ?? index,
 	});
 
+	const virtualItems = rowsReady ? virtualizer.getVirtualItems() : NO_ITEMS;
+
 	return (
 		<div ref={listRef}>
 			<div
 				className="relative w-full"
 				style={{ height: virtualizer.getTotalSize() }}
 			>
-				{virtualizer.getVirtualItems().map((virtualRow) => {
+				{virtualItems.map((virtualRow) => {
 					const row = rows[virtualRow.index];
 					if (!row) return null;
 					return (
@@ -182,7 +230,6 @@ export const ChangesFoldersView = memo(function ChangesFoldersView({
 							) : (
 								<FileRow
 									file={row.file}
-									workspaceId={workspaceId}
 									worktreePath={worktreePath}
 									hideDir
 									isSelected={
@@ -190,15 +237,36 @@ export const ChangesFoldersView = memo(function ChangesFoldersView({
 										(selectedChangeKey == null ||
 											getChangesetFileKey(row.file) === selectedChangeKey)
 									}
+									getIntent={filePolicy.getIntent}
+									clickHint={filePolicy.hint}
+									diffNewTabTier={diffNewTabTier}
+									fileTier={fileTier}
+									externalTier={externalTier}
 									onSelect={onSelectFile}
 									onOpenFile={onOpenFile}
 									onOpenInEditor={onOpenInEditor}
+									onStageFile={stageFile}
+									onUnstageFile={unstageFile}
+									onRequestDiscard={setDiscardTarget}
 								/>
 							)}
 						</div>
 					);
 				})}
 			</div>
+			{discardTarget && (
+				<FileDiscardDialog
+					file={discardTarget}
+					onCancel={() => setDiscardTarget(null)}
+					onConfirm={() => {
+						setDiscardTarget(null);
+						discardMutation.mutate({
+							workspaceId,
+							filePath: discardTarget.path,
+						});
+					}}
+				/>
+			)}
 		</div>
 	);
 });

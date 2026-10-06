@@ -9,6 +9,7 @@ import type { ChangesViewMode } from "renderer/routes/_authenticated/providers/C
 import { ChangesFoldersView } from "./components/ChangesFoldersView";
 import { ChangesSection } from "./components/ChangesSection";
 import { ChangesTreeView } from "./components/ChangesTreeView";
+import { useInitialOpenGate } from "./hooks/useInitialOpenGate";
 
 /** Pulse from the toolbar's expand-all / collapse-all buttons. `epoch` is 0 until the first press. */
 export interface FoldSignal {
@@ -37,6 +38,8 @@ interface ChangesFileListProps {
 }
 
 type GroupKey = ChangesetFile["source"]["kind"];
+
+const ROW_GATE = 30;
 
 const GROUP_ORDER: GroupKey[] = [
 	"unstaged",
@@ -72,6 +75,9 @@ export const ChangesFileList = memo(function ChangesFileList({
 	onOpenFile,
 	onOpenInEditor,
 }: ChangesFileListProps) {
+	// (WS-OPEN-RENDER) Rows of a large cached changeset mount after the
+	// workspace paints; headers and counts render at once.
+	const rowsReady = useInitialOpenGate(workspaceId, files.length > ROW_GATE);
 	const grouped = useMemo(() => {
 		const groups: Record<GroupKey, ChangesetFile[]> = {
 			unstaged: [],
@@ -151,6 +157,7 @@ export const ChangesFileList = memo(function ChangesFileList({
 						) : (
 							<ChangesFoldersView
 								files={groupFiles}
+								rowsReady={rowsReady}
 								workspaceId={workspaceId}
 								worktreePath={worktreePath}
 								selectedFilePath={selectedFilePath}
