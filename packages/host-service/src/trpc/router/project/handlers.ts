@@ -6,6 +6,7 @@ import { TRPCError } from "@trpc/server";
 import { eq, sql } from "drizzle-orm";
 import { projects } from "../../../db/schema";
 import { emitProjectChanged } from "../../../projects/local-project-store";
+import { restoreProject } from "../../../projects/project-deletion";
 import {
 	MULTI_REPO_ANCHORS_DIR,
 	type MultiRepoConfig,
@@ -15,12 +16,12 @@ import type { HostServiceContext } from "../../../types";
 import { ensureMainWorkspaceStrict } from "./utils/ensure-main-workspace";
 import { persistLocalProject } from "./utils/persist-project";
 import {
+	adoptLocalRepo,
 	cloneRepoInto,
 	cloneTemplateInto,
 	initEmptyRepo,
 	initLocalRepoInPlace,
 	type ResolvedRepo,
-	resolveLocalRepo,
 	tryRevParseGitRoot,
 	resolveNonGitFolder,
 } from "./utils/resolve-repo";
@@ -143,12 +144,13 @@ async function persistFromResolved(
 
 export async function createFromClone(
 	ctx: HostServiceContext,
-	args: { name: string; parentDir: string; url: string },
+	args: { name: string; parentDir: string; url: string; signal?: AbortSignal },
 ): Promise<CreateResult> {
 	const resolved = await cloneRepoInto(
 		args.url,
 		args.parentDir,
 		ctx.credentials,
+		args.signal,
 	);
 	return persistFromResolved(ctx, {
 		name: args.name,
@@ -166,9 +168,9 @@ async function resolveOrInitLocalRepo(
 	repoPath: string,
 	initIfNeeded: boolean,
 ): Promise<ResolvedRepo> {
-	if (!initIfNeeded) return resolveLocalRepo(repoPath);
+	if (!initIfNeeded) return adoptLocalRepo(repoPath);
 	const root = await tryRevParseGitRoot(repoPath);
-	return root ? resolveLocalRepo(root) : initLocalRepoInPlace(repoPath);
+	return root ? adoptLocalRepo(root) : initLocalRepoInPlace(repoPath);
 }
 
 export async function createFromImportLocal(
@@ -192,6 +194,9 @@ export async function createFromImportLocal(
 		.findFirst({ where: repoPathMatches(resolved.repoPath) })
 		.sync();
 	if (existing) {
+		restoreProject(ctx, existing.id);
+		// (MASTER-ALWAYS-ACTIVE) An explicit re-open is what resurrects the
+		// project's master, so it has to exist before the id is handed back.
 		const mainWorkspace = await ensureMainWorkspaceStrict(
 			ctx,
 			existing.id,

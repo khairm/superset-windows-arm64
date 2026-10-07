@@ -115,6 +115,12 @@ export interface V2NotificationState {
 	// binding-derived surfaces. `manualUnread` mirrors the fork manual source so
 	// the two unread reads never disagree.
 	manualUnread: Record<string, true>;
+	// workspaceId → the reported status timestamp the user has seen, for hosts
+	// that report a status instead of exposing bindings. Same clock rule as
+	// terminalSeenAt: the reporting host's, never the renderer's.
+	workspaceSeenAt: Record<string, number>;
+	markWorkspaceSeen: (workspaceId: string, at: number) => void;
+	pruneWorkspaceSeen: (workspaceId: string) => void;
 	// terminalId → last agent event the user has seen (HOST clock). Compared to
 	// the host binding's lastEventAt to derive `review`.
 	terminalSeenAt: Record<string, number>;
@@ -496,6 +502,7 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 				sources: {},
 				manualUnread: {},
 				terminalSeenAt: {},
+				workspaceSeenAt: {},
 				clearManualUnread: (workspaceId) => {
 					// Clear the binding-model record AND the fork manual source.
 					useV2NotificationStore
@@ -851,6 +858,23 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						return next;
 					});
 				},
+				markWorkspaceSeen: (workspaceId, at) => {
+					set((state) => {
+						const prev = state.workspaceSeenAt[workspaceId];
+						if (prev !== undefined && prev >= at) return state;
+						return {
+							workspaceSeenAt: { ...state.workspaceSeenAt, [workspaceId]: at },
+						};
+					});
+				},
+				pruneWorkspaceSeen: (workspaceId) => {
+					set((state) => {
+						if (!(workspaceId in state.workspaceSeenAt)) return state;
+						const { [workspaceId]: _removed, ...workspaceSeenAt } =
+							state.workspaceSeenAt;
+						return { workspaceSeenAt };
+					});
+				},
 			}),
 			{
 				name: "v2-notification-dots",
@@ -865,6 +889,7 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					backgroundRunningTerminals: state.backgroundRunningTerminals,
 					manualUnread: state.manualUnread,
 					terminalSeenAt: state.terminalSeenAt,
+					workspaceSeenAt: state.workspaceSeenAt,
 					outstandingReadyAt: state.outstandingReadyAt,
 					agentTerminals: state.agentTerminals,
 				}),

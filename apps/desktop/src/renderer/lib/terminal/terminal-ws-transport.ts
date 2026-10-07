@@ -4,7 +4,7 @@ import {
 	createRelaySocket,
 	type RelaySocket,
 } from "@superset/workspace-client/relay-socket";
-import type { Terminal as XTerm } from "@xterm/xterm";
+import type { ITheme, Terminal as XTerm } from "@xterm/xterm";
 import { ensureFreshJwt } from "renderer/lib/auth-client";
 import { posthog } from "renderer/lib/posthog";
 import {
@@ -18,6 +18,7 @@ import {
 	resetAttachRetryState,
 	shouldSurfaceDiagnosis,
 } from "./attach-retry-diagnosis";
+import { terminalQueryColors } from "./terminal-query-colors";
 import { getTerminalScreen } from "./terminal-snapshot";
 import {
 	classifyTerminalFailure,
@@ -48,6 +49,9 @@ type TerminalServerMessage =
 	| { type: "error"; message: string; code?: string }
 	| { type: "exit"; exitCode: number; signal: number }
 	| { type: "title"; title: string | null }
+	// The PTY's size: the smallest box across the clients showing it. Sent
+	// after each of our resizes and whenever it changes.
+	| { type: "size"; cols: number; rows: number }
 	// Stream-position anchor from a seq-aware host. Arrives after any
 	// host-synthesized bytes (mode preamble/notice) and before catch-up/live
 	// PTY bytes; sets our counter and arms per-frame counting so the next
@@ -93,6 +97,12 @@ export interface TerminalTransport {
 	 * (the session was re-created under the same id).
 	 */
 	sessionEnded: boolean;
+	/**
+	 * True while the PTY is narrower than this pane because a smaller client
+	 * (another device, or a narrower split) is showing the same terminal.
+	 */
+	narrowedByOtherClient: boolean;
+	narrowedListeners: Set<() => void>;
 
 	/** Internal: invoked once each time the session-ended signal arrives, so
 	 * the owner can drop persisted scrollback immediately. */
@@ -121,6 +131,7 @@ export interface TerminalTransport {
 	_humanInputDisposables: (() => void)[];
 	/** Internal: disposes the terminal.onData → socket.send wiring. */
 	_onDataDisposable: { dispose(): void } | null;
+	_pendingColorReset: boolean;
 	/** Internal: title-change debounce timer; see TITLE_COALESCE_MS. */
 	_titleNotifyTimer: ReturnType<typeof setTimeout> | null;
 	/**
@@ -297,6 +308,17 @@ function maybeSurfaceDiagnosis(
 	});
 }
 
+function setNarrowedByOtherClient(
+	transport: TerminalTransport,
+	narrowed: boolean,
+) {
+	if (transport.narrowedByOtherClient === narrowed) return;
+	transport.narrowedByOtherClient = narrowed;
+	for (const listener of transport.narrowedListeners) {
+		listener();
+	}
+}
+
 function markSessionEnded(transport: TerminalTransport) {
 	if (transport.sessionEnded) return;
 	transport.sessionEnded = true;
@@ -386,12 +408,15 @@ export function createTransport(
 		logListeners: new Set(),
 		lastDiagnosis: null,
 		sessionEnded: false,
+		narrowedByOtherClient: false,
+		narrowedListeners: new Set(),
 		_onSessionEnded: options.onSessionEnded ?? null,
 		_socket: null,
 		_terminal: null,
 		_lastHumanEventMs: null,
 		_humanInputDisposables: [],
 		_onDataDisposable: null,
+		_pendingColorReset: false,
 		_titleNotifyTimer: null,
 		_writeCoalescer: null,
 		_diagnosisLogged: false,
@@ -699,6 +724,31 @@ export function connect(
 	attachSocketListeners(transport, terminal, socket);
 }
 
+export function sendColors(
+	transport: TerminalTransport,
+	theme: ITheme | undefined,
+	resetOverrides = false,
+): void {
+	if (!theme) return;
+	transport._pendingColorReset ||= resetOverrides;
+	const socket = transport._socket;
+	if (
+		transport.connectionState !== "open" ||
+		!socket ||
+		socket.readyState !== WebSocket.OPEN
+	)
+		return;
+	const colors = terminalQueryColors(theme);
+	socket.send(
+		JSON.stringify({
+			type: "colors",
+			colors,
+			resetOverrides: transport._pendingColorReset === true,
+		}),
+	);
+	transport._pendingColorReset = false;
+}
+
 function attachSocketListeners(
 	transport: TerminalTransport,
 	terminal: XTerm,
@@ -747,6 +797,11 @@ function attachSocketListeners(
 			return;
 		}
 
+		if (message.type === "size") {
+			setNarrowedByOtherClient(transport, message.cols < terminal.cols);
+			return;
+		}
+
 		if (message.type === "attached") {
 			transport.lastDiagnosis = null;
 			transport._diagnosisLogged = false;
@@ -763,6 +818,7 @@ function attachSocketListeners(
 			transport._seqCounting = false;
 			transport._bytesSinceAttach = false;
 			setConnectionState(transport, "open");
+			sendColors(transport, terminal.options?.theme);
 			sendVisibleState(transport);
 			sendResize(transport, terminal.cols, terminal.rows);
 			return;
@@ -883,6 +939,7 @@ function attachSocketListeners(
 		// it set would make a later park() misread the ended connection's
 		// counted bytes as uncounted and drop a valid anchor.
 		transport._bytesSinceAttach = false;
+		setNarrowedByOtherClient(transport, false);
 		setConnectionState(transport, "closed");
 		// Per-connection outcome flags; consumed once per close.
 		const connAttached = transport._connAttached;
@@ -1247,4 +1304,6 @@ export function disposeTransport(transport: TerminalTransport) {
 	transport.titleListeners.clear();
 	transport.logs = [];
 	transport.logListeners.clear();
+	transport.narrowedByOtherClient = false;
+	transport.narrowedListeners.clear();
 }

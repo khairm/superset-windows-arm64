@@ -7,18 +7,18 @@ import { Link, useMatchRoute } from "@tanstack/react-router";
 import { useFeatureFlagEnabled } from "posthog-js/react";
 import { useMemo } from "react";
 import {
+	HiOutlineAdjustmentsHorizontal,
 	HiOutlineBeaker,
 	HiOutlineBell,
 	HiOutlineChartBar,
 	HiOutlineCommandLine,
 	HiOutlineCpuChip,
 	HiOutlineDevicePhoneMobile,
+	HiOutlineDocumentText,
 	HiOutlineFolder,
 	HiOutlineGlobeAlt,
-	HiOutlineLink,
 	HiOutlinePaintBrush,
 	HiOutlineShieldCheck,
-	HiOutlineSparkles,
 } from "react-icons/hi2";
 import { LuGitBranch, LuKeyboard, LuKeyRound, LuLink } from "react-icons/lu";
 import { useHostsNeedingUpdateCount } from "renderer/hooks/host-version/useHostsNeedingUpdate";
@@ -42,7 +42,7 @@ type SettingsRoute =
 	| "/settings/git"
 	| "/settings/agents"
 	| "/settings/terminal"
-	| "/settings/links"
+	| "/settings/files"
 	| "/settings/agent-accounts"
 	| "/settings/experimental"
 	| "/settings/permissions"
@@ -113,7 +113,7 @@ const SECTION_GROUPS: SectionGroup[] = [
 				label: msg({
 					message: "General",
 				}),
-				icon: <HiOutlineSparkles className="h-4 w-4" />,
+				icon: <HiOutlineAdjustmentsHorizontal className="h-4 w-4" />,
 			},
 			{
 				id: "/settings/keyboard",
@@ -149,12 +149,12 @@ const SECTION_GROUPS: SectionGroup[] = [
 				icon: <HiOutlineCommandLine className="h-4 w-4" />,
 			},
 			{
-				id: "/settings/links",
-				section: "links",
+				id: "/settings/files",
+				section: "files",
 				label: msg({
-					message: "Links",
+					message: "Files & Editor",
 				}),
-				icon: <HiOutlineLink className="h-4 w-4" />,
+				icon: <HiOutlineDocumentText className="h-4 w-4" />,
 			},
 			{
 				id: "/settings/browser",

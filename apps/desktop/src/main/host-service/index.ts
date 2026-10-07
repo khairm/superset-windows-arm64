@@ -20,6 +20,7 @@ import {
 	startCompanionBridgeIfEnabled,
 	startStaleWorkingSweep,
 	startTerminalReaper,
+	startVitalsLog,
 } from "@superset/host-service";
 import {
 	initTerminalBaseEnv,
@@ -157,6 +158,7 @@ async function main(): Promise<void> {
 
 			// Orphan reaping + port detection for terminals no renderer has attached.
 			startTerminalReaper(db, eventBus);
+			startVitalsLog();
 
 			// (STALE-WORKING-SWEEP) fork-only backstop: a terminal whose LAST
 			// hook event resolved to a working hold and that then goes silent has

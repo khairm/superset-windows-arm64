@@ -17,97 +17,32 @@ import {
 	envOverlayPrefix,
 	sanitizePromptForPty,
 } from "@superset/shared/agent-prompt-launch";
+import {
+	type TerminalColors,
+	terminalColorsSchema,
+} from "@superset/shared/terminal-colors";
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getManagedClaudeAccountsForLaunch } from "../../../claude-accounts-runtime";
 import type { HostDb } from "../../../db";
-import { hostAgentConfigs, workspaces } from "../../../db/schema";
-import { hasHarnessSession } from "../../../terminal/harness-transcript";
+import { workspaces } from "../../../db/schema";
 import {
 	createTerminalSessionInternal,
-	writeFramedInputToSession,
+	sendAgentMessage,
 } from "../../../terminal/terminal";
 import type { TerminalAgentStore } from "../../../terminal-agents";
+import {
+	agentLaunchEnv,
+	type ResolvedHostAgentConfig,
+	resolveHostAgentConfig,
+} from "../../../terminal-agents/agent-config";
+import { hasHarnessSession } from "../../../terminal-agents/harness-sessions";
 import type { HostServiceContext } from "../../../types";
 import { protectedProcedure, router } from "../../index";
 import { resolveAttachmentPath } from "../attachments/storage";
-import { parseStoredAgentEnv } from "../settings/reserved-agent-env";
 import { toTerminalSessionError } from "../terminal/errors";
-import { resolveDefaultAccountEnv } from "../usage/default-account";
 import { seedAgentFolderTrust } from "../workspace-creation/shared/seed-agent-trust";
-
-interface ResolvedHostAgentConfig {
-	id: string;
-	presetId: string;
-	label: string;
-	command: string;
-	args: string[];
-	promptTransport: "argv" | "stdin";
-	promptArgs: string[];
-	resumeArgs: string[];
-	forkArgs: string[];
-	env: Record<string, string>;
-}
-
-function parseArgv(value: string): string[] {
-	try {
-		const parsed = JSON.parse(value);
-		if (
-			!Array.isArray(parsed) ||
-			parsed.some((entry) => typeof entry !== "string")
-		) {
-			return [];
-		}
-		return parsed as string[];
-	} catch {
-		return [];
-	}
-}
-
-function rowToConfig(
-	row: typeof hostAgentConfigs.$inferSelect,
-): ResolvedHostAgentConfig {
-	return {
-		id: row.id,
-		presetId: row.presetId,
-		label: row.label,
-		command: row.command,
-		args: parseArgv(row.argsJson),
-		promptTransport: row.promptTransport as "argv" | "stdin",
-		promptArgs: parseArgv(row.promptArgsJson),
-		resumeArgs: parseArgv(row.resumeArgsJson),
-		forkArgs: parseArgv(row.forkArgsJson),
-		env: parseStoredAgentEnv(row.envJson),
-	};
-}
-
-/**
- * Look up a HostAgentConfig by its instance id first, then fall back to the
- * lowest-`order` row matching by presetId. Preset ids are short slugs;
- * instance ids are UUIDs — they don't collide.
- */
-export function resolveHostAgentConfig(
-	db: HostDb,
-	agent: string,
-): ResolvedHostAgentConfig | null {
-	const byId = db
-		.select()
-		.from(hostAgentConfigs)
-		.where(eq(hostAgentConfigs.id, agent))
-		.get();
-	if (byId) return rowToConfig(byId);
-
-	const byPreset = db
-		.select()
-		.from(hostAgentConfigs)
-		.where(eq(hostAgentConfigs.presetId, agent))
-		.orderBy(asc(hostAgentConfigs.displayOrder))
-		.get();
-	if (byPreset) return rowToConfig(byPreset);
-
-	return null;
-}
 
 // (CUSTOM-AGENT-CHAIN) Keep a local quoter that leaves a bare `&&` unquoted so a
 // user's custom agent command can chain (`foo && bar`). Upstream 1.13.1 moved
@@ -207,6 +142,7 @@ function buildAttachmentBlock(
 }
 
 export interface AgentRunInput {
+	colors?: TerminalColors;
 	workspaceId: string;
 	agent: string;
 	prompt: string;
@@ -409,15 +345,11 @@ function validateForkSessionIsResolvable(
 	// The same env the launch will run under: an agent pinned to its own
 	// provider account keeps its sessions in that account's directory, and
 	// looking in the default one would refuse a fork that would have worked.
-	const launchEnv = {
-		...resolveDefaultAccountEnv(db, config.presetId),
-		...config.env,
-	};
 	const resolvable = hasHarnessSession({
 		agentId: config.presetId,
 		sessionId: input.forkSessionId,
 		worktreePath,
-		env: launchEnv,
+		env: agentLaunchEnv(db, config),
 	});
 	if (resolvable === false) {
 		throw new TRPCError({
@@ -536,9 +468,9 @@ export function buildTerminalAgentLaunch(
 		},
 	);
 	const modelEnv = buildAgentModelEnv(launchPresetId, input.model);
-	// Host-default provider account (Usage tab switcher). Per-agent env wins,
-	// so a "Claude (work)" agent with its own CLAUDE_CONFIG_DIR stays pinned.
-	const accountEnv = resolveDefaultAccountEnv(db, config.presetId);
+	// agentLaunchEnv is the host-default provider account overlaid by the
+	// per-agent env, so a "Claude (work)" agent with its own CLAUDE_CONFIG_DIR
+	// stays pinned; the workspace's managed profile wins over both.
 	const claudeAccounts = getManagedClaudeAccountsForLaunch(db);
 	const workspaceClaudeEnv: Record<string, string> =
 		config.presetId === "claude" && claudeAccounts
@@ -546,8 +478,7 @@ export function buildTerminalAgentLaunch(
 			: {};
 	return {
 		fullCommand: `${envOverlayPrefix({
-			...accountEnv,
-			...config.env,
+			...agentLaunchEnv(db, config),
 			...modelEnv,
 			...workspaceClaudeEnv,
 		})}${command}`,
@@ -597,6 +528,7 @@ async function runTerminalAgent(
 		db: ctx.db,
 		eventBus: ctx.eventBus,
 		initialCommand: fullCommand,
+		colors: input.colors,
 	});
 
 	if ("error" in result) {
@@ -686,12 +618,11 @@ async function continueTerminalAgent(
 	const target = continuationTarget(ctx.db, ctx.terminalAgentStore, input);
 	if (!target) return null;
 
-	const sent = await writeFramedInputToSession({
+	const sent = await sendAgentMessage({
 		terminalId: target.terminalId,
 		workspaceId: input.workspaceId,
-		// The prompt embeds third-party content (an email body, a PR title); a
-		// paste-end sequence inside it would close the frame and inject keys.
-		text: sanitizePromptForPty(input.prompt),
+		text: input.prompt,
+		terminalAgentStore: ctx.terminalAgentStore,
 		submit: true,
 		db: ctx.db,
 		eventBus: ctx.eventBus,
@@ -772,6 +703,7 @@ export const agentsRouter = router({
 		.input(
 			z.object({
 				workspaceId: z.string().uuid(),
+				colors: terminalColorsSchema.optional(),
 				agent: z.string().min(1),
 				// Optional: an empty prompt launches the bare agent (the builder
 				// drops promptArgs).

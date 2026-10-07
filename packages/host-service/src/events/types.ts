@@ -323,6 +323,7 @@ export type ServerMessage =
 	| PortChangedMessage
 	| WorkspaceChangedMessage
 	| WorkspaceCreateSettledMessage
+	| WorkspaceNamingFailedMessage
 	| ProjectChangedMessage
 	| ClaudeAccountStateChangedMessage
 	| ClaudeAccountWarningMessage
@@ -330,6 +331,18 @@ export type ServerMessage =
 	| TagFoldersChangedMessage
 	| PageWatchChangedMessage
 	| EventBusErrorMessage;
+
+/**
+ * Automatic naming gave up on a workspace after its last attempt; the
+ * prompt-derived title stays. Not sent when no agent was ever going to name
+ * it — a prompt-derived title is the whole plan there.
+ */
+export interface WorkspaceNamingFailedMessage {
+	type: "workspace:naming-failed";
+	workspaceId: string;
+	name: string;
+	occurredAt: number;
+}
 
 // ── Client → Server ────────────────────────────────────────────────
 

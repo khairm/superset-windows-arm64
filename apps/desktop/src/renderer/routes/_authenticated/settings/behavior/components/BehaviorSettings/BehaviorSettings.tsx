@@ -1,5 +1,4 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { FileOpenMode } from "@superset/local-db";
 import { Label } from "@superset/ui/label";
 import {
 	Select,
@@ -23,6 +22,7 @@ import {
 	SETTING_ITEM_ID,
 	type SettingItemId,
 } from "../../../utils/settings-search";
+import { AgentSessionPlacementSetting } from "./components/AgentSessionPlacementSetting";
 import { GithubStarRow } from "./components/GithubStarRow";
 
 interface BehaviorSettingsProps {
@@ -34,10 +34,6 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 	const searchQuery = useSettingsSearchQuery();
 	const showConfirmQuit = isItemVisible(
 		SETTING_ITEM_ID.BEHAVIOR_CONFIRM_QUIT,
-		visibleItems,
-	);
-	const showFileOpenMode = isItemVisible(
-		SETTING_ITEM_ID.BEHAVIOR_FILE_OPEN_MODE,
 		visibleItems,
 	);
 	const showChangesOpenTarget = isItemVisible(
@@ -95,25 +91,6 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 	const handleConfirmToggle = (enabled: boolean) => {
 		setConfirmOnQuit.mutate({ enabled });
 	};
-
-	const { data: fileOpenMode, isLoading: isFileOpenModeLoading } =
-		electronTrpc.settings.getFileOpenMode.useQuery();
-	const setFileOpenMode = electronTrpc.settings.setFileOpenMode.useMutation({
-		onMutate: async ({ mode }) => {
-			await utils.settings.getFileOpenMode.cancel();
-			const previous = utils.settings.getFileOpenMode.getData();
-			utils.settings.getFileOpenMode.setData(undefined, mode);
-			return { previous };
-		},
-		onError: (_err, _vars, context) => {
-			if (context?.previous !== undefined) {
-				utils.settings.getFileOpenMode.setData(undefined, context.previous);
-			}
-		},
-		onSettled: () => {
-			utils.settings.getFileOpenMode.invalidate();
-		},
-	});
 
 	const { data: resourceMonitorEnabled, isLoading: isResourceMonitorLoading } =
 		electronTrpc.settings.getShowResourceMonitor.useQuery();
@@ -215,42 +192,10 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 					</div>
 				)}
 
-				{showFileOpenMode && (
-					<div className="flex items-center justify-between">
-						<div className="space-y-0.5">
-							<Label htmlFor="file-open-mode" className="text-sm font-medium">
-								<HighlightText
-									text={t({
-										message: "File open mode",
-									})}
-									query={searchQuery}
-								/>
-							</Label>
-							<p className="text-xs text-muted-foreground">
-								<Trans>Choose how files open when no preview pane exists</Trans>
-							</p>
-						</div>
-						<Select
-							value={fileOpenMode ?? "split-pane"}
-							onValueChange={(value) =>
-								setFileOpenMode.mutate({ mode: value as FileOpenMode })
-							}
-							disabled={isFileOpenModeLoading || setFileOpenMode.isPending}
-						>
-							<SelectTrigger id="file-open-mode" className="w-[180px]">
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								<SelectItem value="split-pane">
-									<Trans>Split pane</Trans>
-								</SelectItem>
-								<SelectItem value="new-tab">
-									<Trans>New tab</Trans>
-								</SelectItem>
-							</SelectContent>
-						</Select>
-					</div>
-				)}
+				{isItemVisible(
+					SETTING_ITEM_ID.BEHAVIOR_AGENT_SESSION_PLACEMENT,
+					visibleItems,
+				) && <AgentSessionPlacementSetting searchQuery={searchQuery} />}
 
 				{showChangesOpenTarget && (
 					<div className="flex items-center justify-between">

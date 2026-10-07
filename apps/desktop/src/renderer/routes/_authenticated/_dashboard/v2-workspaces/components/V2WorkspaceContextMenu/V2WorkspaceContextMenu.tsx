@@ -11,6 +11,7 @@ import { toast } from "@superset/ui/sonner";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useCallback } from "react";
 import {
+	LuArchiveRestore,
 	LuArrowUpRight,
 	LuGitBranch,
 	LuPanelLeftClose,
@@ -18,7 +19,9 @@ import {
 	LuTrash2,
 } from "react-icons/lu";
 import { GATED_FEATURES, usePaywall } from "renderer/components/Paywall";
+import { useHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { navigateToV2Workspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import type { AccessibleV2Workspace } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
@@ -67,6 +70,11 @@ export function V2WorkspaceContextMenu({
 	} = useDashboardSidebarState();
 	const { copyToClipboard } = useCopyToClipboard();
 	const isMainWorkspace = workspace.type === "main";
+	const hostUrl = useHostUrl(workspace.hostId);
+	const isArchived = workspace.archivedAt != null;
+	const canReachHost =
+		hostUrl !== null &&
+		(workspace.hostType === "local-device" || workspace.hostIsOnline);
 
 	const open = useCallback(() => {
 		const go = () => navigateToV2Workspace(workspace.id, navigate);
@@ -152,6 +160,34 @@ export function V2WorkspaceContextMenu({
 		}
 	}, [copyToClipboard, workspace.branch, t]);
 
+	const restore = useCallback(async () => {
+		if (!hostUrl) return;
+		const workspaceName = workspace.name || workspace.branch;
+		const toastId = toast.loading(
+			t({ message: `Restoring "${workspaceName}"…` }),
+		);
+		try {
+			await getHostServiceClientByUrl(hostUrl).workspaces.restore.mutate({
+				workspaceId: workspace.id,
+			});
+			toast.success(t({ message: `Restored "${workspaceName}"` }), {
+				id: toastId,
+				action: {
+					label: t({ message: "Open" }),
+					onClick: () => navigateToV2Workspace(workspace.id, navigate),
+				},
+			});
+		} catch (error) {
+			toast.error(
+				errorMessage(
+					error,
+					t({ message: `Couldn't restore "${workspaceName}"` }),
+				),
+				{ id: toastId },
+			);
+		}
+	}, [hostUrl, navigate, t, workspace.branch, workspace.id, workspace.name]);
+
 	// (RECYCLE-BIN) The trash affordance is a SILENT soft-delete — it moves the
 	// thread to its project's Recycle Bin (deletedAt + isHidden) instead of
 	// opening the destroy dialog. The real git destroy is reachable ONLY from
@@ -173,43 +209,57 @@ export function V2WorkspaceContextMenu({
 				})}
 			</ContextMenuTrigger>
 			<ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
-				<ContextMenuItem onSelect={open}>
-					<LuArrowUpRight className="size-4" />
-					<Trans>Open</Trans>
-				</ContextMenuItem>
+				{isArchived ? (
+					workspace.type === "session" ? null : (
+						<ContextMenuItem onSelect={restore} disabled={!canReachHost}>
+							<LuArchiveRestore className="size-4" />
+							<Trans>Restore</Trans>
+						</ContextMenuItem>
+					)
+				) : (
+					<ContextMenuItem onSelect={open}>
+						<LuArrowUpRight className="size-4" />
+						<Trans>Open</Trans>
+					</ContextMenuItem>
+				)}
 				<ContextMenuItem onSelect={handleCopyBranchName}>
 					<LuGitBranch className="size-4" />
 					<Trans>Copy Branch Name</Trans>
 				</ContextMenuItem>
-				<ContextMenuSeparator />
-				{workspace.isInSidebar ? (
-					<ContextMenuItem
-						onSelect={removeFromSidebar}
-						disabled={isCurrentRoute}
-					>
-						<LuPanelLeftClose className="size-4" />
-						<Trans>Hide from Sidebar</Trans>
-					</ContextMenuItem>
-				) : (
-					<ContextMenuItem onSelect={addToSidebar}>
-						<LuPanelLeftOpen className="size-4" />
-						<Trans>Show on Sidebar</Trans>
-					</ContextMenuItem>
-				)}
-				{!isMainWorkspace ? (
+				{isArchived ? null : (
 					<>
 						<ContextMenuSeparator />
-						{/* (RECYCLE-BIN) Silent soft-delete to the project's Recycle Bin —
-						    not a destroy dialog. */}
-						<ContextMenuItem
-							onSelect={openDeleteDialog}
-							className="text-destructive focus:text-destructive"
-						>
-							<LuTrash2 className="size-4 text-destructive" />
-							<Trans>Delete</Trans>
-						</ContextMenuItem>
+						{workspace.isInSidebar ? (
+							<ContextMenuItem
+								onSelect={removeFromSidebar}
+								disabled={isCurrentRoute}
+							>
+								<LuPanelLeftClose className="size-4" />
+								<Trans>Hide from Sidebar</Trans>
+							</ContextMenuItem>
+						) : (
+							<ContextMenuItem onSelect={addToSidebar}>
+								<LuPanelLeftOpen className="size-4" />
+								<Trans>Show on Sidebar</Trans>
+							</ContextMenuItem>
+						)}
+						{isMainWorkspace ? null : (
+							<>
+								<ContextMenuSeparator />
+								{/* (RECYCLE-BIN) Silent soft-delete to the project's Recycle
+								    Bin — not a destroy dialog. (MASTER-ARCHIVE-ONLY) keeps a
+								    main off this affordance entirely. */}
+								<ContextMenuItem
+									onSelect={openDeleteDialog}
+									className="text-destructive focus:text-destructive"
+								>
+									<LuTrash2 className="size-4 text-destructive" />
+									<Trans>Delete</Trans>
+								</ContextMenuItem>
+							</>
+						)}
 					</>
-				) : null}
+				)}
 			</ContextMenuContent>
 		</ContextMenu>
 	);

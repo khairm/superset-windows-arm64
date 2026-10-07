@@ -25,6 +25,7 @@ import { LeaderboardAutoPublish } from "renderer/routes/_authenticated/component
 // (CLOUD-SEVERANCE-P2) `PendingDeletionScreen` is deliberately NOT imported:
 // the gate that rendered it is removed below, and an import with no render
 // site is how a merge quietly wires a cloud-only screen back up.
+import { PluginConnectionsSync } from "renderer/routes/_authenticated/components/PluginConnectionsSync";
 import { RealtimeNudges } from "renderer/routes/_authenticated/components/RealtimeNudges";
 import { StarNagObserver } from "renderer/routes/_authenticated/components/StarNagObserver";
 import {
@@ -48,6 +49,7 @@ import { AgentHooks } from "./components/AgentHooks";
 import { AutoResumeController } from "./components/AutoResumeController/AutoResumeController";
 import { CloudSeveredRouteGate } from "./components/CloudSeveredRouteGate";
 import { DockBadgeController } from "./components/DockBadgeController";
+import { FileAutoSave } from "./components/FileAutoSave";
 import { FileMenuListener } from "./components/FileMenuListener";
 import { GitInitConfirmDialog } from "./components/GitInitConfirmDialog";
 import { OriginRouteTracker } from "./components/OriginRouteTracker";
@@ -254,6 +256,7 @@ function AuthenticatedLayout() {
 			<CollectionsProvider>
 				<WindowTitle />
 				{/* (FORK-BROWSER-OFF) */}
+				<FileAutoSave />
 				<LocalHostServiceProvider>
 					{/* Above the workspace fan-out: it needs sandbox addresses to
 					    include them as hosts. (CLOUD-SEVERANCE-P2) Inert here —
@@ -267,6 +270,7 @@ function AuthenticatedLayout() {
 							>
 								<DiffThemeSync />
 								<AgentHooks />
+								<PluginConnectionsSync />
 								<FileMenuListener />
 								<V2NotificationController />
 								<ScreenLockSubscriber /* (PRESENCE-SCREEN-LOCK-MOUNT) */ />

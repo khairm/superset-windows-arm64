@@ -16,7 +16,6 @@ import {
 	LuArrowRightLeft,
 	LuArrowUp,
 	LuBellOff,
-	LuBox,
 	LuCircleCheck,
 	LuClock,
 	LuCopy,
@@ -43,6 +42,7 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useDashboardSidebarPortKill } from "../../../../hooks/useDashboardSidebarPortKill";
 import { useProjectTagFolderSections } from "../../../../hooks/useProjectTagFolderSections";
+import { useRunAfterMenuClose } from "../../../../hooks/useRunAfterMenuClose";
 import { useDashboardSidebarHoverActions } from "../../../../providers/DashboardSidebarHoverProvider";
 import { useDashboardSidebarWorkspacePorts } from "../../../../providers/DashboardSidebarPortsProvider";
 import { ClaudeAccountPicker } from "../ClaudeAccountPicker";
@@ -55,10 +55,7 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	workspaceId: string;
 	/** Null for project-less session workspaces. */
 	projectId: string | null;
-	/**
-	 * Cloud rows are project-less too, so a null `projectId` alone does not mean
-	 * "session". Only sessions and project workspaces can join a group.
-	 */
+	/** Only sessions and project workspaces can join a group. */
 	isSessionWorkspace?: boolean;
 	isInSection?: boolean;
 	isLocalWorkspace: boolean;
@@ -84,8 +81,6 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onCopyWorkspaceId: () => void;
 	onRemoveFromSidebar: () => void;
 	onRename?: () => void;
-	/** Cloud workspaces only: turn this sandbox into a reusable environment. */
-	onPromoteToEnvironment?: () => void;
 	/** Default-mode Delete: a silent soft-delete to the Recycle Bin (RECYCLE-BIN).
 	 * Omitted (undefined) for mains, which are never deletable. */
 	onDelete?: () => void;
@@ -185,7 +180,6 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onCopyWorkspaceId,
 	onRemoveFromSidebar,
 	onRename,
-	onPromoteToEnvironment,
 	onDelete,
 	onRestore,
 	onDeletePermanently,
@@ -199,6 +193,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onRemovePullRequest,
 	children,
 }: DashboardSidebarWorkspaceContextMenuProps) {
+	const { runAfterClose, onCloseAutoFocus } = useRunAfterMenuClose();
 	const { setContextMenuOpen } = useDashboardSidebarHoverActions();
 	const isSectioned = sectionState !== undefined;
 	// Group actions mutate placement (sectionId/tabOrder). They need a project
@@ -233,7 +228,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	return (
 		<ContextMenu onOpenChange={setContextMenuOpen}>
 			<ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-			<ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
+			<ContextMenuContent onCloseAutoFocus={onCloseAutoFocus}>
 				<ClaudeAccountPicker
 					workspaceId={workspaceId}
 					exited={isSectioned}
@@ -258,7 +253,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 					</ContextMenuItem>
 				)}
 				{onRename && (
-					<ContextMenuItem onSelect={onRename}>
+					<ContextMenuItem onSelect={() => runAfterClose(onRename)}>
 						<LuPencil className="size-4 mr-2" />
 						<Trans>Rename</Trans>
 					</ContextMenuItem>
@@ -273,15 +268,6 @@ export function DashboardSidebarWorkspaceContextMenu({
 						<ContextMenuItem onSelect={onCopyPath}>
 							<LuCopy className="size-4 mr-2" />
 							<Trans>Copy Path</Trans>
-						</ContextMenuItem>
-					</>
-				)}
-				{onPromoteToEnvironment && (
-					<>
-						<ContextMenuSeparator />
-						<ContextMenuItem onSelect={onPromoteToEnvironment}>
-							<LuBox className="h-4 w-4" />
-							<Trans>Save as environment</Trans>
 						</ContextMenuItem>
 					</>
 				)}

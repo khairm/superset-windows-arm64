@@ -1,5 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { FEATURE_FLAGS } from "@superset/shared/constants";
+import { CLOUD_HOST_ID } from "@superset/shared/host-routing";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -22,7 +23,6 @@ import {
 } from "react-icons/hi2";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { FormPickerTrigger } from "../../PromptGroup/components/FormPickerTrigger";
-import { CLOUD_HOST_ID } from "./constants";
 import { useWorkspaceHostOptions } from "./hooks/useWorkspaceHostOptions";
 
 // Upstream declares CLOUD_HOST_ID in this file and imports it from here, so the
@@ -67,9 +67,6 @@ interface DevicePickerProps {
 	 */
 	disabled?: boolean;
 }
-
-// `CLOUD_HOST_ID` lives in ./constants on this fork (upstream re-declares it
-// here): pure decision code reads it without pulling in the picker component.
 
 function getSelectedIcon(hostId: string | null, machineId: string | null) {
 	if (hostId === CLOUD_HOST_ID) {

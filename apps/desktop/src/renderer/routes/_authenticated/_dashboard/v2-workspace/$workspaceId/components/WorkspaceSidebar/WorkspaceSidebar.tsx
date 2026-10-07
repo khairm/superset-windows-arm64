@@ -4,6 +4,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { LuClipboardList, LuFile } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+import type { PullRequestRef } from "renderer/lib/github/pullRequestRef";
 import { useWorkspaceGitStatus } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
@@ -51,7 +52,7 @@ interface WorkspaceSidebarProps {
 	) => void;
 	onOpenComment?: (comment: CommentPaneData) => void;
 	/** Opens the linked PR's summary pane; the Review tab's title falls back to GitHub without it. */
-	onOpenPullRequest?: (prNumber: number) => void;
+	onOpenPullRequest?: (ref: PullRequestRef) => void;
 	onSearch?: () => void;
 	selectedFilePath?: string;
 	/** The diff pane's current file, highlighted in the Changes tab. */

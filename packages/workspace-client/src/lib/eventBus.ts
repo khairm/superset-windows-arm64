@@ -21,6 +21,7 @@ type EventType =
 	| "port:changed"
 	| "workspace:changed"
 	| "workspace:create-settled"
+	| "workspace:naming-failed"
 	| "project:changed"
 	| "tag-folders:changed"
 	| "claude-account-state-changed"
@@ -145,6 +146,11 @@ export type WorkspaceCreateSettledPayload = Omit<
 	"type" | "workspaceId"
 >;
 
+export type WorkspaceNamingFailedPayload = Omit<
+	Extract<ServerMessage, { type: "workspace:naming-failed" }>,
+	"type" | "workspaceId"
+>;
+
 type ProjectChangedMessage = Extract<
 	ServerMessage,
 	{ type: "project:changed" }
@@ -225,31 +231,42 @@ type EventListener<T extends EventType> = T extends "fs:events"
 										workspaceId: string,
 										payload: WorkspaceCreateSettledPayload,
 									) => void
-								: T extends "project:changed"
-									? (projectId: string, payload: ProjectChangedPayload) => void
-									: T extends "tag-folders:changed"
-										? (scope: string, payload: TagFoldersChangedPayload) => void
-										: T extends "claude-account-state-changed"
+								: T extends "workspace:naming-failed"
+									? (
+											workspaceId: string,
+											payload: WorkspaceNamingFailedPayload,
+										) => void
+									: T extends "project:changed"
+										? (
+												projectId: string,
+												payload: ProjectChangedPayload,
+											) => void
+										: T extends "tag-folders:changed"
 											? (
-													workspaceId: string,
-													payload: ClaudeAccountStateChangedPayload,
+													scope: string,
+													payload: TagFoldersChangedPayload,
 												) => void
-											: T extends "claude-account-warning"
+											: T extends "claude-account-state-changed"
 												? (
-														workspaceId: string | null,
-														payload: ClaudeAccountWarningPayload,
+														workspaceId: string,
+														payload: ClaudeAccountStateChangedPayload,
 													) => void
-												: T extends "claude-account-controls-changed"
+												: T extends "claude-account-warning"
 													? (
-															workspaceId: string,
-															payload: ClaudeAccountControlsChangedPayload,
+															workspaceId: string | null,
+															payload: ClaudeAccountWarningPayload,
 														) => void
-													: T extends "page-watch:changed"
+													: T extends "claude-account-controls-changed"
 														? (
 																workspaceId: string,
-																payload: PageWatchChangedPayload,
+																payload: ClaudeAccountControlsChangedPayload,
 															) => void
-														: never;
+														: T extends "page-watch:changed"
+															? (
+																	workspaceId: string,
+																	payload: PageWatchChangedPayload,
+																) => void
+															: never;
 
 interface ListenerEntry {
 	type: EventType;
@@ -454,6 +471,7 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 			message.type === "port:changed" ||
 			message.type === "workspace:changed" ||
 			message.type === "workspace:create-settled" ||
+			message.type === "workspace:naming-failed" ||
 			message.type === "claude-account-state-changed" ||
 			message.type === "claude-account-warning" ||
 			message.type === "claude-account-controls-changed" ||

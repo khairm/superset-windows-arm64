@@ -248,6 +248,7 @@ class SeqRenderer {
 	term: Headless;
 	anchor: { epoch: string; seq: number } | null = null;
 	lastSynced: SyncedMessage | null = null;
+	lastSize: { cols: number; rows: number } | null = null;
 	/** Counted (post-synced) chunks at absolute positions, across all attaches. */
 	recorded: Array<{ start: number; bytes: Uint8Array }> = [];
 	countedThisAttach = 0;
@@ -326,7 +327,12 @@ class SeqRenderer {
 				}
 				const message = JSON.parse(String(data)) as
 					| SyncedMessage
+					| { type: "size"; cols: number; rows: number }
 					| { type: string };
+				if (message.type === "size" && "cols" in message) {
+					this.lastSize = { cols: message.cols, rows: message.rows };
+					return;
+				}
 				if (message.type === "ping") {
 					if (this.answerPings === true) {
 						ws.send(JSON.stringify({ type: "pong" }));
@@ -1150,6 +1156,11 @@ test(
 				"20x45",
 				"the smallest visible client sets the size",
 			);
+			assert.deepEqual(
+				desktop.lastSize,
+				{ cols: 45, rows: 20 },
+				"the larger client is told the size it was narrowed to",
+			);
 
 			// Backgrounding is not detaching: the socket stays, the constraint
 			// goes. This is what stops a phone in a pocket holding every desktop
@@ -1162,6 +1173,11 @@ test(
 				await probeSize(),
 				"30x120",
 				"a hidden client must not constrain the size",
+			);
+			assert.deepEqual(
+				desktop.lastSize,
+				{ cols: 120, rows: 30 },
+				"the larger client is told when it gets its size back",
 			);
 
 			phone.sendVisible(true);

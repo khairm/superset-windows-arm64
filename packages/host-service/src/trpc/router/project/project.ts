@@ -5,7 +5,7 @@ import {
 } from "@superset/shared/github-remote";
 import { BRANCH_PREFIX_MODES } from "@superset/shared/workspace-launch";
 import { TRPCError } from "@trpc/server";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { projects, tagFolderSettings, workspaces } from "../../../db/schema";
 import type { TagSettingSnapshot } from "../../../events/types";
@@ -15,6 +15,12 @@ import {
 	toProjectSnapshot,
 	updateLocalProject,
 } from "../../../projects/local-project-store";
+import {
+	listDeletedProjects,
+	purgeDeletedProject,
+	readDeletionImpact,
+	restoreProject,
+} from "../../../projects/project-deletion";
 import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
 import { isGitRepo } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
@@ -54,6 +60,7 @@ import { getGitHubRemotes } from "./utils/git-remote";
 import { listGitHubRepositories } from "./utils/github-repositories";
 import { persistLocalProject } from "./utils/persist-project";
 import {
+	adoptLocalRepo,
 	cloneRepoInto,
 	type ResolvedRepo,
 	resolveLocalRepo,
@@ -118,6 +125,7 @@ export const projectRouter = router({
 		return ctx.db
 			.select()
 			.from(projects)
+			.where(isNull(projects.deletedAt))
 			.all()
 			.map((row) => ({
 				id: row.id,
@@ -236,7 +244,9 @@ export const projectRouter = router({
 			const row = ctx.db
 				.select()
 				.from(projects)
-				.where(eq(projects.id, input.projectId))
+				.where(
+					and(eq(projects.id, input.projectId), isNull(projects.deletedAt)),
+				)
 				.get();
 			if (!row) return null;
 			return {
@@ -527,7 +537,9 @@ export const projectRouter = router({
 				cloneUrl.toLowerCase() === expectedUrlLower;
 
 			const localProject = ctx.db.query.projects
-				.findFirst({ where: repoPathMatches(gitRoot) })
+				.findFirst({
+					where: and(repoPathMatches(gitRoot), isNull(projects.deletedAt)),
+				})
 				.sync();
 
 			// A local-DB row keyed by this repo's git root is authoritative:
@@ -691,7 +703,7 @@ export const projectRouter = router({
 				]),
 			}),
 		)
-		.mutation(async ({ ctx, input }) => {
+		.mutation(async ({ ctx, input, signal }) => {
 			switch (input.mode.kind) {
 				case "empty":
 					return createFromEmpty(ctx, {
@@ -709,6 +721,7 @@ export const projectRouter = router({
 						name: input.name,
 						parentDir: input.mode.parentDir,
 						url: input.mode.url,
+						signal,
 					});
 				case "importLocal":
 					return createFromImportLocal(ctx, {
@@ -799,6 +812,7 @@ export const projectRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			restoreProject(ctx, input.projectId);
 			const existing = ctx.db
 				.select({ id: projects.id, repoPath: projects.repoPath })
 				.from(projects)
@@ -901,7 +915,7 @@ export const projectRouter = router({
 							`${parsed.owner}/${parsed.name}`,
 						);
 					} else {
-						resolved = await resolveLocalRepo(input.mode.repoPath);
+						resolved = await adoptLocalRepo(input.mode.repoPath);
 					}
 
 					// Each on-disk repo path maps to at most one project in the
@@ -959,24 +973,10 @@ export const projectRouter = router({
 		}),
 
 	/**
-	 * Project-delete saga. Local is reality — the local deletes are the
-	 * commit point, run first, and are fully offline-capable:
-	 *
-	 *   1. Ownership check: an id this host doesn't serve is a no-op —
-	 *      never a legacy cloud delete.
-	 *
-	 *   2. Best-effort `git worktree remove` for each worktree workspace so
-	 *      subsequent worktree commands aren't confused. Local workspaces
-	 *      live on the repo itself and have nothing to remove.
-	 *
-	 *   3. Local DB rows (workspaces + project). A failure here surfaces as
-	 *      an error — the local table is what the UI lists from, so a
-	 *      swallowed failure would toast "Deleted" over a surviving row.
-	 *
-	 * The on-disk repo directory is NEVER auto-removed. The user's code is
-	 * their code; deletion of the working tree must be an explicit action,
-	 * not a side-effect of project removal. Returns repoPath so a future
-	 * UI can offer an explicit "delete files too" follow-up.
+	 * Soft delete: the project and its live workspaces disappear for
+	 * everyone on this device, teardown runs and terminals stop, and the
+	 * worktrees stay on disk so `restore` can undo it until the purge sweep
+	 * runs. The repository folder is never removed.
 	 */
 	remove: machineOnlyProcedure
 		.input(z.object({ projectId: z.string().uuid() }))
@@ -1138,4 +1138,35 @@ export const projectRouter = router({
 				});
 			}
 		}),
+
+	restore: machineOnlyProcedure
+		.input(z.object({ projectId: z.string().uuid() }))
+		.mutation(({ ctx, input }) => {
+			const restored = restoreProject(ctx, input.projectId);
+			if (!restored) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Project not found",
+				});
+			}
+			return restored;
+		}),
+
+	purge: machineOnlyProcedure
+		.input(z.object({ projectId: z.string().uuid() }))
+		.mutation(async ({ ctx, input }) => {
+			if (!(await purgeDeletedProject(ctx, input.projectId))) {
+				throw new TRPCError({
+					code: "PRECONDITION_FAILED",
+					message: "Only a deleted project can be deleted permanently",
+				});
+			}
+			return { success: true };
+		}),
+
+	listDeleted: protectedProcedure.query(({ ctx }) => listDeletedProjects(ctx)),
+
+	deletionImpact: protectedProcedure
+		.input(z.object({ projectId: z.string().uuid() }))
+		.query(({ ctx, input }) => readDeletionImpact(ctx, input.projectId)),
 });

@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import {
 	installPlugin,
 	setPluginEnabled,
+	syncInstalledPluginMcpServers,
 	uninstallPlugin,
 } from "main/lib/plugin-installs";
 import { z } from "zod";
@@ -37,6 +38,26 @@ export const createPluginsRouter = () => {
 			.input(z.object({ name: z.string().min(1), enabled: z.boolean() }))
 			.mutation(({ input }) => {
 				return { installed: setPluginEnabled(input.name, input.enabled) };
+			}),
+
+		/** The account list is the server's, so main cannot discover the split itself. */
+		syncConnections: publicProcedure
+			.input(
+				z.object({
+					connections: z.array(
+						z.object({
+							connector: z.string().min(1),
+							connectionId: z.string().min(1),
+							externalUserId: z.string().nullable(),
+							nickname: z.string().nullable(),
+							label: z.string().nullable(),
+						}),
+					),
+				}),
+			)
+			.mutation(({ input }) => {
+				syncInstalledPluginMcpServers(input.connections);
+				return { ok: true };
 			}),
 	});
 };

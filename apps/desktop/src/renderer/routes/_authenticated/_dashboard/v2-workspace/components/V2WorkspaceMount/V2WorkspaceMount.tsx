@@ -1,6 +1,7 @@
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { type ReactNode, useEffect, useMemo, useRef } from "react";
+import { WorkspaceNotFoundState } from "renderer/routes/_authenticated/_dashboard/components/WorkspaceNotFoundState";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
@@ -11,7 +12,6 @@ import { WorkspaceProvider } from "../../providers/WorkspaceProvider";
 import { WorkspaceCreateErrorState } from "../WorkspaceCreateErrorState";
 import { WorkspaceCreatingState } from "../WorkspaceCreatingState";
 import { WorkspaceHostIncompatibleState } from "../WorkspaceHostIncompatibleState";
-import { WorkspaceNotFoundState } from "../WorkspaceNotFoundState";
 
 interface V2WorkspaceMountProps {
 	workspaceId: string;
@@ -114,7 +114,12 @@ export function V2WorkspaceMount({
 		if (!isAbsenceAuthoritative(heldCandidate?.hostId ?? null)) {
 			return <div className="flex h-full w-full" />;
 		}
-		return <WorkspaceNotFoundState workspaceId={workspaceId} />;
+		return (
+			<WorkspaceNotFoundState
+				workspaceId={workspaceId}
+				browseTo="/v2-workspaces"
+			/>
+		);
 	}
 
 	if (isCreatePending) {
@@ -123,6 +128,7 @@ export function V2WorkspaceMount({
 				name={heldWorkspace.name}
 				branch={heldWorkspace.branch}
 				startedAt={new Date(heldWorkspace.createdAt).getTime()}
+				workspaceReady={Boolean(heldWorkspace.worktreePath)}
 			/>
 		);
 	}
@@ -130,9 +136,12 @@ export function V2WorkspaceMount({
 	if (hostStatus.status === "incompatible") {
 		return (
 			<WorkspaceHostIncompatibleState
+				hostId={hostStatus.hostId}
+				hostUrl={hostStatus.hostUrl}
 				hostName={hostStatus.hostName}
 				hostVersion={hostStatus.hostVersion}
 				minVersion={hostStatus.minVersion}
+				installSource={hostStatus.installSource}
 			/>
 		);
 	}

@@ -1,7 +1,7 @@
 const FLOOR_GRID =
-	"linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px)";
+	"linear-gradient(to right, rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.025) 1px, transparent 1px)";
 
-const FLOOR_FADE = "linear-gradient(to bottom, black, transparent 62%)";
+const FLOOR_FADE = "linear-gradient(to bottom, black, transparent 100%)";
 
 const BRAND_RGB = "210,86,17";
 
@@ -9,13 +9,14 @@ const guideLines = (halfWidth: number) =>
 	`linear-gradient(to right, transparent calc(50% - ${halfWidth}px), rgba(255,255,255,0.07) calc(50% - ${halfWidth}px), rgba(255,255,255,0.07) calc(50% - ${halfWidth - 1}px), transparent calc(50% - ${halfWidth - 1}px), transparent calc(50% + ${halfWidth - 1}px), rgba(255,255,255,0.07) calc(50% + ${halfWidth - 1}px), rgba(255,255,255,0.07) calc(50% + ${halfWidth}px), transparent calc(50% + ${halfWidth}px))`;
 
 const furnaceGlow = (rgb: string) =>
-	`radial-gradient(ellipse 62% 100% at 50% 0%, rgba(${rgb},0.14), rgba(${rgb},0.035) 45%, transparent 72%)`;
+	`radial-gradient(ellipse 62% 100% at 50% 0%, rgba(${rgb},0.065), rgba(${rgb},0.015) 45%, transparent 72%)`;
 
 interface FactoryBackdropProps {
 	tint?: string;
 	halfWidth?: number;
 	glow?: boolean;
 	grid?: boolean;
+	guides?: boolean;
 }
 
 export function FactoryBackdrop({
@@ -23,6 +24,7 @@ export function FactoryBackdrop({
 	halfWidth = 448,
 	glow = true,
 	grid = true,
+	guides = true,
 }: FactoryBackdropProps) {
 	return (
 		<div
@@ -31,10 +33,10 @@ export function FactoryBackdrop({
 		>
 			{grid && (
 				<div
-					className="absolute inset-0"
+					className="absolute inset-x-0 top-0 h-[560px]"
 					style={{
 						backgroundImage: FLOOR_GRID,
-						backgroundSize: "32px 32px",
+						backgroundSize: "48px 48px",
 						maskImage: FLOOR_FADE,
 						WebkitMaskImage: FLOOR_FADE,
 					}}
@@ -46,10 +48,12 @@ export function FactoryBackdrop({
 					style={{ backgroundImage: furnaceGlow(tint) }}
 				/>
 			)}
-			<div
-				className="absolute inset-0"
-				style={{ backgroundImage: guideLines(halfWidth) }}
-			/>
+			{guides && (
+				<div
+					className="absolute inset-0"
+					style={{ backgroundImage: guideLines(halfWidth) }}
+				/>
+			)}
 			{glow && (
 				<div
 					className="absolute inset-x-0 top-0 h-px"

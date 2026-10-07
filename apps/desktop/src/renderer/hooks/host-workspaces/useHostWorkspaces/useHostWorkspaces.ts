@@ -183,9 +183,8 @@ export function useHostWorkspacesSourceWithActivity(
 	);
 	const openSandbox = useMemo(
 		() =>
-			sandboxes.find(
-				(sandbox) => sandbox.workspaceId === openWorkspaceId && sandbox.running,
-			) ?? null,
+			sandboxes.find((sandbox) => sandbox.workspaceId === openWorkspaceId) ??
+			null,
 		[sandboxes, openWorkspaceId],
 	);
 

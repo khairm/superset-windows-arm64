@@ -141,6 +141,8 @@ const config: Configuration = {
 		// re-introduce the DSN. Drop this only if the desktop runtime ever gains a
 		// real (non-type) import of @blaxel/*, and then sever the DSN some other way.
 		"!**/node_modules/@blaxel/**",
+		"!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
+		"!**/node_modules/@openai/codex*/**",
 	],
 
 	// Rebuild native modules for Electron's Node.js version

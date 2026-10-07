@@ -9,6 +9,7 @@ import { projects, workspaces } from "../../db/schema.ts";
 import { listGitIgnoredDirsForRefresh } from "../git/ignored-dirs-refresh.ts"; // (GIT-WATCH-ATTACH-TASK)
 import { probeGitEntryDiskOnly } from "../git/non-git.ts";
 import { WatchAttachGuard } from "./watch-attach-guard.ts";
+import { scanNestedRepositories } from "./watcher-scans.ts";
 
 export interface WorkspaceFilesystemManagerOptions {
 	db: HostDb;
@@ -31,13 +32,14 @@ export class ProjectNotFoundError extends Error {
 export class WorkspaceFilesystemManager {
 	private readonly db: HostDb;
 	private readonly watcherManager = new FsWatcherManager({
+		useDefaultIgnores: false,
 		// A non-git root has nothing to prune; skip the listing so its
 		// certain `ls-files` failure neither launches nor logs.
 		listGitIgnoredDirs: async (rootPath) =>
 			(await probeGitEntryDiskOnly(rootPath)) === "absent"
 				? []
 				: listGitIgnoredDirsForRefresh(rootPath),
-		useDefaultIgnores: false,
+		findNestedRepoRoots: scanNestedRepositories,
 	});
 	private readonly watchAttachGuard = new WatchAttachGuard(this.watcherManager);
 	private readonly serviceCache = new Map<string, FsHostService>();

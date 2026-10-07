@@ -4,7 +4,7 @@ description: Turn the agent you're already talking to into a coordinator of othe
 ---
 
 <Callout type="info" title="Use when">
-	the fan-out is mechanical: many similar slices, clear acceptance criteria, and results a coordinator can verify against tests. For work you want to review step by step, use the manual recipes above.
+	the fan-out is mechanical: many similar slices, clear acceptance criteria, and results a coordinator can verify against tests. For work you want to review step by step, use the [parallel workstreams recipe](/recipes/parallel-workstreams).
 </Callout>
 
 Ask the agent you're already talking to for parallel work and tell it to use the Superset CLI. It can create an isolated workspace per worker, launch an agent in each, send follow-ups over their terminals, and collect the results. `superset --help` lists the available commands.

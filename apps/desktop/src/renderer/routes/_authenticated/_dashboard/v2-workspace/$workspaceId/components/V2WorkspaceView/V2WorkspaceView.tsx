@@ -23,6 +23,7 @@ import {
 	useWorkspaceSidebarStore,
 } from "renderer/stores/workspace-sidebar-state";
 import { useWorkspace } from "../../../providers/WorkspaceProvider";
+import { useAgentSessionLauncher } from "../../hooks/useAgentSessionLauncher";
 import { useAutoAdoptBackgroundSessions } from "../../hooks/useAutoAdoptBackgroundSessions";
 import { useClearActivePaneAttention } from "../../hooks/useClearActivePaneAttention";
 import { useConsumeAutomationRunLink } from "../../hooks/useConsumeAutomationRunLink";
@@ -149,6 +150,7 @@ function V2WorkspaceCenter({
 	});
 	useClearActivePaneAttention({ store });
 	const launcher = useV2TerminalLauncher();
+	const { openAgentChat } = useAgentSessionLauncher({ workspaceId, store });
 	const {
 		matchedPresets,
 		newTabPresets,
@@ -157,6 +159,7 @@ function V2WorkspaceCenter({
 	} = useV2PresetExecution({
 		store,
 		launcher,
+		openAgentChat,
 	});
 	const workspaceRun = useV2WorkspaceRun({
 		store,
@@ -204,7 +207,6 @@ function V2WorkspaceCenter({
 		newTabPresets,
 		executePreset,
 		setRightSidebarOpen,
-		pageOpenAction: v2UserPreferences.pageOpenAction,
 	});
 	const paneRegistry = usePaneRegistry({
 		onOpenDiff: openDiffPane,
@@ -301,7 +303,6 @@ function V2WorkspaceCenter({
 		to: "/v2-workspace/$workspaceId",
 		fuzzy: true,
 	});
-	const isSidebarPanelOpen = useWorkspaceSidebarStore((s) => s.isOpen);
 	const isSidebarPanelCollapsed = useWorkspaceSidebarStore((s) =>
 		s.isCollapsed(),
 	);
@@ -309,9 +310,10 @@ function V2WorkspaceCenter({
 	// is open. An EXPANDED sidebar hosts the traffic-light pad and the
 	// sidebar/nav controls in its own header; a COLLAPSED rail is too narrow, so
 	// the tab bar takes over that chrome — without this the collapsed rail has no
-	// SidebarToggle at all and cannot be expanded again.
-	const tabBarHostsChrome =
-		onV2WorkspaceRoute && isSidebarPanelOpen && isSidebarPanelCollapsed;
+	// SidebarToggle at all and cannot be expanded again. The sidebar can no
+	// longer be closed outright (upstream replaced "closed" with the rail), so
+	// collapsed is the whole condition.
+	const tabBarHostsChrome = onV2WorkspaceRoute && isSidebarPanelCollapsed;
 
 	const workspaceRunButton = (
 		<V2WorkspaceRunButton
@@ -326,7 +328,7 @@ function V2WorkspaceCenter({
 	);
 
 	return (
-		<FileDocumentStoreProvider>
+		<FileDocumentStoreProvider store={store}>
 			<WorkspaceGitStatusProvider
 				workspaceId={workspaceId}
 				store={store}

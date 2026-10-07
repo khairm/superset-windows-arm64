@@ -14,7 +14,9 @@ import { provisionAgentIntegrations } from "./runtime/agent-provisioning";
 import { processStartedAt, recordBootStamp } from "./runtime/boot-stamps";
 import { resolveBrowserBridgeFromEnv } from "./runtime/browser-bridge/env";
 import { applyLoginShellEnvToProcess } from "./runtime/login-shell-env";
+import { startSandboxAgentStatusReporter } from "./runtime/sandbox-agent-status";
 import { startSandboxCredentialRefresh } from "./runtime/sandbox-credential-refresh";
+import { startVitalsLog } from "./runtime/vitals";
 import { detachFromLaunchDirectory } from "./runtime/working-directory";
 import { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
 import { configureSelfUpdater } from "./self-update";
@@ -66,7 +68,7 @@ async function main(): Promise<void> {
 	// Standalone entry only: the desktop provisions these itself for hosts it
 	// spawns (with its per-agent disable settings); this covers CLI/systemd
 	// launches, which previously had no notify hooks or shell wrappers (#6254).
-	provisionAgentIntegrations();
+	await provisionAgentIntegrations();
 
 	// (CLOUD-SEVERANCE-P2) No JWT exchange, no config-file token source — both
 	// were network calls to api.superset.sh, and nothing consumes their headers
@@ -152,6 +154,7 @@ async function main(): Promise<void> {
 		recordBootStamp("host.listening");
 
 		startTerminalReaper(db, eventBus);
+		startVitalsLog();
 		// A cloud workspace created with an agent starts it now: the pty daemon
 		// and event bus are up, and a person opening the workspace sees the
 		// agent's terminal the way they would on their own machine.
@@ -165,6 +168,12 @@ async function main(): Promise<void> {
 				apiUrl: env.SUPERSET_API_URL,
 				workspaceId: sandboxWorkspaceId,
 				hostSecret: env.HOST_SERVICE_SECRET,
+			});
+			startSandboxAgentStatusReporter({
+				apiUrl: env.SUPERSET_API_URL,
+				workspaceId: sandboxWorkspaceId,
+				hostSecret: env.HOST_SERVICE_SECRET,
+				store: terminalAgentStore,
 			});
 		}
 
@@ -217,7 +226,7 @@ async function main(): Promise<void> {
 	// Standalone only: this process owns its listener and relay socket, so it
 	// can hand the port to a successor build (system.update). The desktop
 	// entry never registers this and its host-service stays non-updatable.
-	configureSelfUpdater({
+	const selfUpdater = configureSelfUpdater({
 		stopServing: async () => {
 			// (CLOUD-SEVERANCE-P2) Upstream cancels its relay registration here
 			// first; this fork never dials one, so the listener is all there is
@@ -233,6 +242,13 @@ async function main(): Promise<void> {
 			]);
 		},
 	});
+	if (env.SUPERSET_HOST_AUTO_UPDATE && selfUpdater.status().updatable) {
+		const timer = setInterval(
+			() => void selfUpdater.checkForUpdates(),
+			60 * 60_000,
+		);
+		timer.unref();
+	}
 }
 
 void main().catch(async (error) => {

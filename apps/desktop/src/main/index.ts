@@ -55,14 +55,10 @@ import { localDb } from "./lib/local-db";
 import { resolveLocalOrgId } from "./lib/local-identity/local-org";
 import { requestLocalNetworkAccess } from "./lib/local-network-permission";
 import { menuEmitter } from "./lib/menu-events";
-import {
-	initTanstackDbPersistence,
-	shutdownTanstackDbPersistence,
-} from "./lib/persistence/persistence";
-import { syncInstalledPluginMcpServers } from "./lib/plugin-installs";
 import { portForwardManager } from "./lib/port-forward";
 import { ensureProjectIconsDir, getProjectIconPath } from "./lib/project-icons";
 import { runQuitCleanup } from "./lib/quit-sequence";
+import { startResourceJournal } from "./lib/resource-metrics/resource-journal";
 import { initSentry } from "./lib/sentry";
 import {
 	prewarmTerminalRuntime,
@@ -344,7 +340,6 @@ app.on("before-quit", async (event) => {
 		stopNotifyDaemon: stopNotifyHookDaemon,
 		teardownTerminalHost,
 		disposeTerminalHostClient,
-		shutdownPersistence: shutdownTanstackDbPersistence,
 		disposeTray,
 		forceExit: (code) => app.exit(code),
 	});
@@ -585,7 +580,6 @@ if (!gotTheLock) {
 		log.info("[boot] step initAppState start +" + bootMs() + "ms");
 		await initAppState();
 		log.info("[boot] step initAppState done +" + bootMs() + "ms");
-		initTanstackDbPersistence();
 
 		// (NETLOG-OFF) Upstream deleted its netlog writer outright and now only
 		// reclaims the stranded directory. The fork keeps the writer as a
@@ -712,13 +706,6 @@ if (!gotTheLock) {
 			console.error("[main] Failed to set up agent integrations:", error);
 		}
 		try {
-			// Converge agent MCP configs on the installed-plugin set, so
-			// installs/uninstalls that missed a mid-session sync land here.
-			syncInstalledPluginMcpServers();
-		} catch (error) {
-			console.error("[main] Failed to sync installed plugins:", error);
-		}
-		try {
 			installBundledCliShim();
 		} catch (error) {
 			console.error("[main] Failed to install bundled CLI shim:", error);
@@ -740,6 +727,7 @@ if (!gotTheLock) {
 		log.info("[boot] step makeAppSetup done +" + bootMs() + "ms");
 		setupAutoUpdater();
 		initTray();
+		startResourceJournal();
 
 		const coldStartUrl = findDeepLinkInArgv(process.argv);
 		if (coldStartUrl) {

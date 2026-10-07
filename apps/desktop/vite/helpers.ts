@@ -125,6 +125,7 @@ function connectSrcOrigins(): string {
 		process.env.RELAY_URL || "https://relay.cloud-severed.invalid",
 		process.env.REALTIME_URL || "https://realtime.cloud-severed.invalid",
 		process.env.SANDBOX_GATE_ORIGIN || "https://sandbox.cloud-severed.invalid",
+		process.env.R2_ENDPOINT || "https://r2.cloud-severed.invalid",
 	];
 	return [
 		...new Set(origins.flatMap((url) => [url, url.replace(/^http/, "ws")])),

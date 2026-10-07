@@ -1,11 +1,17 @@
 import { FORK_PORT_SCAN_DISABLED } from "@superset/shared/fork-disabled-features";
-import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router";
+import {
+	createFileRoute,
+	Outlet,
+	type ParsedLocation,
+	useNavigate,
+} from "@tanstack/react-router";
 import { useEffect } from "react";
 import { CommandPaletteHost } from "renderer/commandPalette";
 import { Redirect } from "renderer/components/Redirect";
+import { useWorkspaceNamingFailedToast } from "renderer/hooks/host-service/useWorkspaceNamingFailedToast";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useHotkey } from "renderer/hotkeys";
-import { useActiveRoute } from "renderer/lib/active-route";
+import { isUnder, useActiveRoute } from "renderer/lib/active-route";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
@@ -13,9 +19,12 @@ import { DashboardSidebarPortsProvider } from "renderer/routes/_authenticated/_d
 import { PortForwardsProvider } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/PortForwardsProvider";
 import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
 import { WorkspaceExitCleanupReconciler } from "renderer/routes/_authenticated/_dashboard/components/WorkspaceExitCleanupReconciler";
+import { useHistoryNavigationShortcuts } from "renderer/routes/_authenticated/_dashboard/hooks/useHistoryNavigationShortcuts";
+import { useCloudSidebarStore } from "renderer/routes/_authenticated/_dashboard/stores/cloudSidebarStore";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import { WorkspaceSidebar } from "renderer/screens/main/components/WorkspaceSidebar";
+import { useAutomationFailuresStore } from "renderer/stores/automation-failures";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { syncPersistedStoreAcrossWindows } from "renderer/stores/syncPersistedStoreAcrossWindows";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
@@ -29,13 +38,22 @@ import { ContentBoundary } from "../components/ContentBoundary";
 import { AddRepositoryModals } from "./components/AddRepositoryModals";
 import { CrossVersionMismatchState } from "./components/CrossVersionMismatchState";
 import { DashboardWorkspaceHotkeys } from "./components/DashboardWorkspaceHotkeys";
+import { SaveAsEnvironmentMount } from "./components/SaveAsEnvironmentMount";
 import { TopBar } from "./components/TopBar";
 import {
 	selectCurrentWorkspaceId,
-	selectOnDashboardViewRoute,
-	selectOnNewWorkspaceRoute,
 	selectOnV2WorkspaceRoute,
 } from "./layout.utils";
+
+// (NAV-LOCAL-RENDER) The v1 screens that keep the app-wide top bar, read as a
+// primitive so a v2-to-v2 click never re-renders this layout.
+function selectOnV1Screen(matched: ParsedLocation): boolean {
+	return (
+		isUnder(matched.pathname, "/workspaces") ||
+		isUnder(matched.pathname, "/workspace") ||
+		isUnder(matched.pathname, "/project")
+	);
+}
 
 export const Route = createFileRoute("/_authenticated/_dashboard")({
 	component: DashboardLayout,
@@ -56,11 +74,18 @@ function DashboardLayout() {
 		const stopAgentStateSync = syncPersistedStoreAcrossWindows(
 			useV2NotificationStore,
 		);
+		const stopCloudSidebarSync =
+			syncPersistedStoreAcrossWindows(useCloudSidebarStore);
+		const stopAutomationFailuresSync = syncPersistedStoreAcrossWindows(
+			useAutomationFailuresStore,
+		);
 
 		return () => {
 			stopWorkspaceSidebarSync();
 			stopSectionCollapseSync();
 			stopAgentStateSync();
+			stopCloudSidebarSync();
+			stopAutomationFailuresSync();
 		};
 	}, []);
 	// Get current workspace from route to pre-select project in new workspace modal
@@ -69,8 +94,12 @@ function DashboardLayout() {
 	const currentWorkspaceId = useActiveRoute(selectCurrentWorkspaceId);
 	const onV1WorkspaceRoute = currentWorkspaceId !== null;
 	const onV2WorkspaceRoute = useActiveRoute(selectOnV2WorkspaceRoute);
-	const onNewWorkspaceRoute = useActiveRoute(selectOnNewWorkspaceRoute);
-	const onDashboardViewRoute = useActiveRoute(selectOnDashboardViewRoute);
+	useHistoryNavigationShortcuts();
+	// (NAV-LOCAL-RENDER) The answer useShowsAppTopBar gives, read as a
+	// primitive: this layout is one of the ratcheted files and must not
+	// subscribe to the router.
+	const onV1Screen = useActiveRoute(selectOnV1Screen);
+	const showsAppTopBar = !isV2CloudEnabled || onV1Screen;
 	const versionMismatch =
 		(isV2CloudEnabled && onV1WorkspaceRoute) ||
 		(!isV2CloudEnabled && onV2WorkspaceRoute);
@@ -80,10 +109,10 @@ function DashboardLayout() {
 		{ enabled: !!currentWorkspaceId },
 	);
 
+	useWorkspaceNamingFailedToast();
+
 	const {
-		isOpen: isWorkspaceSidebarOpen,
 		toggleCollapsed: toggleWorkspaceSidebarCollapsed,
-		setOpen: setWorkspaceSidebarOpen,
 		width: workspaceSidebarWidth,
 		setWidth: setWorkspaceSidebarWidth,
 		isResizing: isWorkspaceSidebarResizing,
@@ -94,26 +123,15 @@ function DashboardLayout() {
 	// Global hotkeys for dashboard
 	useHotkey("OPEN_SETTINGS", () => navigate({ to: DEFAULT_SETTINGS_ROUTE }));
 	useHotkey("SHOW_HOTKEYS", () => navigate({ to: "/settings/keyboard" }));
-	useHotkey("TOGGLE_WORKSPACE_SIDEBAR", () => {
-		if (!isWorkspaceSidebarOpen) {
-			setWorkspaceSidebarOpen(true);
-		} else {
-			toggleWorkspaceSidebarCollapsed();
-		}
-	});
+	useHotkey("TOGGLE_WORKSPACE_SIDEBAR", toggleWorkspaceSidebarCollapsed);
 
-	// Collapsed rail on the v2 workspace route: the rail's headroom strip
-	// continues the pane tab bar, so the panel must not draw its own
-	// full-height border — the sidebar's inner border (which stops below the
-	// strip) is the only divider.
-	const railContinuesTabBar =
-		isV2CloudEnabled &&
-		onV2WorkspaceRoute &&
-		!versionMismatch &&
-		isWorkspaceSidebarOpen &&
-		isWorkspaceSidebarCollapsed();
+	// The collapsed rail's top strip continues the page's header row, so the
+	// panel must not draw its own full-height border: the sidebar's inner
+	// border, which stops below the strip, is the only divider.
+	const railContinuesHeaderRow =
+		!showsAppTopBar && isWorkspaceSidebarCollapsed();
 
-	const sidebarPanel = isWorkspaceSidebarOpen && (
+	const sidebarPanel = (
 		<ResizablePanel
 			width={workspaceSidebarWidth}
 			onWidthChange={setWorkspaceSidebarWidth}
@@ -123,7 +141,7 @@ function DashboardLayout() {
 			maxWidth={MAX_WORKSPACE_SIDEBAR_WIDTH}
 			handleSide="right"
 			clampWidth={false}
-			className={railContinuesTabBar ? "border-r-0" : undefined}
+			className={railContinuesHeaderRow ? "border-r-0" : undefined}
 			onDoubleClickHandle={() =>
 				setWorkspaceSidebarWidth(DEFAULT_WORKSPACE_SIDEBAR_WIDTH)
 			}
@@ -140,29 +158,10 @@ function DashboardLayout() {
 		</ResizablePanel>
 	);
 
-	// Only lift the sidebar out of the TopBar column when v2 + expanded.
-	// Collapsed/closed sidebars stay inside so the TopBar runs full-width.
+	// v2 screens draw their own headers, so the sidebar always runs full
+	// height beside them; only v1 screens keep the TopBar above both.
 	const sidebarOutsideColumn =
-		isV2CloudEnabled &&
-		isWorkspaceSidebarOpen &&
-		!isWorkspaceSidebarCollapsed();
-
-	// On the v2 workspace route with an open sidebar the TopBar row is merged
-	// into the pane tab bar (which provides the drag region and hosts the
-	// right-sidebar toggle). Expanded sidebars host the traffic-light pad in
-	// their header; collapsed rails host it via their headroom spacer plus the
-	// tab bar's leading inset. Only a fully closed sidebar keeps the TopBar,
-	// whose inset then keeps content clear of the macOS traffic lights. The
-	// new-workspace page brings its own drag strip, and the dashboard views
-	// (automations/tasks/workspaces) carry drag fillers in their own headers,
-	// so they hide the TopBar whenever the expanded sidebar sits outside the
-	// column — otherwise it renders as an empty strip above their headers.
-	const hideTopBar =
-		(onV2WorkspaceRoute &&
-			!versionMismatch &&
-			isV2CloudEnabled &&
-			isWorkspaceSidebarOpen) ||
-		((onNewWorkspaceRoute || onDashboardViewRoute) && sidebarOutsideColumn);
+		!showsAppTopBar || (isV2CloudEnabled && !isWorkspaceSidebarCollapsed());
 
 	return (
 		// (FORK-PORTS-OFF)
@@ -179,7 +178,7 @@ function DashboardLayout() {
 					<WorkspaceExitCleanupReconciler />
 					{sidebarOutsideColumn && sidebarPanel}
 					<div className="flex flex-1 flex-col min-w-0 min-h-0">
-						{!hideTopBar && <TopBar />}
+						{showsAppTopBar && <TopBar />}
 						<div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
 							{!sidebarOutsideColumn && sidebarPanel}
 							<div className="relative flex flex-1 min-h-0 min-w-0">
@@ -210,6 +209,7 @@ function DashboardLayout() {
 						currentWorkspaceId={currentWorkspaceId}
 						currentWorkspace={currentWorkspace}
 					/>
+					<SaveAsEnvironmentMount />
 				</div>
 			</PortForwardsProvider>
 		</DashboardSidebarPortsProvider>

@@ -17,6 +17,7 @@ import { isGitRepo } from "../git/non-git";
 import { peekOriginHead, readOriginHead } from "../git/origin-head-cache";
 import type { ExitedWorkspaceFilterSlot } from "./exited-workspaces";
 import type { PrSyncTrigger } from "./pr-sync-trigger";
+import { ConditionalGh } from "./utils/conditional-gh";
 import {
 	GitHubAvailabilityGate,
 	type GitHubAvailabilityStatus,
@@ -71,9 +72,8 @@ const SAFETY_NET_INTERVAL_MS = 5 * 60_000;
 // branch/HEAD/upstream changes. The 60s repo-PR cache deduplicates across
 // concurrent triggers.
 const PROJECT_REFRESH_INTERVAL_MS = 5 * 60_000;
-// Must exceed every polling interval that hits this cache (SAFETY_NET and
-// PROJECT_REFRESH). Otherwise the cache is always stale at poll time and
-// each tick fires fresh GitHub calls for the same upstream branch.
+// Sweeps outlive this cache on purpose: they revalidate through ConditionalGh,
+// and a 304 costs no rate limit. Raising it past the sweep only makes PRs staler.
 const REPO_PULL_REQUEST_CACHE_TTL_MS = 60_000;
 // A fetch that keeps failing (payload over maxBuffer, revoked auth, …) must
 // not respawn `gh` at full cadence forever: each consecutive failure doubles
@@ -243,6 +243,7 @@ interface PullRequestDetails {
 export class PullRequestRuntimeManager {
 	private readonly db: HostDb;
 	private readonly execGh: ExecGh;
+	private readonly conditionalGh: ConditionalGh;
 	private readonly git: GitFactory;
 	private readonly github: () => Promise<Octokit>;
 	private readonly gitWatcher: Pick<PrSyncTrigger, "onChanged">;
@@ -308,7 +309,8 @@ export class PullRequestRuntimeManager {
 
 	constructor(options: PullRequestRuntimeManagerOptions) {
 		this.db = options.db;
-		this.execGh = options.execGh;
+		this.conditionalGh = new ConditionalGh(options.execGh);
+		this.execGh = this.conditionalGh.exec;
 		this.git = options.git;
 		this.github = options.github;
 		this.gitWatcher = options.gitWatcher;
@@ -407,6 +409,7 @@ export class PullRequestRuntimeManager {
 	}
 
 	stop() {
+		this.conditionalGh.clear();
 		if (this.safetyNetTimer) clearInterval(this.safetyNetTimer);
 		if (this.projectRefreshTimer) clearInterval(this.projectRefreshTimer);
 		if (this.missingWorktreeProbeTimer)

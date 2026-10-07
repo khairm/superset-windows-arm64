@@ -21,6 +21,7 @@ import { command } from "../../lib/command";
  * unknown-flag error.
  */
 export default command({
+	sandbox: false,
 	description: "Not available: this fork's CLI ships with the desktop app",
 	skipMiddleware: true,
 	options: {

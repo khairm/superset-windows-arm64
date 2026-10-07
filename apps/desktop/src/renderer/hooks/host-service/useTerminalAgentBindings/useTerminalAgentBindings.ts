@@ -171,6 +171,12 @@ export function useTerminalAgentBindings(
 	const { data } = useQuery({
 		queryKey,
 		enabled,
+		// (BINDINGS-COALESCE) Deliberately NOT given the query's AbortSignal: this
+		// read is shared by every subscriber of the workspace and the whole point
+		// of the coalescing owner is that no mount, unmount or refresh cancels an
+		// in-flight read (the scheduler passes `cancelRefetch: false` for the same
+		// reason). Under StrictMode an abortable queryFn turns the one mount fetch
+		// into two.
 		queryFn: () => {
 			if (!hostUrl) return [] as TerminalAgentBindings;
 			return getHostServiceClientByUrl(

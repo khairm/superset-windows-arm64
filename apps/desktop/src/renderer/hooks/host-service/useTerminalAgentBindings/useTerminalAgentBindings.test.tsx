@@ -177,6 +177,7 @@ function WithSidebar() {
 	return (
 		<DashboardSidebarWorkspaceStatusProvider
 			targets={[{ workspaceId: WORKSPACE_ID, hostUrl: HOST_A }]}
+			workspaces={[]}
 			activeWorkspaceId={null}
 		>
 			<Consumer />

@@ -103,7 +103,8 @@ fi
 # transcript_path is the file the hook ran against (Claude: the parent
 # session; Codex: the child's own rollout); agent_transcript_path is the
 # child's transcript on SubagentStop. The host derives the child's file from
-# them so the subagent pane can follow it.
+# them so the subagent pane can follow it, and on a main-loop event keeps
+# transcript_path so a handoff reads the session where the harness wrote it.
 json_field "transcript_path" "$INPUT"; TRANSCRIPT_PATH="$JSON_FIELD"
 if [ -z "$TRANSCRIPT_PATH" ]; then
   json_field "transcriptPath" "$INPUT"; TRANSCRIPT_PATH="$JSON_FIELD"
@@ -323,6 +324,11 @@ if [ -n "$SUPERSET_ACCOUNT_ATTRIBUTION_TOKEN" ]; then
   json_escape "$SUPERSET_ACCOUNT_ATTRIBUTION_TOKEN"
   ATTRIBUTION_FIELD=",\"attributionToken\":\"$JSON_ESCAPED\""
 fi
+TRANSCRIPT_FIELD=""
+if [ -n "$TRANSCRIPT_PATH" ]; then
+  json_escape "$TRANSCRIPT_PATH"
+  TRANSCRIPT_FIELD=",\"transcriptPath\":\"$JSON_ESCAPED\""
+fi
 LAUNCH_FIELD=""
 if [ -n "$SUPERSET_AGENT_LAUNCH_ID" ]; then
   json_escape "$SUPERSET_AGENT_LAUNCH_ID"
@@ -363,7 +369,7 @@ if [ -n "$SUPERSET_TERMINAL_ID" ]; then
   json_escape "$EVENT_TYPE"; E_EVENT_TYPE="$JSON_ESCAPED"
   json_escape "$AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
   json_escape "$SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"
-  dispatch_to_host "{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}$PREVIEW_FIELD$ACCOUNT_FIELD$LAUNCH_FIELD$ATTRIBUTION_FIELD}}"
+  dispatch_to_host "{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}$PREVIEW_FIELD$ACCOUNT_FIELD$TRANSCRIPT_FIELD$LAUNCH_FIELD$ATTRIBUTION_FIELD}}"
   [ "$HOOK_ACCEPTED" = "1" ] && exit 0
   # Delivered somewhere (2xx) but no host owned the terminal: keep the
   # pre-existing "any 2xx wins" behavior and skip the v1 fallback.

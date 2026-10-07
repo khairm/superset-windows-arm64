@@ -34,6 +34,7 @@ import semver from "semver";
 import { DaemonClient } from "../terminal/DaemonClient/index.ts";
 import { EXPECTED_DAEMON_VERSION } from "./expected-version.ts";
 import { MAX_DAEMON_LOG_BYTES, openRotatingLogFd } from "./log-fd.ts";
+import type { DaemonProbeResult, ProbeAttemptOutcome } from "./probe.ts";
 
 /**
  * Replay buffer the daemon retains per session. Its own default is 64 KB,
@@ -93,12 +94,6 @@ export interface DaemonHealth {
 	reachable: boolean;
 	/** 0 while reachable. */
 	unreachableForMs: number;
-}
-
-interface DaemonProbeResult {
-	daemonVersion: string;
-	daemonPid?: number;
-	trustdHealthy?: boolean;
 }
 
 export interface DaemonAutoUpdateFailure {
@@ -1844,17 +1839,11 @@ export async function probeDaemonVersion(
 }
 
 /**
- * How a failed probe attempt failed, for the retry wrapper's stop decision.
- * `connected` = the connect succeeded (a silent listener holds the path).
- * `noListener` = the connect was definitively refused (ECONNREFUSED/ENOENT).
- * Neither set = indeterminate — most notably a timeout with the connect still
- * pending, which is how a flooded listener with a full accept backlog looks.
+ * (COMPANION-BRIDGE) The supervisor's own hello advertises every protocol the
+ * fork's daemon line speaks, not only the current one, so a detached v2 daemon
+ * answers the probe and stays adoptable. `./probe.ts` offers a single-version
+ * copy for the CLI; the supervisor must keep this one.
  */
-interface ProbeAttemptOutcome {
-	connected?: boolean;
-	noListener?: boolean;
-}
-
 function probeDaemonHello(
 	socketPath: string,
 	timeoutMs: number,

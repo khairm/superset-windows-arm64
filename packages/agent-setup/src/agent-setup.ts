@@ -36,6 +36,7 @@ import {
 	createOpenCodePlugin,
 	createOpenCodeWrapper,
 	createPiExtension,
+	createUfoWrapper,
 	createVibeHooksToml,
 	createVibeWrapper,
 	removeAmpPlugin,
@@ -155,6 +156,9 @@ const AGENT_SETUP_DEFINITIONS: Record<
 			createMuseWrapper,
 		],
 		teardown: [removeMuseManagedHooks],
+	},
+	ufo: {
+		setup: [createUfoWrapper],
 	},
 };
 

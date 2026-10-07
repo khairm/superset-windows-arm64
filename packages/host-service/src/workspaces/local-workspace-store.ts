@@ -18,6 +18,13 @@ import type { WorkspaceSnapshot } from "../events/types";
 import { gitStatusStore } from "../trpc/router/git/utils/git-status-store";
 import type { ApiClient } from "../types";
 
+import {
+	keepWorkspaceBranch,
+	setWorkspaceNamingState,
+	type WorkspaceNamingState,
+} from "./workspace-naming-state";
+import { cancelWorkspaceTitleJob } from "./workspace-title-jobs";
+
 export type HostWorkspaceRow = typeof workspaces.$inferSelect;
 
 /**
@@ -319,6 +326,12 @@ export async function insertLocalWorkspace(
 export interface UpdateLocalWorkspacePatch {
 	name?: string;
 	branch?: string;
+	/**
+	 * Only the AI naming job sets this, which marks its own name/branch
+	 * writes as automatic. Every other name/branch write is a user edit and
+	 * ends automatic naming for that side.
+	 */
+	autoNaming?: WorkspaceNamingState | null;
 	worktreePath?: string;
 	taskId?: string | null;
 	projectId?: string;
@@ -338,7 +351,10 @@ export function updateLocalWorkspace(
 ): HostWorkspaceRow | undefined {
 	const existing = getLocalWorkspace(ctx.db, id);
 	if (!existing) return undefined;
-	const { tags, ...columns } = patch;
+	const { tags, autoNaming, ...columns } = patch;
+	const userEdit =
+		autoNaming === undefined &&
+		(patch.name !== undefined || patch.branch !== undefined);
 	const normalizedTags =
 		tags === undefined ? undefined : normalizeWorkspaceTags(tags);
 	// Tag replacement is delete-then-insert; the transaction keeps a throw
@@ -384,6 +400,12 @@ export function updateLocalWorkspace(
 			}
 		}
 	});
+	if (autoNaming !== undefined) setWorkspaceNamingState(ctx.db, id, autoNaming);
+	else if (userEdit) {
+		cancelWorkspaceTitleJob(ctx.db, id);
+		if (patch.name !== undefined) setWorkspaceNamingState(ctx.db, id, null);
+		else keepWorkspaceBranch(ctx.db, id);
+	}
 	const row = getLocalWorkspace(ctx.db, id);
 	if (row) emitWorkspaceChanged(ctx, "updated", row);
 	return row;
@@ -408,6 +430,8 @@ export function emitLocalWorkspaceDeleted(
 ): void {
 	// (DIFFSTATS-COLD-CACHE)
 	gitStatusStore.forgetDeletedWorkspace(row.id);
+	cancelWorkspaceTitleJob(ctx.db, row.id);
+	setWorkspaceNamingState(ctx.db, row.id, null);
 	ctx.eventBus.broadcastWorkspaceChanged({
 		workspaceId: row.id,
 		eventType: "deleted",
@@ -444,6 +468,8 @@ export function archiveLocalWorkspace(
 	}
 	// (DIFFSTATS-COLD-CACHE)
 	gitStatusStore.forgetDeletedWorkspace(id);
+	cancelWorkspaceTitleJob(ctx.db, id);
+	setWorkspaceNamingState(ctx.db, id, null);
 	ctx.eventBus.broadcastWorkspaceChanged({
 		workspaceId: id,
 		eventType: "deleted",

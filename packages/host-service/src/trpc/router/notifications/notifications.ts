@@ -4,10 +4,13 @@ import { z } from "zod";
 import { terminalSessions, workspaces } from "../../../db/schema";
 import { mapEventType } from "../../../events";
 import { verifyAttributionToken } from "../../../terminal-agents/attribution-token";
+import { recordTerminalAgentTranscriptPath } from "../../../terminal-agents/persistence";
+import { isTrustedTranscriptPath } from "../../../terminal-agents/transcript-path";
 import type { HostServiceContext } from "../../../types";
 import { touchLocalWorkspaceActivity } from "../../../workspaces/local-workspace-store";
 import { publicProcedure, queryProcedure, router } from "../../index";
 import { captureSessionAccount } from "../usage/session-account/session-account";
+import { continueWorkspaceNaming } from "../workspace-creation/utils/workspace-naming-job";
 import {
 	type AgentStatusSnapshot,
 	buildAgentStatusSnapshot,
@@ -66,6 +69,7 @@ const hookInput = z
 		accountProfile: z.string().max(4096).optional(),
 		apiKey: z.boolean().optional(),
 		attributionToken: z.string().max(128).optional(),
+		transcriptPath: z.string().max(4096).optional(),
 	})
 	.extend(companionHookFields)
 	.extend(companionLifecycleFields);
@@ -344,15 +348,6 @@ export const notificationsRouter = router({
 		const agent = normalizeAgentIdentity(input.agent);
 		const preview = trimOrUndefined(input.preview);
 
-		ctx.eventBus.broadcastAgentLifecycle({
-			workspaceId: terminalSession.originWorkspaceId,
-			eventType,
-			terminalId: input.terminalId,
-			...(agent ? { agent } : {}),
-			...(preview ? { preview } : {}),
-			occurredAt,
-		});
-
 		// (ALERT-RETIRE-ON-EXIT) BEFORE `recordEvent`, and the order is the whole
 		// point. host.db keeps ONE last-event row per terminal, and it is the only
 		// durable evidence that a terminal finished — the alert table is
@@ -373,9 +368,11 @@ export const notificationsRouter = router({
 		// A FAULT here propagates rather than being swallowed, which closes the
 		// same window a crash opens: it skips the `recordEvent` below, so the
 		// `Stop` row survives for the restart path instead of being buried by an
-		// event whose retraction was never queued. The live dot already moved on
-		// the broadcast above; the cost is the persisted binding (BUS-RESYNC)
-		// reads, which the next hook event replaces.
+		// event whose retraction was never queued. The cost is this event's dot
+		// move and its persisted binding (BUS-RESYNC) reads — the lifecycle
+		// broadcast now runs AFTER `recordEvent`, so subscribers read the binding
+		// and its account rather than the pre-event row — which the next hook
+		// event replaces.
 		// `forwardCompanionCapture` stays strictly after, below.
 		forwardCompanionLifecycle({
 			payload: input,
@@ -416,6 +413,27 @@ export const notificationsRouter = router({
 			...(agent?.definitionId ? { definitionId: agent.definitionId } : {}),
 			occurredAt,
 		});
+		const transcriptPath = trimOrUndefined(input.transcriptPath);
+		if (
+			agent?.sessionId &&
+			transcriptPath &&
+			isTrustedTranscriptPath(transcriptPath)
+		) {
+			recordTerminalAgentTranscriptPath(ctx.db, {
+				terminalId: input.terminalId,
+				agentSessionId: agent.sessionId,
+				transcriptPath,
+			});
+		}
+
+		ctx.eventBus.broadcastAgentLifecycle({
+			workspaceId: terminalSession.originWorkspaceId,
+			eventType,
+			terminalId: input.terminalId,
+			...(agent ? { agent } : {}),
+			...(preview ? { preview } : {}),
+			occurredAt,
+		});
 
 		// Every lifecycle event is activity for the sidebar's "Last active"
 		// ranking. Best-effort: a failed write must not fail the hook, which
@@ -429,6 +447,18 @@ export const notificationsRouter = router({
 		} catch (err) {
 			console.warn(
 				`[notifications.hook] failed to record activity for workspace ${terminalSession.originWorkspaceId}:`,
+				err,
+			);
+		}
+
+		try {
+			continueWorkspaceNaming(ctx, terminalSession.originWorkspaceId, {
+				eventType,
+				agentReply: preview,
+			});
+		} catch (err) {
+			console.warn(
+				`[notifications.hook] failed to schedule naming for workspace ${terminalSession.originWorkspaceId}:`,
 				err,
 			);
 		}

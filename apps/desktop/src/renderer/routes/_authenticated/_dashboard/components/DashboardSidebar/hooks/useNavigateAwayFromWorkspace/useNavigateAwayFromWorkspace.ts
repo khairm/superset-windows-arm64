@@ -1,7 +1,15 @@
 import { type AnyRouter, useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
+import { useActiveOrganizationId } from "renderer/hooks/useActiveOrganizationId";
+import { useCloudWorkspaces } from "renderer/hooks/useCloudWorkspaces";
 import { readActiveV2WorkspaceId } from "renderer/lib/active-route";
+import { authClient } from "renderer/lib/auth-client";
+import {
+	EMPTY_CLOUD_SIDEBAR,
+	useCloudSidebarStore,
+} from "renderer/routes/_authenticated/_dashboard/stores/cloudSidebarStore";
 import { useDeletingWorkspacesStore } from "renderer/routes/_authenticated/_dashboard/stores/deletingWorkspacesStore";
+import { buildCloudSidebar } from "renderer/routes/_authenticated/_dashboard/utils/buildCloudSidebar";
 import { navigateToV2Workspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
@@ -30,6 +38,26 @@ export function useNavigateAwayFromWorkspace() {
 		() => new Set(workspaces.map((workspace) => workspace.id)),
 		[workspaces],
 	);
+	const organizationId = useActiveOrganizationId();
+	const { data: session } = authClient.useSession();
+	const userId = session?.user?.id ?? null;
+	const { workspaces: cloudWorkspaces } = useCloudWorkspaces();
+	const cloudSidebarState = useCloudSidebarStore((state) =>
+		organizationId
+			? (state.byOrganization[organizationId] ?? EMPTY_CLOUD_SIDEBAR)
+			: EMPTY_CLOUD_SIDEBAR,
+	);
+	const cloudWorkspaceIds = useMemo(() => {
+		const layout = buildCloudSidebar({
+			workspaces: cloudWorkspaces ?? [],
+			state: cloudSidebarState,
+			userId,
+		});
+		return [
+			...layout.ungrouped,
+			...layout.groups.flatMap((group) => group.workspaces),
+		].map((workspace) => workspace.id);
+	}, [cloudWorkspaces, cloudSidebarState, userId]);
 
 	const navigateAwayFromWorkspace = useCallback(
 		(
@@ -37,18 +65,24 @@ export function useNavigateAwayFromWorkspace() {
 			additionalDeletingWorkspaceIds?: ReadonlySet<string>,
 		) => {
 			const activeWorkspaceId = readActiveV2WorkspaceId(router);
+			const cloudIds = new Set(cloudWorkspaceIds);
 			const target = resolveWorkspaceRemovalNavigationTarget({
 				activeWorkspaceId,
 				removedWorkspaceId: workspaceId,
-				orderedWorkspaceIds: getFlattenedV2WorkspaceIds(
-					collections,
-					workspaces,
-					tagFolderContext,
-				),
+				// The cloud section renders above the sessions and projects.
+				orderedWorkspaceIds: [
+					...cloudWorkspaceIds,
+					...getFlattenedV2WorkspaceIds(
+						collections,
+						workspaces,
+						tagFolderContext,
+					).filter((id) => !cloudIds.has(id)),
+				],
 				// Before the host fan-out settles, an unlisted sibling means
 				// "unknown", not "gone" — prefer navigating to it over home; the
 				// workspace route's own not-found handling covers a true miss.
-				isWorkspaceValid: (id) => !isReady || workspaceIds.has(id),
+				isWorkspaceValid: (id) =>
+					cloudIds.has(id) || !isReady || workspaceIds.has(id),
 				// Rows mid-destroy stay listed until the archive commit lands
 				// (after teardown) — exclude every in-flight destroy, not just
 				// the caller's own batch. Read at call time for freshness.
@@ -57,12 +91,12 @@ export function useNavigateAwayFromWorkspace() {
 					useDeletingWorkspacesStore.getState().deletingIds.has(id),
 			});
 
-			if (!target) return;
+			if (!target) return null;
 			if (target.kind === "workspace") {
 				void navigateToV2Workspace(target.workspaceId, navigate, {
 					replace: true,
 				}).catch(reportRemovalNavigationError);
-				return;
+				return target;
 			}
 			// Straight to the v2 empty state — "/" detours through the v1
 			// workspace index, which can restore stale pre-migration state
@@ -70,9 +104,11 @@ export function useNavigateAwayFromWorkspace() {
 			void navigate({ to: "/new-workspace", replace: true }).catch(
 				reportRemovalNavigationError,
 			);
+			return target;
 		},
 		[
 			collections,
+			cloudWorkspaceIds,
 			workspaceIds,
 			workspaces,
 			tagFolderContext,

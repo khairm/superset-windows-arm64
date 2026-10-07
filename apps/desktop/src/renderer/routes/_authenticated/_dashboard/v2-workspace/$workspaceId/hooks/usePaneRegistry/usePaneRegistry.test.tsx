@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PaneViewerData } from "../../types";
 
@@ -26,10 +27,24 @@ const realAgentSessionLauncher = await import("../useAgentSessionLauncher");
 
 mock.module("@superset/workspace-client", () => ({
 	...realWorkspaceClient,
+	// usePaneRegistry mounts useAgentSurfaceSwitch, whose chat wiring reads the
+	// workspace client; the registry under test never talks to either.
+	useWorkspaceClient: () => ({
+		hostUrl: "http://127.0.0.1:1",
+		getWsToken: async () => "",
+	}),
 	workspaceTrpc: {
 		terminal: {
 			killSession: {
 				useMutation: () => ({ mutate: mock(() => {}), isPending: false }),
+			},
+		},
+		agents: {
+			run: {
+				useMutation: () => ({
+					mutateAsync: mock(() => Promise.resolve({})),
+					isPending: false,
+				}),
 			},
 		},
 		useUtils: () => ({
@@ -71,7 +86,20 @@ mock.module("../useAgentSessionLauncher", () => ({
 
 const { cleanup, renderHook } = await import("@testing-library/react");
 const { createWorkspaceStore } = await import("@superset/panes");
+const { QueryClient, QueryClientProvider } = await import(
+	"@tanstack/react-query"
+);
 const { usePaneRegistry } = await import("./usePaneRegistry");
+
+// The registry mounts react-query consumers (terminal appearance, agent
+// surface) that this test never exercises.
+function withQueryClient({ children }: { children: ReactNode }) {
+	return (
+		<QueryClientProvider client={new QueryClient()}>
+			{children}
+		</QueryClientProvider>
+	);
+}
 
 afterEach(cleanup);
 afterAll(async () => {
@@ -88,15 +116,17 @@ describe("saved disabled panes (FORK-BROWSER-OFF) (FORK-CHAT-V3-OFF)", () => {
 			store
 				.getState()
 				.addTab({ panes: [{ kind, data: {} as PaneViewerData }] });
-			const { result } = renderHook(() =>
-				usePaneRegistry({
-					store,
-					launcher: {} as never,
-					onOpenDiff: mock(() => {}),
-					onOpenComment: mock(() => {}),
-					onOpenFile: mock(() => {}),
-					onRevealPath: mock(() => {}),
-				}),
+			const { result } = renderHook(
+				() =>
+					usePaneRegistry({
+						store,
+						launcher: {} as never,
+						onOpenDiff: mock(() => {}),
+						onOpenComment: mock(() => {}),
+						onOpenFile: mock(() => {}),
+						onRevealPath: mock(() => {}),
+					}),
+				{ wrapper: withQueryClient },
 			);
 			const pane = store.getState().getActivePane();
 			if (!pane) throw new Error(`no active ${kind} pane`);

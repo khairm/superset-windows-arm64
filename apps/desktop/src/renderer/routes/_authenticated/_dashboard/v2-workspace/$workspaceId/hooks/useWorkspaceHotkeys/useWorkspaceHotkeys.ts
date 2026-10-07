@@ -16,6 +16,7 @@ import type { StoreApi } from "zustand";
 import type {
 	BrowserPaneData,
 	DesktopPaneData,
+	MobilePaneData,
 	PaneViewerData,
 	TerminalPaneData,
 } from "../../types";
@@ -285,6 +286,23 @@ export function useWorkspaceHotkeys({
 		},
 		{ enabled: isSandbox },
 	);
+
+	// Not gated on isSandbox: a local machine with Xcode/Android SDK gets a
+	// mobile pane too, just backed by a local simulator instead of Limrun.
+	useHotkey("SPLIT_WITH_MOBILE", () => {
+		const state = store.getState();
+		const active = state.getActivePane();
+		if (!active) return;
+		state.splitPane({
+			tabId: active.tabId,
+			paneId: active.pane.id,
+			position: "right",
+			newPane: {
+				kind: "mobile",
+				data: { kind: "mobile" } as MobilePaneData,
+			},
+		});
+	});
 
 	// (FORK-BROWSER-OFF)
 	useHotkey("SPLIT_WITH_BROWSER", () => {

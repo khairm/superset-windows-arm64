@@ -481,6 +481,7 @@ async function runCreate(args: {
 		branch,
 		worktreePath: containerPath,
 		taskId: input.taskId,
+		tags: input.tags,
 		rollbackWorktree: rollbackAll,
 	});
 

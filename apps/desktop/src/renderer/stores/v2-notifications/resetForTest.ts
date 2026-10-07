@@ -20,6 +20,7 @@ const EMPTY_STATE: { [K in V2NotificationDataKey]: V2NotificationState[K] } = {
 	sources: {},
 	manualUnread: {},
 	terminalSeenAt: {},
+	workspaceSeenAt: {},
 	outstandingReadyAt: {},
 	shellRunningTerminals: {},
 	backgroundRunningTerminals: {},

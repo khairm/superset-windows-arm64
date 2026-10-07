@@ -9,6 +9,8 @@ interface DeadKey {
  * the writer.
  */
 export const DEAD_KEYS: DeadKey[] = [
+	// The task page's inline agent picker; Start work opens New Workspace instead
+	{ key: "lastSelectedV2TaskAgent", match: "exact" },
 	{ key: "getting-started-v1", match: "exact" },
 	// Pending-create records; superseded by canonical workspaces.create (#3893)
 	{ key: "pending-workspaces-", match: "prefix" },
@@ -45,6 +47,8 @@ export const DEAD_KEYS: DeadKey[] = [
 	// (FORK-CHAT-V3-OFF) The v3 local chat pane is off and its settings row is
 	// gone, so nothing reads or writes this any more
 	{ key: "local-chat", match: "exact" },
+	// Opening a page no longer routes to the last-visited workspace
+	{ key: "last-active-v2-workspace", match: "exact" },
 ];
 
 function matchesDeadKey(key: string): boolean {

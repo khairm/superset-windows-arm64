@@ -593,7 +593,7 @@ describe("v2 notification store", () => {
 
 // (NOTIF-STORE-DEBOUNCE)
 describe("notification persistence envelope", () => {
-	it("keeps all seven maps pending under the existing key and rehydrates synchronously", () => {
+	it("keeps every persisted map pending under the existing key and rehydrates synchronously", () => {
 		resetV2NotificationStoreForTest();
 		const store = useV2NotificationStore.getState();
 		store.setTerminalStatus("pending-agent", "workspace-1", "review", 100);
@@ -614,6 +614,7 @@ describe("notification persistence envelope", () => {
 				backgroundRunningTerminals: before.backgroundRunningTerminals,
 				manualUnread: before.manualUnread,
 				terminalSeenAt: before.terminalSeenAt,
+				workspaceSeenAt: before.workspaceSeenAt,
 				outstandingReadyAt: before.outstandingReadyAt,
 				agentTerminals: before.agentTerminals,
 			},

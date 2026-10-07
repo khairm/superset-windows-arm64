@@ -255,6 +255,11 @@ function useStableByWorkspaceId<T>(entries: [string, T][]): Map<string, T> {
 	);
 }
 
+export const V2_WORKSPACES_PULL_REQUEST_QUERY_KEY_PREFIX = [
+	"v2-workspaces",
+	"pull-requests",
+] as const;
+
 export function useAccessibleV2Workspaces(
 	options: UseAccessibleV2WorkspacesOptions = {},
 ): UseAccessibleV2WorkspacesResult {
@@ -564,8 +569,7 @@ export function useAccessibleV2Workspaces(
 			// URL or membership in the key cold-starts the cache on every
 			// port change / workspace add/remove.
 			queryKey: [
-				"v2-workspaces",
-				"pull-requests",
+				...V2_WORKSPACES_PULL_REQUEST_QUERY_KEY_PREFIX,
 				target.organizationId,
 				target.machineId,
 			] as const,

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +24,27 @@ export function getAgentSetupTemplatesDir(): string {
 
 export function getTemplatePath(name: string): string {
 	return path.join(getAgentSetupTemplatesDir(), name);
+}
+
+function repoPluginsDir(): string {
+	return path.join(
+		path.dirname(fileURLToPath(import.meta.url)),
+		"..",
+		"..",
+		"..",
+		"plugins",
+	);
+}
+
+/**
+ * Every installable third-party tree. Only the sandbox tarball overlays it at
+ * templates/plugins, so outside host-service this falls back to the repo and
+ * exists only from source. (NO-BUNDLED-SKILLS) this fork ships no first-party
+ * plugin tree, so a name with no directory here stays tools-only.
+ */
+export function getBundledMarketplaceDir(): string {
+	const bundled = path.join(getAgentSetupTemplatesDir(), "plugins");
+	return fs.existsSync(bundled) ? bundled : repoPluginsDir();
 }
 
 /**

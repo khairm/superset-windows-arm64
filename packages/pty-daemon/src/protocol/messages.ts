@@ -1,3 +1,4 @@
+import type { TerminalColors } from "@superset/shared/terminal-colors";
 import type { TerminalModesSnapshot } from "../TerminalModes/index.ts";
 
 // Message schemas for the pty-daemon Unix socket protocol.
@@ -9,6 +10,7 @@ import type { TerminalModesSnapshot } from "../TerminalModes/index.ts";
 // See ../README.md and ../../../../apps/desktop/plans/20260429-pty-daemon-implementation.md
 
 export interface SessionMeta {
+	colors?: TerminalColors;
 	shell: string;
 	argv: string[];
 	cwd?: string;
@@ -51,6 +53,7 @@ export interface HelloAckMessage {
 	 */
 	trustdHealthy?: boolean;
 	supportsModeSnapshots?: boolean;
+	supportsColorQueries?: boolean;
 }
 
 // ---------- Client -> Daemon ----------
@@ -70,6 +73,13 @@ export interface InputMessage {
 	 * interactive input omits it and remains fire-and-forget.
 	 */
 	requestId?: string;
+}
+
+export interface ColorsMessage {
+	type: "colors";
+	id: string;
+	colors: TerminalColors;
+	resetOverrides?: boolean;
 }
 
 export interface ResizeMessage {
@@ -184,6 +194,7 @@ export type ClientMessage =
 	| HelloMessage
 	| OpenMessage
 	| InputMessage
+	| ColorsMessage
 	| ResizeMessage
 	| CloseMessage
 	| ListMessage

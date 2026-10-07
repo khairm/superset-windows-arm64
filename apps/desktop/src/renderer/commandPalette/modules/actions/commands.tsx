@@ -155,7 +155,7 @@ export const actionsProvider: CommandProvider = {
 				section: "actions",
 				icon: PanelLeftIcon,
 				hotkeyId: "TOGGLE_WORKSPACE_SIDEBAR",
-				run: () => useWorkspaceSidebarStore.getState().toggleOpen(),
+				run: () => useWorkspaceSidebarStore.getState().toggleCollapsed(),
 			},
 		];
 

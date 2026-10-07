@@ -16,6 +16,7 @@ import { command } from "../../../lib/command";
  * not in the shipped binary.
  */
 export default command({
+	sandbox: false,
 	description: "Not available: this fork has no accounts",
 	skipMiddleware: true,
 	options: {

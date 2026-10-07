@@ -1,3 +1,4 @@
+import { toTime } from "@superset/shared/workspace-activity";
 import type { WorkspaceActivityById } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 import type { SidebarProjectSortMode } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import type {
@@ -5,18 +6,6 @@ import type {
 	DashboardSidebarProjectChild,
 	DashboardSidebarWorkspace,
 } from "../../types";
-
-// Timestamps are typed as Date but can arrive as ISO strings at runtime
-// (IndexedDB snapshots, persisted query caches). Sorting is cosmetic, so
-// coerce instead of trusting the type — a bad value must never throw
-// mid-render and take the sidebar down with it (that is what got the first
-// version of this feature reverted).
-function toTime(value: Date | string | number | null | undefined): number {
-	if (value == null) return Number.NaN;
-	if (value instanceof Date) return value.getTime();
-	if (typeof value === "number") return value;
-	return new Date(value).getTime();
-}
 
 // An item with no usable timestamp sinks below everything dated. Mapping
 // NaN to -Infinity keeps the comparator a consistent total order instead of

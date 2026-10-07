@@ -2,20 +2,27 @@ import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef } from "react";
-import { useCloudWorkspaces } from "renderer/hooks/useCloudWorkspaces";
+import type { HostShapedWorkspace } from "renderer/hooks/host-workspaces/useHostWorkspaces";
+import {
+	type CloudWorkspaceRow,
+	useCloudWorkspaces,
+} from "renderer/hooks/useCloudWorkspaces";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { StateScreenShell } from "renderer/routes/_authenticated/_dashboard/components/StateScreenShell";
+import { WorkspaceNotFoundState } from "renderer/routes/_authenticated/_dashboard/components/WorkspaceNotFoundState";
+import { useUnarchiveCloudWorkspace } from "renderer/routes/_authenticated/_dashboard/hooks/useUnarchiveCloudWorkspace";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useSandboxAccess } from "renderer/routes/_authenticated/providers/SandboxAccessProvider";
 import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
+import { CloudWorkspaceArchivedState } from "../components/CloudWorkspaceArchivedState";
 import { CloudWorkspaceProvisioningState } from "../components/CloudWorkspaceProvisioningState";
-import { StateScreenShell } from "../components/StateScreenShell";
 import { WorkspaceCreateErrorState } from "../components/WorkspaceCreateErrorState";
 import { WorkspaceCreatingState } from "../components/WorkspaceCreatingState";
 import { WorkspaceHostIncompatibleState } from "../components/WorkspaceHostIncompatibleState";
-import { WorkspaceNotFoundState } from "../components/WorkspaceNotFoundState";
+import { useArchivedCloudWorkspace } from "../hooks/useArchivedCloudWorkspace";
 import { useRemoteHostStatus } from "../hooks/useRemoteHostStatus";
 import { useWorkspaceMissVerdict } from "../hooks/useWorkspaceMissVerdict";
 import { WorkspaceProvider } from "../providers/WorkspaceProvider";
@@ -37,6 +44,7 @@ function blankDbg(record: Record<string, unknown>): void {
 export const Route = createFileRoute(
 	"/_authenticated/_dashboard/v2-workspace/$workspaceId",
 )({
+	remountDeps: ({ params }) => ({ workspaceId: params.workspaceId }),
 	component: V2WorkspaceLayout,
 });
 
@@ -71,7 +79,7 @@ function V2WorkspaceLayout() {
 		hostsSettled,
 		cache,
 	} = useHostWorkspaces();
-	const workspace = useMemo(
+	const hostWorkspace = useMemo(
 		() =>
 			workspaceId != null
 				? (hostWorkspaces.find((candidate) => candidate.id === workspaceId) ??
@@ -92,6 +100,21 @@ function V2WorkspaceLayout() {
 	const { workspaces: cloudWorkspaces = [] } = useCloudWorkspaces();
 	const cloudWorkspace =
 		cloudWorkspaces.find((row) => row.id === workspaceId) ?? null;
+	// A ready cloud workspace opens on its own row; the box's row, when the
+	// fan-out has it, is the same workspace with live fields.
+	const workspace = useMemo(
+		() =>
+			hostWorkspace ??
+			(isCloud && cloudWorkspace?.status === "ready"
+				? hostShapedCloudWorkspace(cloudWorkspace)
+				: null),
+		[hostWorkspace, isCloud, cloudWorkspace],
+	);
+	const archivedCloudWorkspace = useArchivedCloudWorkspace(
+		workspaceId,
+		!workspace && !cloudWorkspace,
+	);
+	const unarchive = useUnarchiveCloudWorkspace();
 	const { data: failedEntries } = useLiveQuery(
 		(q) =>
 			q
@@ -211,9 +234,19 @@ function V2WorkspaceLayout() {
 				<CloudWorkspaceProvisioningState
 					workspaceId={cloudWorkspace.id}
 					name={cloudWorkspace.name}
-					branch={cloudWorkspace.branch}
 					status={cloudWorkspace.status}
-					createdAt={cloudWorkspace.createdAt}
+				/>
+			</StateScreenShell>
+		);
+	}
+
+	if (!workspace && archivedCloudWorkspace?.deletedAt) {
+		return (
+			<StateScreenShell>
+				<CloudWorkspaceArchivedState
+					name={archivedCloudWorkspace.name}
+					archivedAt={archivedCloudWorkspace.deletedAt}
+					onUnarchive={() => unarchive(archivedCloudWorkspace.id)}
 				/>
 			</StateScreenShell>
 		);
@@ -232,7 +265,10 @@ function V2WorkspaceLayout() {
 		}
 		return (
 			<StateScreenShell>
-				<WorkspaceNotFoundState workspaceId={workspaceId} />
+				<WorkspaceNotFoundState
+					workspaceId={workspaceId}
+					browseTo="/v2-workspaces"
+				/>
 			</StateScreenShell>
 		);
 	}
@@ -244,6 +280,9 @@ function V2WorkspaceLayout() {
 					name={heldWorkspace.name}
 					branch={heldWorkspace.branch}
 					startedAt={new Date(heldWorkspace.createdAt).getTime()}
+					workspaceReady={
+						hostWorkspace ? Boolean(hostWorkspace.worktreePath) : true
+					}
 					isSession={heldWorkspace.type === "session"}
 				/>
 			</StateScreenShell>
@@ -275,4 +314,20 @@ function V2WorkspaceLayout() {
 			<Outlet />
 		</WorkspaceProvider>
 	);
+}
+
+function hostShapedCloudWorkspace(row: CloudWorkspaceRow): HostShapedWorkspace {
+	return {
+		id: row.id,
+		organizationId: row.organizationId,
+		hostId: row.id,
+		name: row.name,
+		branch: row.branch,
+		projectId: null,
+		type: "local",
+		createdByUserId: row.createdByUserId,
+		taskId: null,
+		createdAt: row.createdAt,
+		updatedAt: row.updatedAt,
+	};
 }

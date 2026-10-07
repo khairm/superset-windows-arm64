@@ -57,6 +57,7 @@ export default defineConfig({
 				"**/node_modules/**",
 				"**/*.test.*",
 				"**/*.stories.*",
+				"<rootDir>/../../**/node_modules/**",
 				"<rootDir>/../../**/*.test.*",
 				"<rootDir>/../../**/*.stories.*",
 			],

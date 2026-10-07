@@ -1,5 +1,4 @@
 export {
-	getWorkspaceActivityTime,
 	sortDashboardSidebarProjectChildren,
 	sortDashboardSidebarProjects,
 	stabiliseSortedProjects,

@@ -502,7 +502,9 @@ export interface DetectedRename {
  * copy, and diffing. Real index is never mutated. Falls back to an empty
  * result on any error — caller still has the unrelated deleted+untracked
  * entries to display — and reports the degradation to `completeness`.
- * (DIFFSTATS-COLD-CACHE)
+ * (DIFFSTATS-COLD-CACHE) Only renames onto `untrackedPaths` are returned: the
+ * diff also repeats renames git status already reported for files that are
+ * intent-to-add in the real index.
  */
 export async function detectUnstagedRenames(
 	git: SimpleGit,
@@ -546,9 +548,10 @@ export async function detectUnstagedRenames(
 		const nameStatus = parseNameStatus(nameStatusRaw);
 		const numstat = parseNumstat(numstatRaw);
 
+		const markedPaths = new Set(untrackedPaths);
 		const result: DetectedRename[] = [];
 		for (const entry of nameStatus) {
-			if (!entry.oldPath) continue;
+			if (!entry.oldPath || !markedPaths.has(entry.path)) continue;
 			const code = entry.status[0];
 			if (code !== "R") continue;
 			const stats = numstat.get(entry.path) ?? {

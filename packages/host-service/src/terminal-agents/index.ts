@@ -13,7 +13,6 @@ export type {
 export {
 	defineSubagentHarness,
 	getSubagentHarness,
-	isTrustedTranscriptPath,
 	readSubagentTranscript,
 	SUBAGENT_HARNESSES,
 } from "./subagent-harnesses";
@@ -21,6 +20,7 @@ export type {
 	SubagentTranscript,
 	SubagentTranscriptEntry,
 } from "./subagent-transcript";
+export { isTrustedTranscriptPath } from "./transcript-path";
 export type {
 	TerminalAgentBinding,
 	TerminalAgentId,

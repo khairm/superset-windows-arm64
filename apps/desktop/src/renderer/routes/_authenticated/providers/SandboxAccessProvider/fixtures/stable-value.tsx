@@ -11,7 +11,12 @@ mock.module("posthog-js/react", () => ({
 }));
 mock.module("renderer/lib/cloud-trpc", () => ({
 	cloudTrpc: {
-		cloudWorkspace: { list: { useQuery: () => ({ data: undefined }) } },
+		cloudWorkspace: {
+			list: { useQuery: () => ({ data: undefined }) },
+			// useCloudWorkspaces reads the pending archive mutations through
+			// getMutationKey, which calls `_def()` on the procedure.
+			delete: { _def: () => ({ path: ["cloudWorkspace", "delete"] }) },
+		},
 	},
 }));
 mock.module("renderer/hooks/useActiveOrganizationId", () => ({
@@ -85,6 +90,10 @@ describe("SandboxAccessProvider with the cloud flag off", () => {
 		});
 		expect(seen.length).toBeGreaterThan(rendersBefore);
 		expect(seen.at(-1)).toBe(seen[0]);
-		expect(seen[0]).toEqual({ targets: [], isReady: true });
+		expect(seen[0]).toEqual({
+			targets: [],
+			isReady: true,
+			agentCredentialsChangedWorkspaceId: null,
+		});
 	});
 });

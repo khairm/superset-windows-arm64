@@ -14,6 +14,7 @@ import { useFeatureFlagEnabled } from "posthog-js/react";
 import { useRef } from "react";
 import { GoGitPullRequest } from "react-icons/go";
 import {
+	LuCloud,
 	LuColumns3,
 	LuFileText,
 	LuGauge,
@@ -42,7 +43,15 @@ import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useFolderFirstImport } from "renderer/routes/_authenticated/_dashboard/components/AddRepositoryModals/hooks/useFolderFirstImport";
 import { AppMenuButton } from "renderer/routes/_authenticated/_dashboard/components/AppMenuButton";
 import { NavigationControls } from "renderer/routes/_authenticated/_dashboard/components/NavigationControls";
+import { OfflineBadge } from "renderer/routes/_authenticated/_dashboard/components/OfflineBadge";
 import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/components/SidebarToggle";
+import { ProjectGlyph } from "renderer/routes/_authenticated/_dashboard/components/TaskProjectIcon";
+import {
+	WINDOW_CHROME_BAND_CLASS,
+	WINDOW_CONTROLS_ROW_HEIGHT,
+	WINDOW_CONTROLS_ROW_TOP,
+} from "renderer/routes/_authenticated/_dashboard/components/WindowChrome";
+import { useShowsAppTopBar } from "renderer/routes/_authenticated/_dashboard/hooks/useShowsAppTopBar";
 import {
 	pullRequestsSearchFromFilters,
 	usePullRequestsFilterStore,
@@ -59,6 +68,7 @@ import {
 	useOpenNewProjectModal,
 	useOpenTemplateGalleryModal,
 } from "renderer/stores/add-repository-modal";
+import { COLLAPSED_WORKSPACE_SIDEBAR_WIDTH } from "renderer/stores/workspace-sidebar-state";
 
 interface DashboardSidebarHeaderProps {
 	isCollapsed?: boolean;
@@ -147,11 +157,18 @@ export function DashboardSidebarHeader({
 	const zoomFactor = useZoomFactor();
 	const matchRoute = useMatchRoute();
 	const isWorkspacesListOpen = !!matchRoute({ to: "/v2-workspaces" });
+	const isCloudWorkspacesOpen = !!matchRoute({
+		to: "/cloud-workspaces",
+		fuzzy: true,
+	});
+	const isProjectsOpen = !!matchRoute({ to: "/projects", fuzzy: true });
+	const isCloudEnabled =
+		useFeatureFlagEnabled(FEATURE_FLAGS.CLOUD_WORKSPACES) === true;
 	const v2WorkspaceMatch = matchRoute({
 		to: "/v2-workspace/$workspaceId",
 		fuzzy: true,
 	});
-	const onV2WorkspaceRoute = v2WorkspaceMatch !== false;
+	const showsAppTopBar = useShowsAppTopBar();
 	// Pre-select the viewed workspace's project in the new-workspace modal.
 	const { workspaces: hostWorkspaces } = useHostWorkspaces();
 	const activeProjectId =
@@ -193,6 +210,14 @@ export function DashboardSidebarHeader({
 		navigate({ to: "/v2-workspaces" });
 	};
 
+	const handleCloudWorkspacesClick = () => {
+		navigate({ to: "/cloud-workspaces" });
+	};
+
+	const handleProjectsClick = () => {
+		navigate({ to: "/projects" });
+	};
+
 	// (KANBAN) Ungated — this is the fork's local-only board, not the paywalled
 	// upstream cloud Tasks feature.
 	// (KANBAN-TOGGLE) The button is a toggle: anywhere → full-screen board;
@@ -228,7 +253,6 @@ export function DashboardSidebarHeader({
 		navigate({ to: "/v2-workspaces" });
 	};
 
-	const isPagesEnabled = useFeatureFlagEnabled(FEATURE_FLAGS.PAGES) ?? false;
 	const { data: isUsageInSidebarEnabled } =
 		electronTrpc.settings.getShowUsageInSidebar.useQuery();
 
@@ -267,18 +291,30 @@ export function DashboardSidebarHeader({
 	if (isCollapsed) {
 		return (
 			<div className="flex flex-col">
-				{/* On the v2 workspace route the TopBar is hidden and the pane tab
-				    bar is the only top row, so the rail continues that bar across
-				    its own width: same height, background, and bottom border as the
-				    tab bar, doubling as traffic-light headroom and a drag region. */}
-				{onV2WorkspaceRoute && (
+				{/* The page's header row continues across the rail, and the macOS
+				    window buttons sit in it. */}
+				{!showsAppTopBar && (
 					<div
 						// w +1px: overlaps the container's border-r so the sidebar's
-						// vertical border starts below the bar, not inside it. The fill
-						// is the tab bar's bg-muted/45|35-over-background flattened to an
-						// opaque color so it can paint over that border pixel.
-						className="drag h-10 w-[calc(100%+1px)] shrink-0 bg-[color-mix(in_oklab,var(--muted)_45%,var(--background))] dark:bg-[color-mix(in_oklab,var(--muted)_35%,var(--background))]"
-					/>
+						// vertical border starts below the row, not inside it.
+						className={cn(
+							"drag h-12 w-[calc(100%+1px)] shrink-0",
+							WINDOW_CHROME_BAND_CLASS,
+						)}
+					>
+						{!isMac && (
+							<div
+								className="flex items-center justify-center"
+								style={{
+									width: COLLAPSED_WORKSPACE_SIDEBAR_WIDTH,
+									marginTop: WINDOW_CONTROLS_ROW_TOP,
+									height: WINDOW_CONTROLS_ROW_HEIGHT,
+								}}
+							>
+								<AppMenuButton />
+							</div>
+						)}
+					</div>
 				)}
 				{/* Mirrors the expanded header's nav container so the buttons keep
 				    the same padding, order, and vertical rhythm when collapsed. */}
@@ -341,6 +377,58 @@ export function DashboardSidebarHeader({
 							<Trans>Workspaces</Trans>
 						</TooltipContent>
 					</Tooltip>
+
+					{isCloudEnabled && (
+						<Tooltip delayDuration={300}>
+							<TooltipTrigger asChild>
+								<button
+									type="button"
+									onClick={handleCloudWorkspacesClick}
+									aria-label={t({
+										message: "Cloud workspaces",
+									})}
+									aria-current={isCloudWorkspacesOpen ? "page" : undefined}
+									className={cn(
+										"flex size-7 items-center justify-center rounded-md transition-colors",
+										isCloudWorkspacesOpen
+											? "bg-fill-selected text-muted-foreground"
+											: "text-muted-foreground hover:bg-fill-hover",
+									)}
+								>
+									<LuCloud className="size-3.5" strokeWidth={1.5} />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent side="right">
+								<Trans>Cloud workspaces</Trans>
+							</TooltipContent>
+						</Tooltip>
+					)}
+
+					{isCloudEnabled && (
+						<Tooltip delayDuration={300}>
+							<TooltipTrigger asChild>
+								<button
+									type="button"
+									onClick={handleProjectsClick}
+									aria-label={t({
+										message: "Projects",
+									})}
+									aria-current={isProjectsOpen ? "page" : undefined}
+									className={cn(
+										"flex size-7 items-center justify-center rounded-md transition-colors",
+										isProjectsOpen
+											? "bg-fill-selected text-muted-foreground"
+											: "text-muted-foreground hover:bg-fill-hover",
+									)}
+								>
+									<ProjectGlyph className="size-3.5" />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent side="right">
+								<Trans>Projects</Trans>
+							</TooltipContent>
+						</Tooltip>
+					)}
 
 					<Tooltip delayDuration={300}>
 						<TooltipTrigger asChild>
@@ -410,31 +498,29 @@ export function DashboardSidebarHeader({
 						</Tooltip>
 					)}
 
-					{isPagesEnabled && (
-						<Tooltip delayDuration={300}>
-							<TooltipTrigger asChild>
-								<button
-									type="button"
-									onClick={handlePagesClick}
-									aria-label={t({
-										message: "Pages",
-									})}
-									aria-current={isPagesOpen ? "page" : undefined}
-									className={cn(
-										"flex size-7 items-center justify-center rounded-md transition-colors",
-										isPagesOpen
-											? "bg-fill-selected text-muted-foreground"
-											: "text-muted-foreground hover:bg-fill-hover",
-									)}
-								>
-									<LuFileText className="size-3.5" strokeWidth={1.5} />
-								</button>
-							</TooltipTrigger>
-							<TooltipContent side="right">
-								<Trans>Pages</Trans>
-							</TooltipContent>
-						</Tooltip>
-					)}
+					<Tooltip delayDuration={300}>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								onClick={handlePagesClick}
+								aria-label={t({
+									message: "Pages",
+								})}
+								aria-current={isPagesOpen ? "page" : undefined}
+								className={cn(
+									"flex size-7 items-center justify-center rounded-md transition-colors",
+									isPagesOpen
+										? "bg-fill-selected text-muted-foreground"
+										: "text-muted-foreground hover:bg-fill-hover",
+								)}
+							>
+								<LuFileText className="size-3.5" strokeWidth={1.5} />
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="right">
+							<Trans>Pages</Trans>
+						</TooltipContent>
+					</Tooltip>
 
 					{isPluginsEnabled && (
 						<Tooltip delayDuration={300}>
@@ -519,7 +605,9 @@ export function DashboardSidebarHeader({
 			className="flex flex-col gap-px px-2 pt-2 pb-2"
 			// Pin the top inset so the traffic-light row stays a constant physical
 			// distance from the window top under page zoom (see the row below).
-			style={isMac ? { paddingTop: `${8 / zoomFactor}px` } : undefined}
+			style={{
+				paddingTop: `${WINDOW_CONTROLS_ROW_TOP / (isMac ? zoomFactor : 1)}px`,
+			}}
 		>
 			{/* -mx-2 cancels the parent's px-2 so this row owns the 80px traffic-light
 			    inset; inset and height are counter-scaled to a constant physical size
@@ -534,17 +622,30 @@ export function DashboardSidebarHeader({
 				// on this row: `no-drag` carve-outs under a `drag` ancestor are lost
 				// inside zoomed wrappers like ZoomStable, deadening the controls.
 				className="-mx-2 mb-3 flex h-8 items-center pr-3"
-				style={isMac ? { height: `${32 / zoomFactor}px` } : undefined}
+				style={
+					isMac
+						? { height: `${WINDOW_CONTROLS_ROW_HEIGHT / zoomFactor}px` }
+						: undefined
+				}
 			>
-				<div
-					className="drag h-full shrink-0"
-					style={{ width: isMac ? `${80 / zoomFactor}px` : "8px" }}
-				/>
+				{isMac ? (
+					<div
+						className="drag h-full shrink-0"
+						style={{ width: `${80 / zoomFactor}px` }}
+					/>
+				) : (
+					<div
+						className="flex h-full shrink-0 items-center justify-center"
+						style={{ width: COLLAPSED_WORKSPACE_SIDEBAR_WIDTH }}
+					>
+						<AppMenuButton />
+					</div>
+				)}
 				<ZoomStable enabled={isMac} className="flex items-center gap-1">
-					{!isMac && <AppMenuButton />}
 					<SidebarToggle />
 					<NavigationControls />
 					{/* (FORK-PORTS-OFF) */}
+					<OfflineBadge />
 				</ZoomStable>
 				<div className="drag h-full min-w-0 flex-1" />
 			</div>
@@ -599,6 +700,47 @@ export function DashboardSidebarHeader({
 					<Trans>Workspaces</Trans>
 				</span>
 			</button>
+
+			{isCloudEnabled && (
+				<button
+					type="button"
+					onClick={handleCloudWorkspacesClick}
+					aria-current={isCloudWorkspacesOpen ? "page" : undefined}
+					className={cn(
+						"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
+						isCloudWorkspacesOpen
+							? "bg-fill-selected text-foreground"
+							: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
+					)}
+				>
+					<LuCloud
+						className="size-4 shrink-0 text-muted-foreground"
+						strokeWidth={1.5}
+					/>
+					<span className="flex-1 text-left">
+						<Trans>Cloud workspaces</Trans>
+					</span>
+				</button>
+			)}
+
+			{isCloudEnabled && (
+				<button
+					type="button"
+					onClick={handleProjectsClick}
+					aria-current={isProjectsOpen ? "page" : undefined}
+					className={cn(
+						"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
+						isProjectsOpen
+							? "bg-fill-selected text-foreground"
+							: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
+					)}
+				>
+					<ProjectGlyph className="size-4 shrink-0 text-muted-foreground" />
+					<span className="flex-1 text-left">
+						<Trans>Projects</Trans>
+					</span>
+				</button>
+			)}
 
 			<button
 				type="button"
@@ -662,30 +804,28 @@ export function DashboardSidebarHeader({
 				</button>
 			)}
 
-			{isPagesEnabled && (
-				<button
-					type="button"
-					onClick={handlePagesClick}
-					aria-label={t({
-						message: "Pages",
-					})}
-					aria-current={isPagesOpen ? "page" : undefined}
-					className={cn(
-						"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
-						isPagesOpen
-							? "bg-fill-selected text-foreground"
-							: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
-					)}
-				>
-					<LuFileText
-						className="size-4 shrink-0 text-muted-foreground"
-						strokeWidth={1.5}
-					/>
-					<span className="flex-1 text-left">
-						<Trans>Pages</Trans>
-					</span>
-				</button>
-			)}
+			<button
+				type="button"
+				onClick={handlePagesClick}
+				aria-label={t({
+					message: "Pages",
+				})}
+				aria-current={isPagesOpen ? "page" : undefined}
+				className={cn(
+					"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
+					isPagesOpen
+						? "bg-fill-selected text-foreground"
+						: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
+				)}
+			>
+				<LuFileText
+					className="size-4 shrink-0 text-muted-foreground"
+					strokeWidth={1.5}
+				/>
+				<span className="flex-1 text-left">
+					<Trans>Pages</Trans>
+				</span>
+			</button>
 
 			{isPluginsEnabled && (
 				<button
