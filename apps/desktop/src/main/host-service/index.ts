@@ -5,6 +5,8 @@
  * The coordinator polls health.check to know when it's ready.
  */
 
+// (WIN-HIDE-FIRST-IMPORT) Must stay the first import.
+import "main/lib/windows-child-process-patch-install";
 import { serve } from "@hono/node-server";
 import {
 	captureFatalStartupError,

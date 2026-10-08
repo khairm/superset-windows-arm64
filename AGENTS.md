@@ -236,6 +236,11 @@ In brief:
 - Never let `ws` load native bufferutil/utf-8-validate in the host-service —
   keep `WS_NO_BUFFER_UTIL=1` + `WS_NO_UTF_8_VALIDATE=1` in the coordinator
   child env AND first-import in serve.ts.
+- The Windows `windowsHide` patch must stay the FIRST import of main,
+  host-service, host-worker and git-task-worker, and must patch the real
+  CommonJS module: `import * as cp` bundles to a frozen namespace where the
+  assignment silently no-ops, and a later call misses bundled modules that
+  already captured `promisify(execFile)` (`(WIN-HIDE-FIRST-IMPORT)`).
 - Keep agent-hook `.sh` templates pipeline-free (bash builtins only) —
   subprocess-fork cascades crash emulated msys2 on ARM64 (`(HOOK-FORK-DIET)`).
 - `.github/workflows` is fork-owned and CI's `GITHUB_TOKEN` can never push

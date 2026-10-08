@@ -34,7 +34,7 @@ function getRawMachineId(): string {
 					"/v",
 					"MachineGuid",
 				],
-				{ encoding: "utf8" },
+				{ encoding: "utf8", windowsHide: true },
 			);
 			const match = output.match(/MachineGuid\s+REG_SZ\s+(\S+)/);
 			if (match?.[1]) return match[1];

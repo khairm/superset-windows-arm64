@@ -1,3 +1,6 @@
+// (WIN-HIDE-FIRST-IMPORT) A worker thread has its own child_process module
+// object, so it needs its own patch. Must stay the first import.
+import "./lib/windows-child-process-patch-install";
 import { parentPort } from "node:worker_threads";
 import { executeGitTask } from "../lib/trpc/routers/changes/workers/git-task-handlers";
 import type { GitTaskType } from "../lib/trpc/routers/changes/workers/git-task-types";

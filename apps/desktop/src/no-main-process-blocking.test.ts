@@ -51,14 +51,11 @@ const RULES: Rule[] = [
 		allowedCounts: {
 			// Cold daemon-recovery path only (connect failure / respawn).
 			"main/lib/terminal-host/client.ts": 2,
-			// (BLOCKING-FS-RATCHET) pre-existing fork debt at bdc2422944, inherited
-			// rather than written here: this file is byte-identical to upstream
-			// desktop-v1.30.2. The six matches are not call sites either — it
-			// monkey-patches node:child_process so every spawn variant defaults to
-			// windowsHide, so these lines bind and reassign the three sync
-			// variants and the blocking stays with whoever calls them. Delete this
-			// entry when upstream drops the patch, and never raise it.
-			"main/lib/windows-child-process-patch.ts": 6,
+			// (BLOCKING-FS-RATCHET) upstream's windowsHide patch, rewritten by the
+			// fork (WIN-HIDE-FIRST-IMPORT). The three matches are not call sites:
+			// they map the three sync variants to their argument normalizers, and
+			// the blocking stays with whoever calls them. Never raise this entry.
+			"main/lib/windows-child-process-patch.ts": 3,
 		},
 		advice:
 			"Sync subprocesses freeze the Electron main process until the child exits — every electronTrpc response and IPC event queues behind it, so the whole app feels hung. Prefer async spawn/execFile: the caller awaits the same result, but main keeps serving while the child runs.",

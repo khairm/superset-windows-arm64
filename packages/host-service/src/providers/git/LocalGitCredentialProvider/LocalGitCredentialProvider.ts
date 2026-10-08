@@ -129,7 +129,7 @@ export class LocalGitCredentialProvider implements GitCredentialProvider {
 			const child = execFile(
 				"git",
 				["credential", "fill"],
-				{ timeout: 10_000, env },
+				{ timeout: 10_000, env, windowsHide: true },
 				(error, stdout) => {
 					if (error) {
 						resolve(null);
@@ -153,6 +153,7 @@ export class LocalGitCredentialProvider implements GitCredentialProvider {
 			const { stdout } = await execFileAsync("gh", ["auth", "token"], {
 				timeout: 10_000,
 				env,
+				windowsHide: true,
 			});
 			return stdout.trim() || null;
 		} catch {

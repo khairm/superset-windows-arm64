@@ -1,10 +1,7 @@
+// (WIN-HIDE-FIRST-IMPORT) Must stay the first import.
+import "./lib/windows-child-process-patch-install";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import log from "electron-log/main";
-import { installWindowsChildProcessPatch } from "./lib/windows-child-process-patch";
-
-installWindowsChildProcessPatch();
-
 import { pathToFileURL } from "node:url";
 import { msg } from "@lingui/core/macro";
 import {
@@ -25,6 +22,7 @@ import {
 	WIN_USER_ENV_MERGED_BY_PARENT,
 } from "@superset/shared/windows-user-env";
 import { app, dialog, Notification, net, protocol, session } from "electron";
+import log from "electron-log/main";
 import { makeAppSetup } from "lib/electron-app/factories/app/setup";
 import { loadToken } from "lib/trpc/routers/auth/utils/auth-functions";
 import { applyShellEnvToProcess } from "lib/trpc/routers/workspaces/utils/shell-env";

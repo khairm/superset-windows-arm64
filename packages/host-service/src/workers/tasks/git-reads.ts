@@ -31,7 +31,11 @@ export const gitDirTask = defineWorkerTask<
 			const { stdout } = await execFileAsync(
 				"git",
 				["rev-parse", "--git-dir"],
-				{ cwd: worktreePath, env: { ...process.env, ...GIT_PARSE_ENV } },
+				{
+					cwd: worktreePath,
+					env: { ...process.env, ...GIT_PARSE_ENV },
+					windowsHide: true,
+				},
 			);
 			const raw = stdout.trim();
 			return { gitDir: isAbsolute(raw) ? raw : join(worktreePath, raw) };

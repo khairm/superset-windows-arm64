@@ -196,7 +196,7 @@ async function listProcessesWindows(): Promise<ProcessInfo[]> {
 	try {
 		const { stdout } = await execAsync(
 			'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,WorkingSetSize,Name | ConvertTo-Csv -NoTypeInformation"',
-			{ maxBuffer: MAX_BUFFER, timeout: EXEC_TIMEOUT_MS },
+			{ maxBuffer: MAX_BUFFER, timeout: EXEC_TIMEOUT_MS, windowsHide: true },
 		);
 
 		const result: ProcessInfo[] = [];
