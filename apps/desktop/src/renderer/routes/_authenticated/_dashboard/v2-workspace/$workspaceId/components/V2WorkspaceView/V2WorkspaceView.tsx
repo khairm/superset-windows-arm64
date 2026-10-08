@@ -2,7 +2,13 @@ import { Workspace } from "@superset/panes";
 import { FORK_CHAT_V3_DISABLED } from "@superset/shared/fork-disabled-features";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { useMatchRoute } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useQuickOpenStore } from "renderer/commandPalette/ui/QuickOpen/quickOpenStore";
 import { ZoomStable } from "renderer/components/ZoomStable";
@@ -253,6 +259,13 @@ function V2WorkspaceCenter({
 	);
 	const defaultPaneActions = useDefaultPaneActions({ launcher });
 	const onBeforeCloseTab = useDirtyTabCloseGuard(store);
+	// This view has ONE pane area, so the close hotkeys always target the centre
+	// store. Upstream resolves between the centre and its right pane area here.
+	const getCloseTarget = useCallback(
+		() => ({ store, onBeforeCloseTab }),
+		[store, onBeforeCloseTab],
+	);
+	const fileDocumentStores = useMemo(() => [store], [store]);
 
 	const sidebarWidth = v2UserPreferences.rightSidebarWidth ?? 340;
 	const [isSidebarResizing, setIsSidebarResizing] = useState(false);
@@ -284,6 +297,7 @@ function V2WorkspaceCenter({
 		openChangesPane,
 		paneRegistry,
 		launcher,
+		getCloseTarget,
 		isSandbox,
 	});
 	useHotkey("QUICK_OPEN", handleQuickOpen);
@@ -328,7 +342,7 @@ function V2WorkspaceCenter({
 	);
 
 	return (
-		<FileDocumentStoreProvider store={store}>
+		<FileDocumentStoreProvider stores={fileDocumentStores}>
 			<WorkspaceGitStatusProvider
 				workspaceId={workspaceId}
 				store={store}

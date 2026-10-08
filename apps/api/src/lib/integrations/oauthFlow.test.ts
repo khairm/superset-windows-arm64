@@ -10,6 +10,7 @@ mock.module("@/env", () => ({
 const {
 	beginOAuthFlow,
 	clearStateCookie,
+	connectorStateCookie,
 	exitOAuthFlow,
 	readStateCookie,
 	setStateCookie,
@@ -87,6 +88,12 @@ describe("beginOAuthFlow", () => {
 	test("every flow has its own cookie name", () => {
 		const names = Object.values(STATE_COOKIES).map((c) => c.name);
 		expect(new Set(names).size).toBe(names.length);
+	});
+
+	test("two connectors signing in at once keep separate cookies", () => {
+		expect(connectorStateCookie("stripe").name).not.toBe(
+			connectorStateCookie("neon_mcp").name,
+		);
 	});
 });
 

@@ -7,6 +7,7 @@ import {
 	sanitizeUserBranchName,
 } from "@superset/shared/workspace-launch";
 import { workspaceTagsInputSchema } from "@superset/shared/workspace-tags";
+import { userError } from "@superset/trpc/i18n-error";
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
@@ -151,6 +152,7 @@ export const createInputSchema = z
 		waitForSetupBeforeAgents: z.boolean().optional(),
 		command: z.string().min(1).optional(),
 		namingPrompt: z.string().min(1).optional(),
+		namingAgent: z.string().min(1).optional(),
 		id: z.string().uuid().optional(),
 		// Adopt the worktree git already has at this path instead of
 		// inferring the path from `branch`. When present, `branch` is
@@ -670,9 +672,18 @@ async function recreateArchivedCheckout(
 				message: `A folder already exists at ${row.worktreePath}`,
 			});
 		case "branch-missing":
-			throw new TRPCError({
+			throw userError({
 				code: "NOT_FOUND",
-				message: `Branch "${row.branch}" no longer exists locally or on ${remoteName}`,
+				message: `Branch "${row.branch}" is not on this device or on ${remoteName}. Only pushed commits can be restored.`,
+				i18nKey: "serverError.workspaces.restoreBranchMissing",
+				params: { branch: row.branch, remote: remoteName },
+			});
+		case "fetch-failed":
+			throw userError({
+				code: "BAD_GATEWAY",
+				message: `Could not reach ${remoteName} to look for branch "${row.branch}". Check your connection and access to ${remoteName}, then try again.`,
+				i18nKey: "serverError.workspaces.restoreFetchFailed",
+				params: { branch: row.branch, remote: remoteName },
 			});
 	}
 }
@@ -768,7 +779,7 @@ export const workspacesRouter = router({
 				input.worktreePath === undefined &&
 				input.name === undefined &&
 				!!composerPrompt;
-			const namingAgent = input.agents?.[0]?.agent;
+			const namingAgent = input.agents?.[0]?.agent ?? input.namingAgent;
 
 			// (MASTER-ALWAYS-ACTIVE) Every project keeps its master row, so
 			// minting a branch workspace backfills one that is missing. Upstream
@@ -1369,7 +1380,12 @@ export const workspacesRouter = router({
 			// result.
 			let chainAgent: { fullCommand: string; label: string } | null = null;
 			const soleLaunch = sugarLaunches.length === 1 ? sugarLaunches[0] : null;
-			if (!alreadyExists && input.waitForSetupBeforeAgents && soleLaunch) {
+			if (
+				!alreadyExists &&
+				input.waitForSetupBeforeAgents &&
+				soleLaunch &&
+				soleLaunch.surface !== "chat"
+			) {
 				try {
 					chainAgent = buildTerminalAgentLaunch(ctx.db, {
 						workspaceId: workspaceRow.id,

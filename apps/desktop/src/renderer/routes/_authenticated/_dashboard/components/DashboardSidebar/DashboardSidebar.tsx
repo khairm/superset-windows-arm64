@@ -29,6 +29,10 @@ import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/u
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
+import {
+	type ActiveWorkspaceSwitcherOption,
+	DashboardSidebarActiveWorkspaceSwitcher,
+} from "./components/DashboardSidebarActiveWorkspaceSwitcher";
 import { DashboardSidebarBulkActions } from "./components/DashboardSidebarBulkActions";
 import { DashboardSidebarCloudSection } from "./components/DashboardSidebarCloudSection";
 import { DashboardSidebarGithubNotice } from "./components/DashboardSidebarGithubNotice";
@@ -521,6 +525,37 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 		[sidebarWorkspaceHostTargets, activeHostUrl],
 	);
 
+	const switcherWorkspaces = useMemo<ActiveWorkspaceSwitcherOption[]>(() => {
+		const byId = new Map<string, ActiveWorkspaceSwitcherOption>();
+		for (const workspace of pinnedWorkspaces) {
+			byId.set(workspace.id, {
+				id: workspace.id,
+				name: workspace.name,
+				detail: workspace.projectName,
+			});
+		}
+		for (const workspace of sessionWorkspaces) {
+			byId.set(workspace.id, {
+				id: workspace.id,
+				name: workspace.name,
+				detail: null,
+			});
+		}
+		for (const project of sortedGroups) {
+			for (const workspace of getProjectChildrenWorkspaces(project.children)) {
+				byId.set(workspace.id, {
+					id: workspace.id,
+					name: workspace.name,
+					detail: project.name,
+				});
+			}
+		}
+		for (const cloud of cloudWorkspaces ?? []) {
+			byId.set(cloud.id, { id: cloud.id, name: cloud.name, detail: null });
+		}
+		return [...byId.values()];
+	}, [pinnedWorkspaces, sessionWorkspaces, sortedGroups, cloudWorkspaces]);
+
 	// Resolve the full project object for the active workspace from the id above
 	// (used by the footer / view-in-place logic).
 	const activeV2Project = useMemo(
@@ -647,6 +682,10 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 							workspaces={statusWorkspaces}
 							activeWorkspaceId={activeV2WorkspaceId}
 						>
+							<DashboardSidebarActiveWorkspaceSwitcher
+								workspaces={switcherWorkspaces}
+								activeWorkspaceId={activeV2WorkspaceId}
+							/>
 							{/* Port data comes from the single DashboardSidebarPortsProvider in the
 							    dashboard layout, which wraps this sidebar. */}
 							<DashboardSidebarHoverCardOverlay>

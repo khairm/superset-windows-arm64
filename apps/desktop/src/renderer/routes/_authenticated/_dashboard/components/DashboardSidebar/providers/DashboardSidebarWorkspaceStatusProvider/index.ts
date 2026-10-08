@@ -6,4 +6,5 @@ export {
 	useMarkSidebarWorkspaceTerminalsSeen,
 	useSidebarWorkspaceHostTargets,
 	useSidebarWorkspaceStatus,
+	useSidebarWorkspaceStatuses,
 } from "./DashboardSidebarWorkspaceStatusProvider";

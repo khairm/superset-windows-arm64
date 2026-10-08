@@ -581,6 +581,17 @@ async function runDestroyPhases(
 	},
 ) {
 	// ─── Step 3: Local cleanup ─────────────────────────────────────
+	// (WORKTREE-EXIT-CLEANUP) PTY disposal is NOT a phase here: the fork tears
+	// terminals down through `claudeAccounts.withWorkspaceDeletion`, which wraps
+	// this whole destroy so the delete-intent markers and the account release
+	// stay in step with it.
+	try {
+		await ctx.runtime.closeChats?.(input.workspaceId);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		warnings.push(`Failed to stop chat sessions: ${message}`);
+	}
+
 	// Worktree. Double-force unlocks the rare locked-worktree case and
 	//     clears stale metadata when the directory was manually removed.
 	//     Runs in the worker pool: the removal is a recursive delete of the

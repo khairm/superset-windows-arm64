@@ -42,9 +42,18 @@ import {
 	getAttachedTerminalIdsKey,
 	getBackgroundTerminalRefetchInterval,
 	getBackgroundTerminalSessions,
-	getUnattachedTerminalIds,
 	parseAttachedTerminalIdsKey,
-} from "./BackgroundTerminalsButton.utils";
+} from "../../utils/backgroundTerminals";
+
+function getUnattachedTerminalIds(
+	terminalIds: Iterable<string>,
+	attachedTerminalIds: Iterable<string>,
+): string[] {
+	const attached = new Set(attachedTerminalIds);
+	return [...new Set(terminalIds)]
+		.filter((terminalId) => !attached.has(terminalId))
+		.sort();
+}
 
 interface BackgroundTerminalsButtonProps {
 	workspaceId: string;

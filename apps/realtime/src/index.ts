@@ -1,5 +1,9 @@
 import * as Sentry from "@sentry/cloudflare";
-import { PAGE_STORAGE_TICKET_SECONDS } from "@superset/shared/page-storage";
+import {
+	MAX_PAGE_STORAGE_KEY_LENGTH,
+	PAGE_STORAGE_TICKET_SECONDS,
+	type PageStorageReadback,
+} from "@superset/shared/page-storage";
 import { readable, writableFor } from "@superset/shared/page-storage-access";
 import type { PageStorageHubRequest } from "@superset/shared/page-storage-hub";
 import {
@@ -118,6 +122,42 @@ app.post("/v2/page/:pageId/storage/ticket", async (c) => {
 	});
 
 	return c.json({ ticket });
+});
+
+app.get("/v2/page/:pageId/storage/records", async (c) => {
+	const pageId = c.req.param("pageId");
+	const token = extractToken(c);
+	if (!token) return c.json({ error: "Unauthorized" }, 401);
+	const auth = await verifyJWT(token, c.env.NEXT_PUBLIC_API_URL);
+	if (!auth) return c.json({ error: "Unauthorized" }, 401);
+
+	const key = c.req.query("key");
+	if (
+		key !== undefined &&
+		(key.length === 0 || key.length > MAX_PAGE_STORAGE_KEY_LENGTH)
+	) {
+		return c.json(
+			{
+				error: `A storage key is 1 to ${MAX_PAGE_STORAGE_KEY_LENGTH} characters`,
+			},
+			400,
+		);
+	}
+
+	const stub = await getServerByName(c.env.PageHub, pageId);
+	const manifest = await stub.readManifest();
+	if (!manifest) return c.json({ error: "Not found" }, 404);
+
+	const viewer = { userId: auth.sub, organizationIds: auth.organizationIds };
+	if (!readable(manifest, viewer)) {
+		return c.json({ error: "You cannot read this page's storage" }, 403);
+	}
+
+	const body: PageStorageReadback =
+		key === undefined
+			? { pageId, keys: await stub.storageKeys() }
+			: { pageId, key, records: await stub.storageRecords(key) };
+	return c.json(body);
 });
 
 app.get("/v2/page/:pageId/storage/socket", async (c) => {

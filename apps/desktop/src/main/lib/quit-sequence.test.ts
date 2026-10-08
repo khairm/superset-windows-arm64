@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import {
+	FULL_CLEANUP_TIMEOUT_MS,
 	NOTIFY_DAEMON_STOP_DEADLINE_MS,
 	type QuitCleanupDeps,
 	runQuitCleanup,
@@ -13,6 +14,7 @@ interface Harness {
 	disposeTerminalHostClient: ReturnType<typeof mock>;
 	stopHostServices: ReturnType<typeof mock>;
 	stopNotifyDaemon: ReturnType<typeof mock>;
+	stopPtyDaemons: ReturnType<typeof mock>;
 	scheduled: Array<{ callback: () => void; delayMs: number }>;
 	scheduledAt(delayMs: number): Array<{ callback: () => void }>;
 }
@@ -21,8 +23,9 @@ function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
 	const forceExit = mock((_code: number) => {});
 	const teardownTerminalHost = mock(async () => {});
 	const disposeTerminalHostClient = mock(() => {});
-	const stopHostServices = mock(() => {});
+	const stopHostServices = mock((): number[] => [101, 102]);
 	const stopNotifyDaemon = mock(async () => {});
+	const stopPtyDaemons = mock(async (_pids: number[]) => {});
 	const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
 
 	const deps: QuitCleanupDeps = {
@@ -32,6 +35,7 @@ function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
 		stopHostServices,
 		stopNotifyDaemon,
 		teardownTerminalHost,
+		stopPtyDaemons,
 		disposeTerminalHostClient,
 		disposeTray: () => {},
 		forceExit,
@@ -49,6 +53,7 @@ function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
 		disposeTerminalHostClient,
 		stopHostServices,
 		stopNotifyDaemon,
+		stopPtyDaemons,
 		scheduled,
 		scheduledAt: (delayMs) =>
 			scheduled.filter((timer) => timer.delayMs === delayMs),
@@ -102,12 +107,38 @@ describe("runQuitCleanup", () => {
 		expect(h.teardownTerminalHost).not.toHaveBeenCalled();
 	});
 
-	test("tears down the terminal host for a quit-completely", async () => {
+	test("keeps the pty-daemons alive on a normal quit", async () => {
+		const h = createHarness();
+
+		await runQuitCleanup(h.deps);
+
+		expect(h.stopPtyDaemons).not.toHaveBeenCalled();
+		expect(h.teardownTerminalHost).not.toHaveBeenCalled();
+	});
+
+	test("stops every terminal process for a quit-completely", async () => {
 		const h = createHarness({ forceFullCleanup: true });
 
 		await runQuitCleanup(h.deps);
 
 		expect(h.teardownTerminalHost).toHaveBeenCalled();
+		expect(h.stopPtyDaemons).toHaveBeenCalledWith([101, 102]);
+		expect(h.forceExit).toHaveBeenCalledWith(0);
+	});
+
+	test("exits a quit-completely whose cleanup hangs once the deadline passes", async () => {
+		const h = createHarness({
+			forceFullCleanup: true,
+			teardownTerminalHost: () => new Promise<void>(() => {}),
+		});
+
+		const done = runQuitCleanup(h.deps);
+		await Promise.resolve();
+		expect(h.forceExit).not.toHaveBeenCalled();
+		expect(h.scheduled[0].delayMs).toBe(FULL_CLEANUP_TIMEOUT_MS);
+
+		h.scheduled[0].callback();
+		await done;
 		expect(h.forceExit).toHaveBeenCalledWith(0);
 	});
 

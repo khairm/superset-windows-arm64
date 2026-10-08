@@ -3,6 +3,7 @@ import {
 	workspaceTrpc,
 } from "@superset/workspace-client";
 import { useCallback, useEffect, useMemo } from "react";
+import { isDiffPatchQueryAffected } from "renderer/lib/diffPatchQuery";
 import { useWorkspaceEvent } from "../useWorkspaceEvent";
 import { createTrailingRefreshScheduler } from "./createTrailingRefreshScheduler";
 
@@ -65,15 +66,21 @@ export function useGitStatus(workspaceId: string, enabled = true) {
 	const invalidate = useCallback(
 		(payload?: GitChangedPayload) => {
 			void refreshScheduler.request();
-			// Patch query keys carry the changed-file list, not the working
-			// tree, so an edit to an already-changed file leaves the cached
-			// hunks stale while `loadDiffFiles` reads the file as it is now.
-			void utils.git.getDiffPatch.invalidate({ workspaceId });
-			if (payload?.paths && payload.paths.length > 0) {
-				for (const path of payload.paths) {
+			const paths = payload?.paths;
+			if (paths && paths.length > 0) {
+				// Patch keys name what is diffed, not which files, so an edit
+				// to an already-changed file leaves cached hunks behind while
+				// `loadDiffFiles` reads the file as it is now. Refetch the
+				// patches the write can have moved and leave the rest cached.
+				void utils.git.getDiffPatch.invalidate(
+					{ workspaceId },
+					{ predicate: (query) => isDiffPatchQueryAffected(query, paths) },
+				);
+				for (const path of paths) {
 					void utils.git.getDiff.invalidate({ workspaceId, path });
 				}
 			} else {
+				void utils.git.getDiffPatch.invalidate({ workspaceId });
 				void utils.git.getDiff.invalidate({ workspaceId });
 				// Current branch may have changed (external checkout), and
 				// branch.<name>.base is per-branch — drop the cache so the next read

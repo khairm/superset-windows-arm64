@@ -5,17 +5,25 @@ import { useWorkspaceEvent } from "renderer/hooks/host-service/useWorkspaceEvent
 import { logStressEvent } from "renderer/lib/performance/stress-instrumentation";
 import { getTerminalBackgroundMarkerIdsKey } from "renderer/lib/terminal/terminal-background-intents";
 import type { StoreApi } from "zustand/vanilla";
+import type { PaneViewerData } from "../../types";
 import {
 	getAttachedTerminalIdsKey,
 	getBackgroundTerminalSessions,
 	parseAttachedTerminalIdsKey,
-} from "../../components/BackgroundTerminalsButton/BackgroundTerminalsButton.utils";
-import type { PaneViewerData } from "../../types";
+} from "../../utils/backgroundTerminals";
 import { isTerminalReplacementCancelled } from "../../utils/cancelledTerminalReplacements";
 import { focusOrAddTerminalPane } from "../../utils/focusTerminalPane";
 
+/** Stable default: a fresh array each render would re-run the effect forever. */
+const NO_LINKED_STORES: readonly StoreApi<WorkspaceStore<PaneViewerData>>[] = [];
+
 interface UseAutoAdoptBackgroundSessionsArgs {
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
+	/**
+	 * Panes linked to `store` whose tabs also count as attached. Optional: this
+	 * fork's single-store `<V2WorkspaceView/>` centre has no linked stores.
+	 */
+	linkedStores?: readonly StoreApi<WorkspaceStore<PaneViewerData>>[];
 	workspaceId: string;
 	isLayoutReady: boolean;
 	/**
@@ -52,6 +60,7 @@ interface UseAutoAdoptBackgroundSessionsArgs {
  */
 export function useAutoAdoptBackgroundSessions({
 	store,
+	linkedStores = NO_LINKED_STORES,
 	workspaceId,
 	isLayoutReady,
 	isExitCleanupPending,
@@ -103,7 +112,12 @@ export function useAutoAdoptBackgroundSessions({
 		);
 		const toAdopt = getBackgroundTerminalSessions(
 			sessions,
-			parseAttachedTerminalIdsKey(getAttachedTerminalIdsKey(state.tabs)),
+			parseAttachedTerminalIdsKey(
+				getAttachedTerminalIdsKey([
+					...state.tabs,
+					...linkedStores.flatMap((linked) => linked.getState().tabs),
+				]),
+			),
 		).filter(
 			(session) =>
 				!marked.has(session.terminalId) &&
@@ -130,6 +144,7 @@ export function useAutoAdoptBackgroundSessions({
 		isExitCleanupPending,
 		sessions,
 		store,
+		linkedStores,
 		workspaceId,
 	]);
 }

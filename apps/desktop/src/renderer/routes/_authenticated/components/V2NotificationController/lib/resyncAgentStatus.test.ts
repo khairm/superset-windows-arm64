@@ -120,7 +120,12 @@ function workspaces() {
 	return new Map([
 		[
 			WORKSPACE,
-			{ workspaceId: WORKSPACE, workspaceName: "W", paneLayout: null },
+			{
+				workspaceId: WORKSPACE,
+				workspaceName: "W",
+				paneLayout: null,
+				rightPaneLayout: null,
+			},
 		],
 	]);
 }

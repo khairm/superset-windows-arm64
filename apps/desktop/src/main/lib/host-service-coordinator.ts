@@ -440,18 +440,20 @@ export class HostServiceCoordinator extends EventEmitter {
 		return secret;
 	}
 
-	stop(organizationId: string): void {
+	/** Returns the pid it sent SIGTERM to, or null when it signalled nothing. */
+	stop(organizationId: string): number | null {
 		// Cancel first, and unconditionally: a respawn may be pending with no
 		// instance tracked (the crashed one was already deleted), and quitting or
 		// restarting must not let that timer resurrect a child.
 		this.clearRespawnState(organizationId);
 
 		const instance = this.instances.get(organizationId);
-		if (!instance) return;
+		if (!instance) return null;
 
 		const previousStatus = instance.status;
 		instance.status = "stopped";
 		this.rememberPort(organizationId, instance.port);
+		let signalledPid: number | null = null;
 
 		// Only owned children are ours to kill + de-manifest. Adopted entries
 		// (owned=false) belong to another live instance — fall through and just
@@ -460,6 +462,7 @@ export class HostServiceCoordinator extends EventEmitter {
 			try {
 				if (instance.pid > 0) {
 					killProcess(instance.pid, "SIGTERM");
+					signalledPid = instance.pid;
 					this.scheduleKillEscalation(organizationId, instance.pid);
 				}
 			} catch {}
@@ -468,6 +471,7 @@ export class HostServiceCoordinator extends EventEmitter {
 
 		this.instances.delete(organizationId);
 		this.emitStatus(organizationId, "stopped", previousStatus);
+		return signalledPid;
 	}
 
 	/**
@@ -482,17 +486,21 @@ export class HostServiceCoordinator extends EventEmitter {
 		removeManifest(organizationId);
 	}
 
-	stopAll(): void {
+	/** Returns the pids of the children it sent SIGTERM to. */
+	stopAll(): number[] {
 		this.startGeneration++;
 		this.desiredOrganizationIds.clear();
+		const signalledPids: number[] = [];
 		for (const [id] of this.instances) {
-			this.stop(id);
+			const pid = this.stop(id);
+			if (pid !== null) signalledPids.push(pid);
 		}
 		// A crashed instance is deleted before its respawn fires, so an org with a
 		// pending respawn has no entry in `instances` for the loop above to reach.
 		for (const id of Array.from(this.respawns.keys())) {
 			this.clearRespawnState(id);
 		}
+		return signalledPids;
 	}
 
 	async restart(

@@ -493,6 +493,7 @@ export async function resyncAgentStatusFromHost({
 				workspaceId: row.originWorkspaceId,
 				payload,
 				paneLayout: workspace.paneLayout,
+				rightPaneLayout: workspace.rightPaneLayout,
 			});
 		};
 

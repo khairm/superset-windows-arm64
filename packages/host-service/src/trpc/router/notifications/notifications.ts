@@ -1,16 +1,13 @@
 import type { AgentIdentity } from "@superset/shared/agent-identity";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { terminalSessions, workspaces } from "../../../db/schema";
+import { terminalSessions } from "../../../db/schema";
 import { mapEventType } from "../../../events";
 import { verifyAttributionToken } from "../../../terminal-agents/attribution-token";
 import { recordTerminalAgentTranscriptPath } from "../../../terminal-agents/persistence";
 import { isTrustedTranscriptPath } from "../../../terminal-agents/transcript-path";
-import type { HostServiceContext } from "../../../types";
-import { touchLocalWorkspaceActivity } from "../../../workspaces/local-workspace-store";
 import { publicProcedure, queryProcedure, router } from "../../index";
 import { captureSessionAccount } from "../usage/session-account/session-account";
-import { continueWorkspaceNaming } from "../workspace-creation/utils/workspace-naming-job";
 import {
 	type AgentStatusSnapshot,
 	buildAgentStatusSnapshot,
@@ -31,6 +28,7 @@ import {
 	forwardCompanionCapture,
 	warnDroppedCompanionCapture,
 } from "./companion-question-sink";
+import { fanOutAgentLifecycle } from "./fan-out-agent-lifecycle";
 
 // Hook scripts emit "" for unset env vars; we coerce to undefined so the
 // AgentIdentity broadcast carries only meaningful fields.
@@ -158,36 +156,6 @@ function reportUnknownTerminal(detail: {
 	);
 }
 
-// Tasks already nudged to "started" this process. `Start` fires on every
-// agent turn and tool use, so gate the cloud call to once per task per
-// process — `task.start` is idempotent and forward-only server-side, so a
-// duplicate after a restart is harmless.
-const startedTaskIds = new Set<string>();
-
-function markLinkedTaskStarted(
-	ctx: HostServiceContext,
-	workspaceId: string,
-): void {
-	const workspace = ctx.db.query.workspaces
-		.findFirst({
-			where: eq(workspaces.id, workspaceId),
-			columns: { taskId: true },
-		})
-		.sync();
-	const taskId = workspace?.taskId;
-	if (!taskId || startedTaskIds.has(taskId)) return;
-	startedTaskIds.add(taskId);
-	void ctx.api.task.start.mutate({ id: taskId }).catch((err) => {
-		// Let a later Start event retry — calls are event-driven (one per
-		// agent turn/tool use at most), so a cloud outage can't tight-loop.
-		startedTaskIds.delete(taskId);
-		console.warn(
-			`[notifications.hook] failed to mark task ${taskId} as started:`,
-			err,
-		);
-	});
-}
-
 export const notificationsRouter = router({
 	/**
 	 * Agent lifecycle hook. The shell hook POSTs here; we normalize, resolve
@@ -234,6 +202,16 @@ export const notificationsRouter = router({
 				success: true,
 				ignored: true as const,
 				reason: "no-terminal-id" as const,
+			};
+		}
+
+		// A chat-backed terminal is driven by the chat runtime, which emits its
+		// own lifecycle: a shell hook for it would double-report.
+		if (ctx.terminalAgentStore.hasChat(input.terminalId)) {
+			return {
+				success: true,
+				ignored: true as const,
+				reason: "chat-terminal" as const,
 			};
 		}
 
@@ -426,7 +404,7 @@ export const notificationsRouter = router({
 			});
 		}
 
-		ctx.eventBus.broadcastAgentLifecycle({
+		fanOutAgentLifecycle(ctx, {
 			workspaceId: terminalSession.originWorkspaceId,
 			eventType,
 			terminalId: input.terminalId,
@@ -435,35 +413,7 @@ export const notificationsRouter = router({
 			occurredAt,
 		});
 
-		// Every lifecycle event is activity for the sidebar's "Last active"
-		// ranking. Best-effort: a failed write must not fail the hook, which
-		// also drives the chime and the status dots.
-		try {
-			touchLocalWorkspaceActivity(
-				ctx,
-				terminalSession.originWorkspaceId,
-				occurredAt,
-			);
-		} catch (err) {
-			console.warn(
-				`[notifications.hook] failed to record activity for workspace ${terminalSession.originWorkspaceId}:`,
-				err,
-			);
-		}
-
-		try {
-			continueWorkspaceNaming(ctx, terminalSession.originWorkspaceId, {
-				eventType,
-				agentReply: preview,
-			});
-		} catch (err) {
-			console.warn(
-				`[notifications.hook] failed to schedule naming for workspace ${terminalSession.originWorkspaceId}:`,
-				err,
-			);
-		}
-
-		// (COMPANION-CAPTURE-HOOK) Strictly AFTER the dot work above, so a
+		// (COMPANION-CAPTURE-HOOK) Strictly AFTER the fan-out above, so a
 		// companion bridge fault can never alter or delay the agent-status
 		// broadcast: by the time anything below can throw, the dot has already
 		// moved. A throw here surfaces as a 500 the notify hook logs — loud, and
@@ -474,12 +424,6 @@ export const notificationsRouter = router({
 			workspaceId: terminalSession.originWorkspaceId,
 			occurredAt,
 		});
-
-		// An agent began working in this workspace — nudge the linked task
-		// to In Progress.
-		if (eventType === "Start") {
-			markLinkedTaskStarted(ctx, terminalSession.originWorkspaceId);
-		}
 
 		return { success: true, ignored: false as const };
 	}),

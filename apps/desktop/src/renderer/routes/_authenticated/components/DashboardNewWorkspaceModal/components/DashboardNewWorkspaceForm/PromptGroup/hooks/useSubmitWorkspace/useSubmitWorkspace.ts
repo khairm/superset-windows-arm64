@@ -1,11 +1,11 @@
 import { useLingui } from "@lingui/react/macro";
+import { acpHarnessForPreset } from "@superset/chat/core";
 import { startableCloudEnvironments } from "@superset/shared/cloud-environments";
 import { CLOUD_HOST_ID } from "@superset/shared/host-routing";
 import { toast } from "@superset/ui/sonner";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
 import { useAwaitAcpChatEnabled } from "renderer/hooks/useAcpChatEnabled";
-import { acpHarnessForPreset } from "renderer/lib/acpHarness";
 import { cloudTrpc, cloudTrpcClient } from "renderer/lib/cloud-trpc";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 // (CLOUD-SEVERANCE-P2) The org id comes from the local identity, not the
@@ -17,7 +17,6 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
 import type { NewWorkspacePromptContextApi } from "renderer/stores/new-workspace-prompt-context";
 import { usePromptHistoryStore } from "renderer/stores/prompt-history";
 import { useWorkspaceCreates } from "renderer/stores/workspace-creates";
-import { queuePendingChatHandoff } from "renderer/stores/workspace-creates/queuePendingChatHandoff";
 import { useDashboardNewWorkspaceDraft } from "../../../../../DashboardNewWorkspaceDraftContext";
 import {
 	getMasterMissingAgentRefusal,
@@ -126,11 +125,8 @@ export function useSubmitWorkspace(
 			return;
 		}
 
-		const {
-			readyIds: attachmentIds,
-			ready: readyAttachments,
-			errors,
-		} = await uploadAttachments.awaitUploads();
+		const { readyIds: attachmentIds, errors } =
+			await uploadAttachments.awaitUploads();
 		if (errors.length > 0) {
 			const first = errors[0];
 			toast.error(
@@ -409,20 +405,19 @@ export function useSubmitWorkspace(
 			wantAgent &&
 			Boolean(acpHarnessForPreset(selectedPresetId)) &&
 			(await awaitAcpChatEnabled());
-		const agents =
-			wantAgent && !openAsChat
-				? [
-						{
-							agent: selectedAgent,
-							prompt: finalPrompt ?? "",
-							attachmentIds:
-								attachmentIds.length > 0 ? attachmentIds : undefined,
-							model: selectedModel ?? undefined,
-							effort: selectedEffort ?? undefined,
-							mode: selectedMode ?? undefined,
-						},
-					]
-				: undefined;
+		const agents = wantAgent
+			? [
+					{
+						agent: selectedAgent,
+						prompt: finalPrompt ?? "",
+						attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+						model: selectedModel ?? undefined,
+						effort: openAsChat ? undefined : (selectedEffort ?? undefined),
+						mode: selectedMode ?? undefined,
+						...(openAsChat ? { surface: "chat" as const } : {}),
+					},
+				]
+			: undefined;
 
 		// PR path supplies a name (PR title) so the in-flight UI has
 		// something to show immediately. Branch path leaves both `name`
@@ -434,6 +429,12 @@ export function useSubmitWorkspace(
 			: undefined;
 
 		const trimmedPrompt = draft.prompt.trim();
+		const namingPrompt = openAsChat
+			? (finalPrompt ?? trimmedPrompt).trim().slice(0, 20_000) || undefined
+			: !wantAgent && trimmedPrompt
+				? trimmedPrompt
+				: undefined;
+		const namingAgent = openAsChat ? selectedAgent : undefined;
 		const workspaceId = crypto.randomUUID();
 		const snapshot = isSession
 			? {
@@ -441,7 +442,8 @@ export function useSubmitWorkspace(
 					projectId: null,
 					name: workspaceName ?? undefined,
 					agents,
-					namingPrompt: !wantAgent && trimmedPrompt ? trimmedPrompt : undefined,
+					namingPrompt,
+					namingAgent,
 				}
 			: isLocalCheckout
 				? {
@@ -451,8 +453,8 @@ export function useSubmitWorkspace(
 						name: workspaceName ?? undefined,
 						taskId: linkedTaskId,
 						agents,
-						namingPrompt:
-							!wantAgent && trimmedPrompt ? trimmedPrompt : undefined,
+						namingPrompt,
+						namingAgent,
 					}
 				: {
 						id: workspaceId,
@@ -469,28 +471,12 @@ export function useSubmitWorkspace(
 						baseBranch: draft.baseBranch ?? undefined,
 						taskId: linkedTaskId,
 						agents,
-						namingPrompt:
-							!isPrCheckout && !wantAgent && trimmedPrompt
-								? trimmedPrompt
-								: undefined,
+						namingPrompt: isPrCheckout ? undefined : namingPrompt,
+						namingAgent: isPrCheckout ? undefined : namingAgent,
 					};
 
 		if (trimmedPrompt) {
 			usePromptHistoryStore.getState().recordPrompt(trimmedPrompt);
-		}
-
-		if (openAsChat) {
-			queuePendingChatHandoff(
-				collections,
-				{ id: workspaceId, projectId },
-				{
-					agentId: selectedAgent,
-					prompt: finalPrompt ?? "",
-					attachments: readyAttachments,
-					modelId: selectedModel ?? undefined,
-					modeId: selectedMode ?? undefined,
-				},
-			);
 		}
 
 		closeAndResetDraft();
@@ -533,7 +519,6 @@ export function useSubmitWorkspace(
 		activeOrganizationId,
 		awaitAcpChatEnabled,
 		selectedPresetId,
-		collections,
 		closeAndResetDraft,
 		createCloudWorkspace,
 		draft,

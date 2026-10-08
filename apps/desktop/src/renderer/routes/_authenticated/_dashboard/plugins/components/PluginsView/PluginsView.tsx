@@ -1,26 +1,20 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { PLUGIN_CATEGORIES } from "@superset/shared/plugins";
-import { Button } from "@superset/ui/button";
 import { Input } from "@superset/ui/input";
 import { Skeleton } from "@superset/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
-import { cn } from "@superset/ui/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { LuSearch, LuSettings2 } from "react-icons/lu";
-import { PluginIcon } from "renderer/components/PluginIcon";
+import { LuSearch } from "react-icons/lu";
 import {
 	type CatalogPlugin,
 	usePluginCatalog,
 } from "renderer/hooks/usePluginCatalog";
 import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginMutations";
-import { ManageInstalledDialog } from "./components/ManageInstalledDialog";
 import { PluginCard } from "./components/PluginCard";
 
 export function PluginsView() {
 	const { t } = useLingui();
 	const [search, setSearch] = useState("");
-	const [isManageOpen, setIsManageOpen] = useState(false);
 	const navigate = useNavigate();
 
 	const {
@@ -58,11 +52,6 @@ export function PluginsView() {
 		);
 	}, [query, catalog]);
 
-	const installedPlugins = visiblePlugins.filter((plugin) => plugin.installed);
-	const allInstalled = catalog.filter((plugin) => plugin.installed);
-	const featured = visiblePlugins.filter((plugin) => plugin.featured);
-	// Featured plugins appear in their category section too — Featured is a
-	// spotlight, not a home.
 	const byCategory = PLUGIN_CATEGORIES.map((category) => ({
 		category,
 		plugins: visiblePlugins.filter(
@@ -108,7 +97,7 @@ export function PluginsView() {
 	);
 
 	return (
-		<div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pb-16">
+		<div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pt-4 pb-16">
 			<div>
 				<h1 className="text-2xl font-semibold text-foreground">
 					<Trans>Plugins</Trans>
@@ -131,75 +120,6 @@ export function PluginsView() {
 			</div>
 
 			{isCatalogLoading && skeletonCards}
-
-			{!isCatalogLoading && installedPlugins.length > 0 && (
-				<section className="flex flex-col gap-3">
-					<div className="flex items-center justify-between">
-						<h2 className="text-sm font-semibold text-foreground">
-							<Trans>Installed</Trans>
-						</h2>
-						<Tooltip delayDuration={300}>
-							<TooltipTrigger asChild>
-								<Button
-									variant="ghost"
-									size="icon-xs"
-									className="text-muted-foreground"
-									aria-label={t({
-										message: "Manage plugins",
-									})}
-									onClick={() => setIsManageOpen(true)}
-								>
-									<LuSettings2 className="size-4" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								<Trans>Manage plugins</Trans>
-							</TooltipContent>
-						</Tooltip>
-					</div>
-					<div className="flex flex-wrap gap-2">
-						{installedPlugins.map((plugin) => (
-							<Tooltip key={plugin.name} delayDuration={300}>
-								<TooltipTrigger asChild>
-									<button
-										type="button"
-										aria-label={plugin.interface.displayName}
-										onClick={() => handleOpen(plugin)}
-										className={cn(!plugin.enabled && "opacity-40")}
-									>
-										<PluginIcon
-											pluginName={plugin.name}
-											className="size-8"
-										/>
-									</button>
-								</TooltipTrigger>
-								<TooltipContent>
-									{plugin.interface.displayName}
-									{!plugin.enabled ? (
-										<>
-											{" "}
-											<Trans>(disabled)</Trans>
-										</>
-									) : (
-										""
-									)}
-								</TooltipContent>
-							</Tooltip>
-						))}
-					</div>
-				</section>
-			)}
-
-			{featured.length > 0 && (
-				<section className="flex flex-col gap-3">
-					<h2 className="text-sm font-semibold text-foreground">
-						<Trans>Featured</Trans>
-					</h2>
-					<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-						{featured.map(renderCard)}
-					</div>
-				</section>
-			)}
 
 			{byCategory.map(({ category, plugins }) => (
 				<section key={category} className="flex flex-col gap-3">
@@ -234,15 +154,6 @@ export function PluginsView() {
 						<Trans>No plugins available yet.</Trans>
 					</p>
 				)}
-
-			<ManageInstalledDialog
-				open={isManageOpen}
-				onOpenChange={setIsManageOpen}
-				installed={allInstalled}
-				isBusy={isBusy}
-				onSetEnabled={setEnabled}
-				onUninstall={uninstall}
-			/>
 		</div>
 	);
 }

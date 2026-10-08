@@ -9,7 +9,6 @@ import type { V2TerminalPresetRow } from "renderer/routes/_authenticated/provide
 import { useSettings } from "renderer/stores/settings";
 import type { StoreApi } from "zustand/vanilla";
 import type {
-	ChatV3PaneData,
 	CommentPaneData,
 	DiffFocusSide,
 	DiffPaneData,
@@ -159,18 +158,19 @@ export function useWorkspacePaneOpeners({
 		}
 	}, [addBlankTerminalTab, executePreset, newTabPresets]);
 
-	// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF)
+	// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF) Upstream replaced the
+	// sessionId-only chat-v3 pane with a terminal-backed ACP chat, opened through
+	// `useAgentSessionLauncher().openAgentChat` — there is no pane left to
+	// construct from nothing here. The tab-menu entry stays gated off by the
+	// const, and re-enabling chat means restoring upstream's own caller, which is
+	// exactly what the FEATURES.md row for this switch already records.
 	const addChatV3Tab = useCallback(() => {
-		if (FORK_CHAT_V3_DISABLED) throw new Error("Chat v3 is disabled");
-		store.getState().addTab({
-			panes: [
-				{
-					kind: "chat-v3",
-					data: { sessionId: null } as ChatV3PaneData,
-				},
-			],
-		});
-	}, [store]);
+		throw new Error(
+			FORK_CHAT_V3_DISABLED
+				? "Chat v3 is disabled"
+				: "Chat v3 has no fork entry point: restore upstream's chat caller",
+		);
+	}, []);
 
 	const openCommentPane = useCallback(
 		(comment: CommentPaneData) => {

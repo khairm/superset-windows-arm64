@@ -7,3 +7,5 @@ export const portManager = new PortManager({
 	disabled: FORK_PORT_SCAN_DISABLED,
 	killFn: treeKillWithEscalation,
 });
+
+export const chatPortTerminalIds = new Set<string>();

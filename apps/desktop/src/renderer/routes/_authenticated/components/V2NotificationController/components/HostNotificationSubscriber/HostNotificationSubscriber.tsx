@@ -33,6 +33,7 @@ export interface HostNotificationWorkspaceState {
 	workspaceName: string;
 	projectName?: string;
 	paneLayout: WorkspaceState<PaneViewerData> | null;
+	rightPaneLayout: WorkspaceState<PaneViewerData> | null;
 }
 
 /**
@@ -249,6 +250,7 @@ export function HostNotificationSubscriber({
 				projectName: workspace.projectName,
 				payload,
 				paneLayout: workspace.paneLayout,
+				rightPaneLayout: workspace.rightPaneLayout,
 				volume,
 				muted,
 			});
@@ -369,7 +371,10 @@ export function HostNotificationSubscriber({
 	const titleRevisionRef = useRef(0);
 	const titleSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const lastSyncedLayoutRef = useRef(
-		new Map<string, { layout: unknown; revision: number }>(),
+		new Map<
+			string,
+			{ layout: unknown; rightLayout: unknown; revision: number }
+		>(),
 	);
 
 	/**
@@ -386,7 +391,7 @@ export function HostNotificationSubscriber({
 	 * makes "no rows yet" the ordinary state for the first moments after mount
 	 * rather than a statement that the workspace has no terminals.
 	 *
-	 * A workspace whose pane layout is the SAME OBJECT as last time is skipped
+	 * A workspace whose pane layouts are the SAME OBJECTS as last time is skipped
 	 * before any work: the layout live-query hands back a new Map on every tick
 	 * but the layouts inside it are unchanged references, so this turns most
 	 * ticks into a pointer comparison per workspace instead of an extract and a
@@ -398,15 +403,18 @@ export function HostNotificationSubscriber({
 			for (const workspace of current.values()) {
 				const layout = workspace.paneLayout;
 				if (layout == null) continue;
+				const rightLayout = workspace.rightPaneLayout;
 				const seen = lastSyncedLayoutRef.current.get(workspace.workspaceId);
 				if (
 					seen?.layout === layout &&
+					seen.rightLayout === rightLayout &&
 					seen.revision === titleRevisionRef.current
 				) {
 					continue;
 				}
 				lastSyncedLayoutRef.current.set(workspace.workspaceId, {
 					layout,
+					rightLayout,
 					revision: titleRevisionRef.current,
 				});
 				queueAlertContextSync({
@@ -414,6 +422,7 @@ export function HostNotificationSubscriber({
 					hostUrl,
 					snapshot: extractAlertContexts({
 						paneLayout: layout,
+						rightPaneLayout: rightLayout,
 						// The PANE id is the runtime instance id. Passing the terminal id
 						// alone resolves through `getPrimaryEntry`, which answers with
 						// whichever instance happens to be first — or with an empty shadow
@@ -447,7 +456,10 @@ export function HostNotificationSubscriber({
 
 	/** The CURRENT layouts, for effects keyed on something narrower. */
 	const currentLayouts = useEffectEvent(() =>
-		[...workspacesById.values()].map((workspace) => workspace.paneLayout),
+		[...workspacesById.values()].flatMap((workspace) => [
+			workspace.paneLayout,
+			workspace.rightPaneLayout,
+		]),
 	);
 
 	const handleConnectionChange = useEffectEvent((connected: boolean) => {
@@ -616,8 +628,10 @@ export function HostNotificationSubscriber({
 		const refs: string[] = [];
 		for (const workspace of workspacesById.values()) {
 			if (workspace.paneLayout == null) continue;
-			for (const ref of collectTerminalPaneRefs(workspace.paneLayout)) {
-				refs.push(`${ref.terminalId}:${ref.paneId}`);
+			for (const layout of [workspace.paneLayout, workspace.rightPaneLayout]) {
+				for (const ref of collectTerminalPaneRefs(layout)) {
+					refs.push(`${ref.terminalId}:${ref.paneId}`);
+				}
 			}
 		}
 		return refs.sort().join(",");

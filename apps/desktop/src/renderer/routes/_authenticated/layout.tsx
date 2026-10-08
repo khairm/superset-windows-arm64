@@ -25,7 +25,6 @@ import { LeaderboardAutoPublish } from "renderer/routes/_authenticated/component
 // (CLOUD-SEVERANCE-P2) `PendingDeletionScreen` is deliberately NOT imported:
 // the gate that rendered it is removed below, and an import with no render
 // site is how a merge quietly wires a cloud-only screen back up.
-import { PluginConnectionsSync } from "renderer/routes/_authenticated/components/PluginConnectionsSync";
 import { RealtimeNudges } from "renderer/routes/_authenticated/components/RealtimeNudges";
 import { StarNagObserver } from "renderer/routes/_authenticated/components/StarNagObserver";
 import {
@@ -270,7 +269,6 @@ function AuthenticatedLayout() {
 							>
 								<DiffThemeSync />
 								<AgentHooks />
-								<PluginConnectionsSync />
 								<FileMenuListener />
 								<V2NotificationController />
 								<ScreenLockSubscriber /* (PRESENCE-SCREEN-LOCK-MOUNT) */ />

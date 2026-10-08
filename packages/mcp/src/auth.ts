@@ -19,6 +19,7 @@ export interface McpContext {
 	requestId: string;
 	bearerToken: string;
 	relayUrl: string;
+	realtimeUrl: string;
 }
 
 const MCP_UNAUTHORIZED = Symbol("MCP_UNAUTHORIZED");
@@ -169,12 +170,14 @@ async function resolveOAuth(
 export interface ResolveMcpContextOptions {
 	apiUrl: string;
 	relayUrl: string;
+	realtimeUrl: string;
 	sandboxCredential?: boolean;
 }
 
 async function sandboxContext(
 	caller: SandboxCaller,
 	relayUrl: string,
+	realtimeUrl: string,
 ): Promise<McpContext> {
 	const { email, organizationIds } = await loadUserAndOrgs(caller.userId);
 	return {
@@ -187,6 +190,7 @@ async function sandboxContext(
 		requestId: crypto.randomUUID(),
 		bearerToken: "",
 		relayUrl,
+		realtimeUrl,
 	};
 }
 
@@ -194,13 +198,13 @@ export async function resolveMcpContext(
 	req: Request,
 	options: ResolveMcpContextOptions,
 ): Promise<McpContext> {
-	const { apiUrl, relayUrl } = options;
+	const { apiUrl, relayUrl, realtimeUrl } = options;
 
 	if (options.sandboxCredential) {
 		const caller = await resolveSandboxCaller(
 			req.headers.get(SANDBOX_API_CREDENTIAL_HEADER),
 		);
-		if (caller) return await sandboxContext(caller, relayUrl);
+		if (caller) return await sandboxContext(caller, relayUrl, realtimeUrl);
 	}
 
 	const token = extractBearer(req);
@@ -252,5 +256,6 @@ export async function resolveMcpContext(
 		requestId: crypto.randomUUID(),
 		bearerToken,
 		relayUrl,
+		realtimeUrl,
 	};
 }

@@ -3,7 +3,10 @@ import { workspaceTrpc } from "@superset/workspace-client";
 import { useEffect, useRef } from "react";
 import type { StoreApi } from "zustand/vanilla";
 import type { ConsumeSearch, PaneViewerData } from "../../types";
-import { focusOrAddTerminalPane } from "../../utils/focusTerminalPane";
+import {
+	focusOrAddTerminalPane,
+	focusTerminalPane,
+} from "../../utils/focusTerminalPane";
 
 interface UseConsumeAutomationRunLinkArgs {
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
@@ -183,6 +186,9 @@ export function consumeTerminalAutomationRunLink({
 			focusOrAddTerminalPane(store, resumedTerminalId);
 			return true;
 		}
+		// The host does not place it here, but this workspace already shows a pane
+		// for it (a moved/adopted session): focus that instead of warning.
+		if (focusTerminalPane(store, terminalId)) return true;
 		console.warn(
 			"[automation-run-link] Ignoring terminal link: not in this workspace and not resumed elsewhere",
 			{ terminalId, workspaceId },

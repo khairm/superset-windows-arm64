@@ -203,15 +203,17 @@ export function DiffPane({
 		[updateData],
 	);
 
-	// fileByItemId is produced by useDiffCodeViewItems below, but the composer
-	// hook needs access to look files up at submit time. Funnel through a
-	// stable ref so the composer hook can be wired before items are computed
-	// and still read the latest map when its submit callback fires.
+	// Pierre's callbacks read files through refs: a callback that closed over
+	// the per-refresh map would rebuild every header portal and item on each save.
 	const fileByItemIdRef = useRef<ReadonlyMap<string, ChangesetFile>>(new Map());
 	const getFile = useCallback(
 		(itemId: string) => fileByItemIdRef.current.get(itemId),
 		[],
 	);
+	const filesRef = useRef(files);
+	filesRef.current = files;
+	const editingSetRef = useRef(editingSet);
+	editingSetRef.current = editingSet;
 
 	const {
 		composerAnnotationsByItemId,
@@ -248,7 +250,7 @@ export function DiffPane({
 	const saveEditedItem = useCallback(
 		async (itemId: string): Promise<boolean> => {
 			const editedFile = editedFilesRef.current.get(itemId);
-			const file = fileByItemId.get(itemId);
+			const file = getFile(itemId);
 			const worktreePath = workspaceQuery.data?.worktreePath;
 			if (!editedFile) return true;
 			if (!file || !worktreePath) {
@@ -311,7 +313,7 @@ export function DiffPane({
 			}
 		},
 		[
-			fileByItemId,
+			getFile,
 			workspaceQuery.data?.worktreePath,
 			writeFile,
 			workspaceId,
@@ -351,7 +353,7 @@ export function DiffPane({
 				discardEditing(itemId);
 				return;
 			}
-			const file = fileByItemId.get(itemId);
+			const file = getFile(itemId);
 			const name =
 				file?.path.split("/").pop() ??
 				t({
@@ -388,14 +390,7 @@ export function DiffPane({
 				],
 			});
 		},
-		[
-			dirtyItemIds,
-			discardEditing,
-			exitEditing,
-			fileByItemId,
-			saveEditedItem,
-			t,
-		],
+		[dirtyItemIds, discardEditing, exitEditing, getFile, saveEditedItem, t],
 	);
 
 	const search = useDiffPaneSearch({
@@ -466,6 +461,7 @@ export function DiffPane({
 	// mode — so whole files only cross the wire for files somebody opens.
 	const loadDiffFiles = useCallback(
 		async (fileDiff: FileDiffMetadata) => {
+			const files = filesRef.current;
 			const file =
 				files.find((candidate) => candidate.path === fileDiff.name) ??
 				files.find((candidate) => candidate.path === fileDiff.prevName);
@@ -494,7 +490,7 @@ export function DiffPane({
 			}
 			return loaded;
 		},
-		[files, trpcClient, workspaceId],
+		[trpcClient, workspaceId],
 	);
 
 	const codeViewOptions = useMemo(
@@ -519,10 +515,10 @@ export function DiffPane({
 					line.numberColumn ||
 					(line.annotationSide != null &&
 						line.annotationSide !== "additions") ||
-					editingSet.size > 0
+					editingSetRef.current.size > 0
 				)
 					return;
-				const file = fileByItemId.get(itemContext.item.id);
+				const file = getFile(itemContext.item.id);
 				if (!canEditDiffFile(file)) return;
 				pendingEditorFocusRef.current = {
 					itemId: itemContext.item.id,
@@ -542,7 +538,7 @@ export function DiffPane({
 				},
 				itemContext: { item: CodeViewItem<DiffAnnotationMetadata> },
 			) => {
-				const file = fileByItemId.get(itemContext.item.id);
+				const file = getFile(itemContext.item.id);
 				if (
 					!line.numberColumn &&
 					(line.annotationSide == null ||
@@ -556,19 +552,12 @@ export function DiffPane({
 				line.lineElement.style.removeProperty("cursor");
 			},
 		}),
-		[
-			loadDiffFiles,
-			options,
-			onGutterUtilityClick,
-			onLineSelectionEnd,
-			editingSet,
-			fileByItemId,
-		],
+		[loadDiffFiles, options, onGutterUtilityClick, onLineSelectionEnd, getFile],
 	);
 
 	const renderHeaderPrefix = useCallback(
 		(item: CodeViewItem<DiffAnnotationMetadata>) => {
-			const file = fileByItemId.get(item.id);
+			const file = getFile(item.id);
 			if (!file) return null;
 			const changeKey = getChangesetFileKey(file);
 			const collapsed = collapsedSet.has(changeKey);
@@ -588,13 +577,7 @@ export function DiffPane({
 				/>
 			);
 		},
-		[
-			fileByItemId,
-			collapsedSet,
-			setCollapsed,
-			targetItemId,
-			clearTargetAndCollapse,
-		],
+		[getFile, collapsedSet, setCollapsed, targetItemId, clearTargetAndCollapse],
 	);
 
 	// The card CSS hides Pierre's native [data-title] (the full relative
@@ -602,16 +585,16 @@ export function DiffPane({
 	// the containing directory in the muted color.
 	const renderHeaderFilenameSuffix = useCallback(
 		(item: CodeViewItem<DiffAnnotationMetadata>) => {
-			const file = fileByItemId.get(item.id);
+			const file = getFile(item.id);
 			if (!file) return null;
 			return <DiffFileHeaderName path={file.path} />;
 		},
-		[fileByItemId],
+		[getFile],
 	);
 
 	const renderHeaderMetadata = useCallback(
 		(item: CodeViewItem<DiffAnnotationMetadata>) => {
-			const file = fileByItemId.get(item.id);
+			const file = getFile(item.id);
 			if (!file) return null;
 			const changeKey = getChangesetFileKey(file);
 			const isEditing = editingSet.has(changeKey);
@@ -637,7 +620,7 @@ export function DiffPane({
 			);
 		},
 		[
-			fileByItemId,
+			getFile,
 			workspaceId,
 			setCollapsed,
 			viewedSet,
@@ -714,7 +697,7 @@ export function DiffPane({
 			const m = annotation.metadata;
 			if (m.kind === "binary-placeholder") {
 				if (item.type !== "file") return null;
-				const file = fileByItemId.get(item.id);
+				const file = getFile(item.id);
 				if (!file) return null;
 				return (
 					<BinaryDiffPreview
@@ -792,7 +775,7 @@ export function DiffPane({
 			data.focusTick,
 			clearComposer,
 			submitComposer,
-			fileByItemId,
+			getFile,
 			requestDiff,
 			onOpenFile,
 			commentNav.isNavFocused,

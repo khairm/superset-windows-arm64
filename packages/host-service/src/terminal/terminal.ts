@@ -50,7 +50,7 @@ import { isProcessAlive, readPtyDaemonManifest } from "../daemon/manifest.ts";
 import type { HostDb } from "../db/index.ts";
 import { projects, terminalSessions, workspaces } from "../db/schema.ts";
 import type { EventBus } from "../events/index.ts";
-import { portManager } from "../ports/port-manager.ts";
+import { chatPortTerminalIds, portManager } from "../ports/port-manager.ts";
 import { issueAttributionToken } from "../terminal-agents/attribution-token.ts";
 import { sweepAgentBindingsAfterDaemonLoss } from "../terminal-agents/daemon-loss-sweep.ts";
 import { terminalHarnessSession } from "../terminal-agents/harness-session-ref.ts";
@@ -3433,7 +3433,8 @@ async function runDisposeSession(
 		closePromise = closeDaemonSessionById(terminalId, "SIGHUP");
 	}
 
-	portManager.unregisterSession(terminalId);
+	if (!chatPortTerminalIds.has(terminalId))
+		portManager.unregisterSession(terminalId);
 
 	const closeResult = closePromise
 		? await closePromise
@@ -4716,7 +4717,8 @@ async function createTerminalSessionUnlocked(
 					session.exitSignal = signal ?? 0;
 					const occurredAt = Date.now();
 
-					portManager.unregisterSession(terminalId);
+					if (!chatPortTerminalIds.has(terminalId))
+						portManager.unregisterSession(terminalId);
 
 					db.update(terminalSessions)
 						.set({ status: "exited", endedAt: occurredAt })

@@ -62,7 +62,11 @@ export function workspaceExitCleanupState(exitedAt: number) {
 
 type WorkspaceExitCleanupDraft = Pick<
 	WorkspaceLocalStateDraft,
-	"paneLayout" | "workspaceRunTerminals" | "pendingMigratedTerminals"
+	| "paneLayout"
+	| "rightPaneLayout"
+	| "rightPaneAreaExpansion"
+	| "workspaceRunTerminals"
+	| "pendingMigratedTerminals"
 > & {
 	sidebarState: Pick<
 		WorkspaceLocalStateDraft["sidebarState"],
@@ -77,12 +81,17 @@ type WorkspaceExitCleanupDraft = Pick<
  * visual-only behaviour wrong: the agent kept burning the account, and
  * re-opening the thread weeks later restored a wall of stale panes.
  *
- * Wipes every piece of runtime state the row owns — the pane layout, the run
+ * Wipes every piece of runtime state the row owns — both pane layouts, the run
  * terminals map, the pending v1-migration terminals — on top of
  * {@link workspaceExitCleanupState}, so restoring the thread brings back an
  * empty workspace. That applies to EVERY workspace, whichever host owns it:
  * the tabs are the renderer's own. A freshly inserted row has no runtime to
  * wipe, which is why the insert branch only needs the sidebar half.
+ *
+ * The right pane area is a SECOND persisted layout holding tabs of its own,
+ * terminals included, so leaving it behind would restore the wall of stale
+ * panes this exists to prevent. Its expansion record names tabs in both
+ * layouts and means nothing once they are gone.
  *
  * Pure and synchronous: the four lifecycle functions keep their signatures, and
  * the renderer-side runtime disposal + host call are driven by their callers.
@@ -92,6 +101,8 @@ export function applyWorkspaceExitCleanup(
 	exitedAt: number,
 ): void {
 	draft.paneLayout = createEmptyPaneLayout();
+	delete draft.rightPaneLayout;
+	delete draft.rightPaneAreaExpansion;
 	draft.workspaceRunTerminals = {};
 	draft.pendingMigratedTerminals = [];
 	Object.assign(draft.sidebarState, workspaceExitCleanupState(exitedAt));
@@ -186,6 +197,8 @@ export function tombstoneSidebarWorkspaceRecord(
 		// workspace would otherwise reappear pre-pinned.
 		draft.sidebarState.pinnedAt = null;
 		draft.paneLayout = createEmptyPaneLayout();
+		delete draft.rightPaneLayout;
+		delete draft.rightPaneAreaExpansion;
 	});
 }
 

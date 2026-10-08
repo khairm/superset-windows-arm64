@@ -8,8 +8,8 @@ import {
 } from "@superset/panes";
 import { FORK_BROWSER_PANES_DISABLED } from "@superset/shared/fork-disabled-features";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useHotkey } from "renderer/hotkeys";
+import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
 import type { V2TerminalPresetRow } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useRightSidebarToggleIntent } from "renderer/stores/right-sidebar-toggle-intent";
 import type { StoreApi } from "zustand";
@@ -22,6 +22,7 @@ import type {
 } from "../../types";
 import { useDefaultBrowserUrl } from "../useDefaultBrowserUrl";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
+import { useWorkspaceRightSidebarOpen } from "../useWorkspaceRightSidebarOpen";
 
 export function useWorkspaceHotkeys({
 	store,
@@ -31,7 +32,7 @@ export function useWorkspaceHotkeys({
 	openChangesPane,
 	paneRegistry,
 	launcher,
-	onBeforeCloseTab,
+	getCloseTarget,
 	isSandbox,
 }: {
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
@@ -42,9 +43,15 @@ export function useWorkspaceHotkeys({
 	paneRegistry: PaneRegistry<PaneViewerData>;
 	launcher: TerminalLauncher;
 	isSandbox: boolean;
-	onBeforeCloseTab?: WorkspaceProps<PaneViewerData>["onBeforeCloseTab"];
+	getCloseTarget: () => {
+		store: StoreApi<WorkspaceStore<PaneViewerData>>;
+		onBeforeCloseTab?: WorkspaceProps<PaneViewerData>["onBeforeCloseTab"];
+	};
 }) {
-	const { setRightSidebarOpen } = useV2UserPreferences();
+	const { workspace } = useWorkspace();
+	const { setOpen: setRightSidebarOpen } = useWorkspaceRightSidebarOpen(
+		workspace.id,
+	);
 	const defaultBrowserUrl = useDefaultBrowserUrl();
 	const visiblePresets = useMemo(
 		() => matchedPresets.filter((preset) => preset.pinnedToBar !== false),
@@ -102,7 +109,7 @@ export function useWorkspaceHotkeys({
 		if (isClosingPaneRef.current) return;
 		isClosingPaneRef.current = true;
 		try {
-			const state = store.getState();
+			const state = getCloseTarget().store.getState();
 			const active = state.getActivePane();
 			if (!active) return;
 			const definition = paneRegistry[active.pane.kind];
@@ -121,7 +128,8 @@ export function useWorkspaceHotkeys({
 		if (isClosingTabRef.current) return;
 		isClosingTabRef.current = true;
 		try {
-			const state = store.getState();
+			const { store: targetStore, onBeforeCloseTab } = getCloseTarget();
+			const state = targetStore.getState();
 			const tab = state.getActiveTab();
 			if (!tab) return;
 			if (onBeforeCloseTab) {

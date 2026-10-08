@@ -27,7 +27,8 @@ type EventType =
 	| "claude-account-state-changed"
 	| "claude-account-warning"
 	| "claude-account-controls-changed"
-	| "page-watch:changed";
+	| "page-watch:changed"
+	| "chat:sessions-changed";
 
 interface FsEventsPayload {
 	events: FsWatchEvent[];
@@ -201,6 +202,10 @@ export interface PageWatchChangedPayload {
 	occurredAt: number;
 }
 
+export interface ChatSessionsChangedPayload {
+	occurredAt: number;
+}
+
 type TagFoldersChangedMessage = Extract<
 	ServerMessage,
 	{ type: "tag-folders:changed" }
@@ -266,7 +271,12 @@ type EventListener<T extends EventType> = T extends "fs:events"
 																	workspaceId: string,
 																	payload: PageWatchChangedPayload,
 																) => void
-															: never;
+															: T extends "chat:sessions-changed"
+																? (
+																		workspaceId: string,
+																		payload: ChatSessionsChangedPayload,
+																	) => void
+																: never;
 
 interface ListenerEntry {
 	type: EventType;
@@ -475,7 +485,8 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 			message.type === "claude-account-state-changed" ||
 			message.type === "claude-account-warning" ||
 			message.type === "claude-account-controls-changed" ||
-			message.type === "page-watch:changed"
+			message.type === "page-watch:changed" ||
+			message.type === "chat:sessions-changed"
 				? message.workspaceId
 				: message.type === "project:changed"
 					? message.projectId
@@ -573,6 +584,11 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 			(entry.callback as EventListener<"claude-account-controls-changed">)(
 				message.workspaceId,
 				payload,
+			);
+		} else if (message.type === "chat:sessions-changed") {
+			(entry.callback as EventListener<"chat:sessions-changed">)(
+				message.workspaceId,
+				{ occurredAt: message.occurredAt },
 			);
 		} else if (message.type === "tag-folders:changed") {
 			(entry.callback as EventListener<"tag-folders:changed">)(message.scope, {

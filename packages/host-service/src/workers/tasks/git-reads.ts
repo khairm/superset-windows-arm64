@@ -56,7 +56,7 @@ export const gitListCommitsTask = defineWorkerTask<
 >({
 	type: "git/listCommits",
 	handler: async ({ worktreePath, baseBranch, gitEnv }) => {
-		const git = createUserSimpleGit(worktreePath).env(gitEnv);
+		const git = createUserSimpleGit(worktreePath, { env: gitEnv });
 		const base = await resolveBaseComparison(git, baseBranch);
 		const baseRef = base?.baseRef ?? "HEAD";
 		const commits: Commit[] = [];

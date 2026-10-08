@@ -207,12 +207,22 @@ function resolveTabTitle(
 
 export function extractAlertContexts({
 	paneLayout,
+	rightPaneLayout,
 	getTerminalTitle,
 }: {
 	paneLayout: WorkspaceState<unknown> | null | undefined;
+	/**
+	 * The right pane area's own layout. A workspace persists its tabs as TWO
+	 * layouts and a terminal tab can be moved into either, so a snapshot built
+	 * from the centre alone would leave a right-pane terminal unnamed.
+	 */
+	rightPaneLayout?: WorkspaceState<unknown> | null | undefined;
 	getTerminalTitle: GetTerminalTitle;
 }): AlertContextSnapshot {
-	const tabs = (paneLayout?.tabs ?? []) as Tab<unknown>[];
+	const tabs = [
+		...((paneLayout?.tabs ?? []) as Tab<unknown>[]),
+		...((rightPaneLayout?.tabs ?? []) as Tab<unknown>[]),
+	];
 	// Not `terminals.length`: a workspace's tab count is what the PHONE uses to
 	// decide whether naming a tab is even meaningful, and a tab holding a file or
 	// a browser counts towards "this workspace has more than one thing open"

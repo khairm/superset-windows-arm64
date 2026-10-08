@@ -6,7 +6,6 @@ import type {
 	RendererContext,
 	WorkspaceStore,
 } from "@superset/panes";
-import { FEATURE_FLAGS } from "@superset/shared/constants";
 import {
 	FORK_BROWSER_PANES_DISABLED,
 	FORK_CHAT_V3_DISABLED,
@@ -17,15 +16,17 @@ import { cn } from "@superset/ui/utils";
 import { workspaceTrpc } from "@superset/workspace-client";
 import {
 	Circle,
+	Files,
 	FileText,
+	FolderTree,
 	GitCompareArrows,
 	GitPullRequest,
+	GitPullRequestArrow,
 	Globe,
 	MessageSquare,
 	Monitor,
 	Smartphone,
 } from "lucide-react";
-import { useFeatureFlagEnabled } from "posthog-js/react";
 import { useMemo } from "react";
 import {
 	LuArrowDownToLine,
@@ -60,7 +61,7 @@ import {
 } from "../../state/fileDocumentStore";
 import {
 	type BrowserPaneData,
-	type ChatV3PaneData,
+	type ChatPaneData,
 	type CommentPaneData,
 	type DevtoolsPaneData,
 	type FilePaneData,
@@ -79,13 +80,15 @@ import { openSubagentPaneInStore } from "../../utils/openSubagentPaneInStore";
 import { useAgentSessionLauncher } from "../useAgentSessionLauncher";
 import type { OpenReviewDiff } from "../useReviewCommentNavigation";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
+import { AccountUsage } from "./components/AccountUsage";
 import {
 	AgentSurfaceToggle,
 	AgentTerminalPane,
 	useAgentSurfaceSwitch,
 } from "./components/AgentTerminalPane";
 import { BrowserPane, BrowserPaneToolbar } from "./components/BrowserPane";
-import { ChatV3Pane } from "./components/ChatV3Pane";
+import { ChangesListPane } from "./components/ChangesListPane";
+import { ChatPane } from "./components/ChatPane";
 import { CommentPane } from "./components/CommentPane";
 import { CommentPaneHeaderExtras } from "./components/CommentPane/components/CommentPaneHeaderExtras";
 import { CommentPaneTitle } from "./components/CommentPane/components/CommentPaneTitle";
@@ -94,12 +97,15 @@ import { DiffPane } from "./components/DiffPane";
 import { DiffPaneHeaderExtras } from "./components/DiffPane/components/DiffPaneHeaderExtras";
 import { FilePane } from "./components/FilePane";
 import { FilePaneHeaderExtras } from "./components/FilePane/components/FilePaneHeaderExtras";
+import { FilesTreePane } from "./components/FilesTreePane";
 import { MobilePane } from "./components/MobilePane";
 import { PagePane } from "./components/PagePane";
 import { PagePaneHeaderExtras } from "./components/PagePaneHeaderExtras";
 import { PagePaneTitle } from "./components/PagePaneTitle";
+import { PagesListPane } from "./components/PagesListPane";
 import { PullRequestPane } from "./components/PullRequestPane";
 import { PullRequestPaneHeaderExtras } from "./components/PullRequestPane/components/PullRequestPaneHeaderExtras";
+import { ReviewPane } from "./components/ReviewPane";
 import { SubagentPane } from "./components/SubagentPane";
 import { TerminalPaneHeaderExtras } from "./components/TerminalPane/components/TerminalPaneHeaderExtras";
 import { TerminalPaneIcon } from "./components/TerminalPane/components/TerminalPaneIcon";
@@ -160,6 +166,8 @@ interface UsePaneRegistryOptions {
 	onRevealPath: (path: string) => void;
 	launcher: TerminalLauncher;
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
+	linkedStores?: StoreApi<WorkspaceStore<PaneViewerData>>[];
+	onSearch?: () => void;
 }
 
 export function usePaneRegistry({
@@ -169,11 +177,12 @@ export function usePaneRegistry({
 	onRevealPath,
 	launcher,
 	store,
+	linkedStores,
+	onSearch,
 }: UsePaneRegistryOptions): PaneRegistry<PaneViewerData> {
 	const { t } = useLingui();
 	const { workspace } = useWorkspace();
 	const workspaceId = workspace.id;
-	const isChatV3Enabled = useFeatureFlagEnabled(FEATURE_FLAGS.CHAT_V3) ?? false;
 	const agentSurface = useAgentSurfaceSwitch(workspaceId);
 	const host = useWorkspaceHostTarget(workspaceId);
 	const desktopUrl =
@@ -442,17 +451,8 @@ export function usePaneRegistry({
 					);
 				},
 				onAfterClose: (pane, closedPanes) => {
-					const {
-						acpSessionId,
-						agentSurface: surface,
-						terminalId,
-					} = pane.data as TerminalPaneData;
-					// On the ACP surface the adapter is the only process the close has
-					// left to end: the pty was either stopped by the switch or — for a
-					// chat opened from the launcher — never started, and asking the
-					// host to kill an id it has never seen only logs a failure.
-					if (surface === "acp") {
-						if (acpSessionId) void agentSurface.stopChat(acpSessionId);
+					const { terminalId } = pane.data as TerminalPaneData;
+					if ((pane.data as { agentSurface?: string }).agentSurface === "acp") {
 						return;
 					}
 					const firstClosed = closedPanes.find(
@@ -461,7 +461,11 @@ export function usePaneRegistry({
 							(candidate.data as TerminalPaneData).terminalId === terminalId,
 					);
 					if (firstClosed?.id !== pane.id) return;
-					if (findTerminalPaneLocation(store.getState(), terminalId)) {
+					if (
+						[store, ...(linkedStores ?? [])].some((candidate) =>
+							findTerminalPaneLocation(candidate.getState(), terminalId),
+						)
+					) {
 						terminalRuntimeRegistry.release(terminalId, pane.id);
 						return;
 					}
@@ -488,7 +492,10 @@ export function usePaneRegistry({
 							workspaceId={workspaceId}
 						/>
 						<AgentSurfaceToggle
-							data={ctx.pane.data as TerminalPaneData}
+							pane={{
+								kind: "terminal",
+								data: ctx.pane.data as TerminalPaneData,
+							}}
 							onChange={(surface, agent) =>
 								void agentSurface.switchSurface(ctx, surface, agent)
 							}
@@ -774,6 +781,43 @@ export function usePaneRegistry({
 						},
 					}
 				: {}),
+			files: {
+				getIcon: () => <FolderTree className="size-3.5" />,
+				getTitle: () => t({ message: "Files" }),
+				renderPane: (ctx: RendererContext<PaneViewerData>) => (
+					<FilesTreePane
+						context={ctx}
+						workspaceId={workspaceId}
+						onSearch={onSearch}
+					/>
+				),
+			},
+			"changes-list": {
+				getIcon: () => <Files className="size-3.5" />,
+				getTitle: () => t({ message: "Files changed" }),
+				renderPane: (ctx: RendererContext<PaneViewerData>) => (
+					<ChangesListPane context={ctx} workspaceId={workspaceId} />
+				),
+			},
+			review: {
+				getIcon: () => <GitPullRequestArrow className="size-3.5" />,
+				getTitle: () => t({ message: "Review" }),
+				renderPane: (ctx: RendererContext<PaneViewerData>) => (
+					<ReviewPane context={ctx} workspaceId={workspaceId} />
+				),
+			},
+			"pages-list": {
+				getIcon: () => <FileText className="size-3.5" />,
+				getTitle: () => t({ message: "Pages" }),
+				renderPane: (ctx: RendererContext<PaneViewerData>) => (
+					<PagesListPane
+						context={ctx}
+						workspaceId={workspaceId}
+						onCreateNewAgentSession={createNewAgentSession}
+						onFocusAgentTerminal={focusAgentTerminal}
+					/>
+				),
+			},
 			mobile: {
 				getIcon: () => <Smartphone className="size-3.5" />,
 				getTitle: () =>
@@ -782,28 +826,67 @@ export function usePaneRegistry({
 					}),
 				renderPane: () => <MobilePane />,
 			},
-			// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF)
-			...(!FORK_CHAT_V3_DISABLED && isChatV3Enabled
+			// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF) The pane stays REACHABLE but
+			// inert: a saved layout naming it restores a disabled placeholder.
+			...(FORK_CHAT_V3_DISABLED
 				? {
+						"chat-v3": createDisabledPaneDefinition(
+							t({ message: "Chat" }),
+							<MessageSquare className="size-3.5" />,
+						),
+					}
+				: {
 						"chat-v3": {
-							getIcon: () => <MessageSquare className="size-3.5" />,
+							getIcon: (ctx) => {
+								const { terminalId } = ctx.pane.data as ChatPaneData;
+								return (
+									<TerminalPaneIcon
+										workspaceId={workspaceId}
+										terminalId={terminalId}
+									/>
+								);
+							},
 							getTitle: () =>
 								t({
 									message: "Chat",
 								}),
-							renderPane: (ctx: RendererContext<PaneViewerData>) => {
-								const data = ctx.pane.data as ChatV3PaneData;
+							titleSource: (pane) => {
+								const { chatTitle } = pane.data as ChatPaneData;
+								return {
+									subscribe: () => () => {},
+									getSnapshot: () => chatTitle,
+								};
+							},
+							onAfterClose: (pane) => {
+								const { sessionId } = pane.data as ChatPaneData;
+								if (sessionId) void agentSurface.stopChat(sessionId);
+							},
+							renderHeaderExtras: (ctx: RendererContext<PaneViewerData>) => {
+								const data = ctx.pane.data as ChatPaneData;
 								return (
-									<ChatV3Pane
-										workspaceId={workspaceId}
-										onOpenFile={onOpenFile}
-										sessionId={data.sessionId}
-										onSessionIdChange={(id) =>
-											ctx.actions.updateData({ ...data, sessionId: id })
-										}
-									/>
+									<div className="flex items-center gap-1">
+										<AccountUsage
+											key={`${workspaceId}:${data.terminalId}`}
+											workspaceId={workspaceId}
+											terminalId={data.terminalId}
+										/>
+										<AgentSurfaceToggle
+											pane={{ kind: "chat", data }}
+											onChange={(surface, agent) =>
+												void agentSurface.switchSurface(ctx, surface, agent)
+											}
+											workspaceId={workspaceId}
+										/>
+									</div>
 								);
 							},
+							renderPane: (ctx: RendererContext<PaneViewerData>) => (
+								<ChatPane
+									ctx={ctx}
+									onOpenFile={onOpenFile}
+									workspaceId={workspaceId}
+								/>
+							),
 							contextMenuActions: (
 								_ctx: RendererContext<PaneViewerData>,
 								defaults: ContextMenuActionConfig<PaneViewerData>[],
@@ -818,13 +901,7 @@ export function usePaneRegistry({
 											}
 										: d,
 								),
-						},
-					}
-				: {
-						"chat-v3": createDisabledPaneDefinition(
-							t({ message: "Chat" }),
-							<MessageSquare className="size-3.5" />,
-						),
+						}
 					}),
 			comment: {
 				getIcon: (ctx: RendererContext<PaneViewerData>) => {
@@ -972,8 +1049,8 @@ export function usePaneRegistry({
 		}),
 		[
 			store,
+			linkedStores,
 			workspaceId,
-			isChatV3Enabled,
 			agentSurface,
 			clearWorkspaceRunTerminal,
 			clearShortcut,
@@ -986,6 +1063,7 @@ export function usePaneRegistry({
 			onOpenComment,
 			onOpenFile,
 			onRevealPath,
+			onSearch,
 			createNewAgentSession,
 			focusAgentTerminal,
 			workspaceTrpcUtils,

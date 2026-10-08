@@ -2,18 +2,16 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
 	mcpHeadersHelperCommand,
-	readPluginConnections,
 	syncManagedMcpServers,
-	writePluginConnections,
 } from "@superset/agent-setup";
 import { settings } from "@superset/local-db";
 import {
 	desiredPluginMcpServers,
 	getPluginByName,
 	type InstalledPlugin,
-	type PluginConnectionRef,
 } from "@superset/shared/plugins";
 import log from "electron-log/main";
+import { env } from "main/env.main";
 import { resolveBundledCliPath } from "main/lib/bundled-cli";
 import { localDb } from "main/lib/local-db";
 import { createSerialQueue } from "main/lib/serial-queue";
@@ -70,14 +68,10 @@ function saveInstalledPlugins(next: InstalledPlugin[]): void {
 		.run();
 }
 
-/** Absent `connections` (boot, an install) falls back to the last synced set. */
-export function syncInstalledPluginMcpServers(
-	connections?: readonly PluginConnectionRef[],
-): void {
-	if (connections) writePluginConnections(connections);
+export function syncInstalledPluginMcpServers(): void {
+	if (env.NODE_ENV === "development") return;
 	syncManagedMcpServers(
 		desiredPluginMcpServers(getInstalledPlugins(), {
-			connections: connections ?? readPluginConnections(),
 			headersHelper: mcpHeadersHelperCommand(),
 		}),
 	);

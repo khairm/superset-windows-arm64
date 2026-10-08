@@ -549,6 +549,14 @@ struct ComposerRootView: View {
         .accessibilityLabel(composerLocalized("Add attachment"))
       }
 
+      if isExpanded && !model.modeOptions.isEmpty {
+        ComposerModeMenu(
+          options: model.modeOptions,
+          selectedId: model.selectedModeId,
+          onSelect: { model.onModeSelect?($0) }
+        )
+      }
+
       if !isExpanded {
         ComposerCollapsedAttachments(attachments: model.attachments)
       }
@@ -565,6 +573,8 @@ struct ComposerRootView: View {
       // rather than competing with the recording pill.
       if model.hasContent && !model.isDictating {
         sendButton
+      } else if model.canStop && !model.isDictating {
+        stopButton
       }
     }
     .padding(ComposerMetrics.rowPadding)
@@ -639,6 +649,16 @@ struct ComposerRootView: View {
     .buttonStyle(isBusy ? .composerControl : .composerSend)
     .disabled(isBusy)
     .accessibilityLabel(sendLabel)
+    .transition(.opacity)
+  }
+
+  private var stopButton: some View {
+    Button { model.onStop?() } label: {
+      Image(systemName: "stop.fill")
+        .font(.system(size: 13, weight: .semibold))
+    }
+    .buttonStyle(.composerSend)
+    .accessibilityLabel(composerLocalized("Stop"))
     .transition(.opacity)
   }
 

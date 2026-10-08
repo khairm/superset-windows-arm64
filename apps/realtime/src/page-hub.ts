@@ -1,5 +1,6 @@
 import {
 	MAX_PAGE_STORAGE_KEY_LENGTH,
+	type PageStorageKeySummary,
 	type PageStorageOp,
 	type PageStorageRecord,
 	type PageStorageSocketMessage,
@@ -463,7 +464,31 @@ export class PageHub extends Server<RealtimeEnv> {
 				if (cleared > 0) this.pushAll();
 				return { ok: true, op: "clearUser", cleared };
 			}
+			default:
+				return { ok: false, code: "invalid", message: "Unknown admin op" };
 		}
+	}
+
+	async storageKeys(): Promise<PageStorageKeySummary[]> {
+		this.schema();
+		return this.ctx.storage.sql
+			.exec<{ key: string; records: number; updated_at: number }>(
+				`SELECT key, count(*) AS records, max(updated_at) AS updated_at
+				 FROM records
+				 GROUP BY key
+				 ORDER BY key`,
+			)
+			.toArray()
+			.map((row) => ({
+				key: row.key,
+				records: row.records,
+				updatedAt: new Date(row.updated_at).toISOString(),
+			}));
+	}
+
+	async storageRecords(key: string): Promise<PageStorageRecord[]> {
+		this.schema();
+		return this.named(key);
 	}
 
 	async subscriberCount(): Promise<number> {

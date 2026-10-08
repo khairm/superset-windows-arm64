@@ -948,8 +948,9 @@ export function getV2NotificationSourcesForTab(
 }
 
 /**
- * Terminal IDs that currently belong to an OPEN pane in the workspace's
- * persisted v2 pane layout (`v2WorkspaceLocalState.paneLayout`) — the SAME
+ * Terminal IDs that currently belong to an OPEN pane in either of the
+ * workspace's persisted v2 pane layouts (`v2WorkspaceLocalState.paneLayout`
+ * and its right pane area's `rightPaneLayout`) — the SAME
  * cross-workspace source of truth the v2 workspace page hydrates from (and
  * that `V2NotificationController` reads). Used to GATE the workspace-level
  * status / unread / per-terminal-dot selectors below so a CLOSED (or
@@ -981,24 +982,36 @@ export function useV2WorkspaceOpenTerminalIds(
 			q
 				.from({ local: collections.v2WorkspaceLocalState })
 				.where(({ local }) => eq(local.workspaceId, workspaceId))
-				.select(({ local }) => ({ paneLayout: local.paneLayout })),
+				.select(({ local }) => ({
+					paneLayout: local.paneLayout,
+					rightPaneLayout: local.rightPaneLayout,
+				})),
 		[collections, workspaceId],
 	);
 	const paneLayout = rows[0]?.paneLayout as
 		| WorkspaceState<unknown>
 		| null
 		| undefined;
+	// A tab moved into the right pane area lives in a SECOND persisted layout.
+	// Reading the centre alone would call its terminals closed and make every
+	// gated surface drop their dots.
+	const rightPaneLayout = rows[0]?.rightPaneLayout as
+		| WorkspaceState<unknown>
+		| null
+		| undefined;
 	const key = useMemo(() => {
-		if (!paneLayout) return "";
+		if (!paneLayout && !rightPaneLayout) return "";
 		const ids = new Set<string>();
-		for (const tab of paneLayout.tabs ?? []) {
-			for (const pane of Object.values(tab.panes ?? {})) {
-				const terminalId = getTerminalIdForPane(pane);
-				if (terminalId) ids.add(terminalId);
+		for (const layout of [paneLayout, rightPaneLayout]) {
+			for (const tab of layout?.tabs ?? []) {
+				for (const pane of Object.values(tab.panes ?? {})) {
+					const terminalId = getTerminalIdForPane(pane);
+					if (terminalId) ids.add(terminalId);
+				}
 			}
 		}
 		return [...ids].sort().join(",");
-	}, [paneLayout]);
+	}, [paneLayout, rightPaneLayout]);
 	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
 }
 
@@ -1139,16 +1152,29 @@ export function useV2WorkspaceTabChips(
 			q
 				.from({ local: collections.v2WorkspaceLocalState })
 				.where(({ local }) => eq(local.workspaceId, enabled ? workspaceId : ""))
-				.select(({ local }) => ({ paneLayout: local.paneLayout })),
+				.select(({ local }) => ({
+					paneLayout: local.paneLayout,
+					rightPaneLayout: local.rightPaneLayout,
+				})),
 		[collections, workspaceId, enabled],
 	);
 	const paneLayout = rows[0]?.paneLayout as
 		| WorkspaceState<unknown>
 		| null
 		| undefined;
+	// (CHIP-DOT-UNIFY) The right pane area's tabs are the same workspace's tabs,
+	// so they are chipped too — otherwise a tab moved there loses its chip while
+	// `useV2WorkspaceOpenTerminalIds` still counts it for the rollup.
+	const rightPaneLayout = rows[0]?.rightPaneLayout as
+		| WorkspaceState<unknown>
+		| null
+		| undefined;
 	const tabs = useMemo(() => {
-		if (!enabled || !paneLayout) return [];
-		return paneLayout.tabs.map((tab) => ({
+		if (!enabled) return [];
+		return [
+			...(paneLayout?.tabs ?? []),
+			...(rightPaneLayout?.tabs ?? []),
+		].map((tab) => ({
 			tabId: tab.id,
 			titleOverride: tab.titleOverride,
 			activePaneId: tab.activePaneId,
@@ -1167,7 +1193,7 @@ export function useV2WorkspaceTabChips(
 			})),
 			sources: getV2NotificationSourcesForTab(tab),
 		}));
-	}, [enabled, paneLayout]);
+	}, [enabled, paneLayout, rightPaneLayout]);
 	const selector = useMemo(
 		() =>
 			enabled
@@ -1403,7 +1429,8 @@ function selectStatusForSourceKeys(
 function getTerminalIdForPane(
 	pane: V2NotificationPaneLike | null | undefined,
 ): string | null {
-	if (!pane || pane.kind !== "terminal") return null;
+	if (!pane || (pane.kind !== "terminal" && pane.kind !== "chat-v3"))
+		return null;
 	if (!pane.data || typeof pane.data !== "object") return null;
 	const terminalId = (pane.data as { terminalId?: unknown }).terminalId;
 	return typeof terminalId === "string" && terminalId ? terminalId : null;

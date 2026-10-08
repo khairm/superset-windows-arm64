@@ -14,16 +14,21 @@ export const UPDATE_INSTALL_EXIT_GRACE_MS = 15_000;
 // rewrites synchronously whatever has not landed by then.
 export const NOTIFY_DAEMON_STOP_DEADLINE_MS = 1_500;
 
+/** Quit Completely hides the windows while it cleans up; never wait longer. */
+export const FULL_CLEANUP_TIMEOUT_MS = 15_000;
+
 export interface QuitCleanupDeps {
 	isDev: boolean;
 	/** Tray "Quit Completely": stop background services too. */
 	forceFullCleanup: boolean;
 	/** An update is downloaded/installing, so this quit hands off to Squirrel. */
 	isUpdateInstalling: boolean;
-	stopHostServices: () => void;
+	/** Returns the pids of the host-services it sent SIGTERM to. */
+	stopHostServices: () => number[];
 	// (HOOK-HTTP-DAEMON)
 	stopNotifyDaemon: () => Promise<void>;
 	teardownTerminalHost: () => Promise<void>;
+	stopPtyDaemons: (stoppedHostServicePids: number[]) => Promise<void>;
 	disposeTerminalHostClient: () => void;
 	disposeTray: () => void;
 	forceExit: (code: number) => void;
@@ -52,6 +57,7 @@ export async function runQuitCleanup(deps: QuitCleanupDeps): Promise<void> {
 		stopHostServices,
 		stopNotifyDaemon,
 		teardownTerminalHost,
+		stopPtyDaemons,
 		disposeTerminalHostClient,
 		disposeTray,
 		forceExit,
@@ -62,7 +68,34 @@ export async function runQuitCleanup(deps: QuitCleanupDeps): Promise<void> {
 	} = deps;
 
 	try {
-		stopHostServices();
+		const stoppedHostServicePids = stopHostServices();
+		if (forceFullCleanup) {
+			let settled = false;
+			await Promise.race([
+				Promise.all([
+					teardownTerminalHost(),
+					stopPtyDaemons(stoppedHostServicePids),
+				]).finally(() => {
+					settled = true;
+				}),
+				new Promise<void>((resolve) => {
+					scheduleTimer(() => {
+						if (!settled) {
+							logError(
+								"[main] Full cleanup during quit timed out after ms:",
+								FULL_CLEANUP_TIMEOUT_MS,
+							);
+						}
+						resolve();
+					}, FULL_CLEANUP_TIMEOUT_MS);
+				}),
+			]);
+		} else if (isDev) {
+			await teardownTerminalHost();
+		} else if (isUpdateInstalling) {
+			disposeTerminalHostClient();
+		}
+		// (HOOK-HTTP-DAEMON)
 		const restored = await settlesWithin(
 			stopNotifyDaemon(),
 			NOTIFY_DAEMON_STOP_DEADLINE_MS,
@@ -75,11 +108,6 @@ export async function runQuitCleanup(deps: QuitCleanupDeps): Promise<void> {
 					`stopNotifyDaemon exceeded ${NOTIFY_DAEMON_STOP_DEADLINE_MS}ms`,
 				),
 			);
-		}
-		if (isDev || forceFullCleanup) {
-			await teardownTerminalHost();
-		} else if (isUpdateInstalling) {
-			disposeTerminalHostClient();
 		}
 		disposeTray();
 	} catch (error) {

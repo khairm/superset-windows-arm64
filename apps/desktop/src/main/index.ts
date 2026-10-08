@@ -21,7 +21,15 @@ import {
 	applyWindowsUserEnvToProcess,
 	WIN_USER_ENV_MERGED_BY_PARENT,
 } from "@superset/shared/windows-user-env";
-import { app, dialog, Notification, net, protocol, session } from "electron";
+import {
+	app,
+	BrowserWindow,
+	dialog,
+	Notification,
+	net,
+	protocol,
+	session,
+} from "electron";
 import log from "electron-log/main";
 import { makeAppSetup } from "lib/electron-app/factories/app/setup";
 import { loadToken } from "lib/trpc/routers/auth/utils/auth-functions";
@@ -53,11 +61,13 @@ import { localDb } from "./lib/local-db";
 import { resolveLocalOrgId } from "./lib/local-identity/local-org";
 import { requestLocalNetworkAccess } from "./lib/local-network-permission";
 import { menuEmitter } from "./lib/menu-events";
+import { syncInstalledPluginMcpServers } from "./lib/plugin-installs";
 import { portForwardManager } from "./lib/port-forward";
 import { ensureProjectIconsDir, getProjectIconPath } from "./lib/project-icons";
 import { runQuitCleanup } from "./lib/quit-sequence";
 import { startResourceJournal } from "./lib/resource-metrics/resource-journal";
 import { initSentry } from "./lib/sentry";
+import { stopPtyDaemons } from "./lib/stop-pty-daemons";
 import {
 	prewarmTerminalRuntime,
 	reconcileDaemonSessions,
@@ -226,6 +236,7 @@ let skipQuitConfirmation = false;
 // easy to trigger.
 let quitConfirmationOpen = false;
 let forceFullCleanup = false;
+let holdingQuitForCleanup = false;
 
 export function setSkipQuitConfirmation(): void {
 	skipQuitConfirmation = true;
@@ -277,7 +288,10 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", async (event) => {
-	if (isQuitting) return;
+	if (isQuitting) {
+		if (holdingQuitForCleanup) event.preventDefault();
+		return;
+	}
 
 	const isDev = process.env.NODE_ENV === "development";
 	if (
@@ -318,6 +332,11 @@ app.on("before-quit", async (event) => {
 	}
 
 	isQuitting = true;
+	const isUpdateInstalling = isUpdateReadyToInstall();
+	// Stopping the pty-daemons waits for host-services to exit; without this
+	// Electron exits once the windows close and cuts that wait short.
+	holdingQuitForCleanup = forceFullCleanup;
+	if (holdingQuitForCleanup) event.preventDefault();
 	// (NETLOG-OFF) Flush the opt-in netlog before the rest of the shutdown; a
 	// no-op on every run that never started it, which is the default.
 	await stopNetworkLogger();
@@ -329,18 +348,27 @@ app.on("before-quit", async (event) => {
 	// shrinking the set as windows close one-by-one.
 	markAppQuitting();
 	persistOpenWindows();
+	if (holdingQuitForCleanup) {
+		for (const window of BrowserWindow.getAllWindows()) window.hide();
+	}
 	await runQuitCleanup({
 		isDev,
 		forceFullCleanup,
-		isUpdateInstalling: isUpdateReadyToInstall(),
+		isUpdateInstalling,
 		stopHostServices: () => getHostServiceCoordinator().stopAll(),
 		// (HOOK-HTTP-DAEMON)
 		stopNotifyDaemon: stopNotifyHookDaemon,
 		teardownTerminalHost,
+		stopPtyDaemons,
 		disposeTerminalHostClient,
 		disposeTray,
 		forceExit: (code) => app.exit(code),
 	});
+	if (holdingQuitForCleanup) {
+		holdingQuitForCleanup = false;
+		// The updater installs only when Electron finishes its own quit.
+		if (isUpdateInstalling) app.quit();
+	}
 });
 
 /**
@@ -702,6 +730,11 @@ if (!gotTheLock) {
 			setupAgentIntegrations({ disabledAgentIds: disabledAgentHooks });
 		} catch (error) {
 			console.error("[main] Failed to set up agent integrations:", error);
+		}
+		try {
+			syncInstalledPluginMcpServers();
+		} catch (error) {
+			console.error("[main] Failed to sync plugin MCP servers:", error);
 		}
 		try {
 			installBundledCliShim();

@@ -131,16 +131,31 @@ const { HostNotificationSubscriber, PERIODIC_RESYNC_MS, RESYNC_DEADLINE_MS } =
 const HOST = "http://host-a";
 
 const workspaces = [
-	{ workspaceId: "workspace-1", workspaceName: "W", paneLayout: null },
+	{
+		workspaceId: "workspace-1",
+		workspaceName: "W",
+		paneLayout: null,
+		rightPaneLayout: null,
+	},
 ];
 /** A grown workspace set — a different `workspacesKey`, so a fresh resync. */
 const moreWorkspaces = [
 	...workspaces,
-	{ workspaceId: "workspace-2", workspaceName: "W2", paneLayout: null },
+	{
+		workspaceId: "workspace-2",
+		workspaceName: "W2",
+		paneLayout: null,
+		rightPaneLayout: null,
+	},
 ];
 const evenMoreWorkspaces = [
 	...moreWorkspaces,
-	{ workspaceId: "workspace-3", workspaceName: "W3", paneLayout: null },
+	{
+		workspaceId: "workspace-3",
+		workspaceName: "W3",
+		paneLayout: null,
+		rightPaneLayout: null,
+	},
 ];
 
 /** Let the mocked resync settle so its `finally` releases the in-flight flag. */

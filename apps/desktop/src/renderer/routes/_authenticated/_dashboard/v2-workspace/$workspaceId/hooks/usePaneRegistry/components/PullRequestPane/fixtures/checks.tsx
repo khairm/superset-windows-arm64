@@ -35,8 +35,17 @@ mock.module(
 	`${root}/v2-workspace/$workspaceId/hooks/useReviewCommentNavigation`,
 	() => ({ useReviewCommentNavigation: () => mock() }),
 );
-mock.module(`${root}/pull-requests/components/PullRequestDetailHeader`, () => ({
-	PullRequestDetailHeader: () => null,
+mock.module(`${root}/pull-requests/components/PullRequestActions`, () => ({
+	PullRequestActions: () => null,
+}));
+mock.module(
+	`${root}/pull-requests/components/PullRequestDetailSkeleton`,
+	() => ({
+		PullRequestDetailSkeleton: () => <div data-testid="summary-state" />,
+	}),
+);
+mock.module(`${root}/pull-requests/components/PullRequestTabTitle`, () => ({
+	PullRequestTabTitle: () => null,
 }));
 mock.module(
 	`${root}/pull-requests/components/PullRequestSummaryContent`,
@@ -66,7 +75,7 @@ mock.module(`${root}/pull-requests/components/PullRequestCodeTab`, () => ({
 const { PullRequestPane } = await import("../PullRequestPane");
 
 for (const state of ["loading", "error"] as const) {
-	test(`Code loads by PR identity while Summary is ${state}`, () => {
+	test(`Changes loads by PR identity while Summary is ${state}`, async () => {
 		detail = {
 			...detail,
 			projectId: null as string | null,
@@ -81,20 +90,20 @@ for (const state of ["loading", "error"] as const) {
 			/>,
 		);
 		expect(view.queryByTestId("code")).toBeNull();
-		fireEvent.click(view.getByRole("button", { name: "Code" }));
-		expect(view.getByTestId("code").textContent).toBe(
+		fireEvent.click(view.getByRole("button", { name: "Changes" }));
+		expect((await view.findByTestId("code")).textContent).toBe(
 			"https://github.com/owner/repo/pull/12",
 		);
 		expect(view.getByTestId("code").getAttribute("data-project")).toBe("");
 		expect(view.queryByTestId("summary-state")).toBeNull();
 		fireEvent.click(view.getByRole("button", { name: "Summary" }));
 		expect(view.getByTestId("summary-state")).toBeTruthy();
-		fireEvent.click(view.getByRole("button", { name: "Code" }));
-		expect(view.getByTestId("code")).toBeTruthy();
+		fireEvent.click(view.getByRole("button", { name: "Changes" }));
+		expect(await view.findByTestId("code")).toBeTruthy();
 	});
 }
 
-test("matching projects retain project actions even while Summary loads", () => {
+test("matching projects retain project actions even while Summary loads", async () => {
 	detail = {
 		...detail,
 		projectId: "project",
@@ -108,6 +117,8 @@ test("matching projects retain project actions even while Summary loads", () => 
 			onOpenComment={mock()}
 		/>,
 	);
-	fireEvent.click(view.getByRole("button", { name: "Code" }));
-	expect(view.getByTestId("code").getAttribute("data-project")).toBe("project");
+	fireEvent.click(view.getByRole("button", { name: "Changes" }));
+	expect((await view.findByTestId("code")).getAttribute("data-project")).toBe(
+		"project",
+	);
 });

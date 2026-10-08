@@ -29,6 +29,35 @@ import {
 } from "./resolveV2NotificationTarget";
 import { resolveV2AgentStatusTransition } from "./statusTransitions";
 
+type PaneLayout = WorkspaceState<PaneViewerData> | null | undefined;
+
+interface LocalPaneLayouts {
+	paneLayout: PaneLayout;
+	rightPaneLayout: PaneLayout;
+}
+
+function getLocalPaneLayouts({
+	workspaceId,
+	paneLayout,
+	rightPaneLayout,
+}: {
+	workspaceId: string;
+	paneLayout: PaneLayout;
+	rightPaneLayout?: PaneLayout;
+}): LocalPaneLayouts {
+	return {
+		paneLayout: paneLayout
+			? applyRememberedV2PaneSelection(workspaceId, paneLayout)
+			: paneLayout,
+		rightPaneLayout: rightPaneLayout
+			? applyRememberedV2PaneSelection(
+					`${workspaceId}:rightPaneLayout`,
+					rightPaneLayout,
+				)
+			: rightPaneLayout,
+	};
+}
+
 /**
  * Updates pane status indicators (working/review/permission/idle) and plays
  * the completion chime client-side, so the playback path works when
@@ -41,6 +70,7 @@ export function handleV2AgentLifecycleEvent({
 	projectName,
 	payload,
 	paneLayout,
+	rightPaneLayout,
 	volume,
 	muted,
 }: {
@@ -48,19 +78,21 @@ export function handleV2AgentLifecycleEvent({
 	workspaceName: string;
 	projectName?: string;
 	payload: AgentLifecyclePayload;
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+	paneLayout: PaneLayout;
+	rightPaneLayout?: PaneLayout;
 	volume: number;
 	muted: boolean;
 }): void {
-	const { localPaneLayout, target } = resolveV2AgentLifecycleContext({
+	const { layouts, target } = resolveV2AgentLifecycleContext({
 		workspaceId,
 		payload,
 		paneLayout,
+		rightPaneLayout,
 	});
 	updatePaneStatus({
 		workspaceId,
 		payload,
-		paneLayout: localPaneLayout,
+		layouts,
 		target,
 	});
 
@@ -86,7 +118,7 @@ export function handleV2AgentLifecycleEvent({
 	) {
 		return;
 	}
-	if (isTargetWatched(target, localPaneLayout)) return;
+	if (isTargetWatched(target, layouts)) return;
 
 	const ringtoneId = useRingtoneStore.getState().selectedRingtoneId;
 	void playRingtone({ ringtoneId, volume, muted });
@@ -109,20 +141,23 @@ export function markV2AgentLifecycleTargetSeen({
 	workspaceId,
 	payload,
 	paneLayout,
+	rightPaneLayout,
 }: {
 	workspaceId: string;
 	payload: AgentLifecyclePayload;
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+	paneLayout: PaneLayout;
+	rightPaneLayout?: PaneLayout;
 }): void {
-	const { localPaneLayout, target } = resolveV2AgentLifecycleContext({
+	const { layouts, target } = resolveV2AgentLifecycleContext({
 		workspaceId,
 		payload,
 		paneLayout,
+		rightPaneLayout,
 	});
 	updatePaneStatus({
 		workspaceId,
 		payload,
-		paneLayout: localPaneLayout,
+		layouts,
 		target,
 	});
 }
@@ -205,12 +240,12 @@ export function handleV2TerminalLifecycleEvent({
 function updatePaneStatus({
 	workspaceId,
 	payload,
-	paneLayout,
+	layouts,
 	target,
 }: {
 	workspaceId: string;
 	payload: AgentLifecyclePayload;
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+	layouts: LocalPaneLayouts;
 	target: V2NotificationTarget;
 }): void {
 	const store = useV2NotificationStore.getState();
@@ -225,7 +260,7 @@ function updatePaneStatus({
 	//
 	// REPLAYS KEEP THE LAYOUT-ONLY TEST, and they never come through here:
 	// `replayV2AgentLifecycleState` is the replay entry point.
-	const targetVisible = isTargetWatched(target, paneLayout);
+	const targetVisible = isTargetWatched(target, layouts);
 	const transition = resolveV2AgentStatusTransition({
 		workspaceId,
 		payload,
@@ -320,20 +355,24 @@ function resolveV2AgentLifecycleContext({
 	workspaceId,
 	payload,
 	paneLayout,
+	rightPaneLayout,
 }: {
 	workspaceId: string;
 	payload: AgentLifecyclePayload;
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+	paneLayout: PaneLayout;
+	rightPaneLayout?: PaneLayout;
 }) {
-	const localPaneLayout = paneLayout
-		? applyRememberedV2PaneSelection(workspaceId, paneLayout)
-		: paneLayout;
+	const layouts = getLocalPaneLayouts({
+		workspaceId,
+		paneLayout,
+		rightPaneLayout,
+	});
 	const target = resolveV2NotificationTarget({
 		workspaceId,
 		payload,
-		paneLayout: localPaneLayout,
+		...layouts,
 	});
-	return { localPaneLayout, target };
+	return { layouts, target };
 }
 
 // (NOTIF-STORE-DEBOUNCE)
@@ -343,22 +382,25 @@ export function replayV2AgentLifecycleState(
 		workspaceId,
 		payload,
 		paneLayout,
+		rightPaneLayout,
 	}: {
 		workspaceId: string;
 		payload: AgentLifecyclePayload;
-		paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+		paneLayout: PaneLayout;
+		rightPaneLayout?: PaneLayout;
 	},
 ): V2NotificationState {
-	const { localPaneLayout, target } = resolveV2AgentLifecycleContext({
+	const { layouts, target } = resolveV2AgentLifecycleContext({
 		workspaceId,
 		payload,
 		paneLayout,
+		rightPaneLayout,
 	});
 	const transition = resolveV2AgentStatusTransition({
 		workspaceId,
 		payload,
 		statuses: state.sources,
-		targetVisible: isTargetInLayout(target, localPaneLayout),
+		targetVisible: isTargetInLayout(target, layouts),
 	});
 	return applyV2AgentLifecycleTransition(state, {
 		workspaceId,
@@ -477,11 +519,11 @@ function getCurrentWorkspaceId(): string | null {
 /** Where the pane SITS: on the open workspace, on the active tab, unhidden. */
 function isTargetInLayout(
 	target: V2NotificationTarget,
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined,
+	layouts: LocalPaneLayouts,
 ): boolean {
 	return isV2NotificationTargetVisible({
 		currentWorkspaceId: getCurrentWorkspaceId(),
-		paneLayout,
+		...layouts,
 		target,
 	});
 }
@@ -503,9 +545,9 @@ function isTargetInLayout(
  */
 function isTargetWatched(
 	target: V2NotificationTarget,
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined,
+	layouts: LocalPaneLayouts,
 ): boolean {
-	return isTargetInLayout(target, paneLayout) && isUserPresent();
+	return isTargetInLayout(target, layouts) && isUserPresent();
 }
 
 function showNativeNotification({

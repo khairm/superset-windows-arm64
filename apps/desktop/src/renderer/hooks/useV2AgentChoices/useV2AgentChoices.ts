@@ -12,21 +12,18 @@ interface UseV2AgentChoicesResult {
  * Every agent the user can launch, straight from the host's
  * `host_agent_configs` table.
  *
- * (CLOUD-SEVERANCE-P2) The list used to end with a synthetic "Superset" row.
- * That agent was never a host config — it was routed by id inside
+ * (CLOUD-SEVERANCE-P2) The list must never regain a synthetic "Superset" row:
+ * that agent is no host config — it was routed by id inside
  * `runAgentInWorkspace` into a hosted chat session, which the host now refuses
- * outright. Offering it in a picker would hand the user a launch that can only
- * come back as an error. Filtered here rather than in the shared agent catalog:
- * the catalog is upstream's and churns every release, this hook is the one
- * thing every desktop picker reads.
+ * outright, so a picker entry for it can only come back as an error.
  */
 export function useV2AgentChoices(
 	hostUrl: string | null,
 ): UseV2AgentChoicesResult {
 	const query = useV2AgentConfigs(hostUrl);
-	const agents = useMemo<AgentSelectAgent[]>(() => {
-		const terminalAgents: AgentSelectAgent[] = (query.data ?? []).map(
-			(config) => ({
+	const agents = useMemo<AgentSelectAgent[]>(
+		() =>
+			(query.data ?? []).map((config) => ({
 				id: config.id,
 				label: config.label,
 				// Prefer the user's icon override (built-in key or uploaded data
@@ -37,10 +34,9 @@ export function useV2AgentChoices(
 					config.presetId,
 					config.command,
 				),
-			}),
-		);
-		return terminalAgents;
-	}, [query.data]);
+			})),
+		[query.data],
+	);
 
 	return { agents, isFetched: query.isFetched };
 }

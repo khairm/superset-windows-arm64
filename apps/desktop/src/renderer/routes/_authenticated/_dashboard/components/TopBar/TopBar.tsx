@@ -4,6 +4,7 @@ import { HiOutlineWifi } from "react-icons/hi2";
 import { ZoomStable } from "renderer/components/ZoomStable";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useOnlineStatus } from "renderer/hooks/useOnlineStatus";
+import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useZoomFactor } from "renderer/hooks/useZoomFactor";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useWorkspaceSidebarStore } from "renderer/stores/workspace-sidebar-state";
@@ -29,6 +30,12 @@ export function TopBar() {
 	const zoomFactor = useZoomFactor();
 	const isV2CloudEnabled = useIsV2CloudEnabled();
 	const isSidebarCollapsed = useWorkspaceSidebarStore((s) => s.isCollapsed());
+	// `RightSidebarToggle` used to read this preference itself; upstream lifted
+	// the state out to its callers, and the same preference drives the workspace
+	// view's own `sidebarOpen`.
+	const { preferences: v2UserPreferences, setRightSidebarOpen } =
+		useV2UserPreferences();
+	const toggleRightSidebar = () => setRightSidebarOpen((prev) => !prev);
 	// Default to Mac layout while loading to avoid overlap with traffic lights
 	const isMac = platform === undefined || platform === "darwin";
 	// In v2 the expanded sidebar lives outside the TopBar column, so the TopBar
@@ -90,7 +97,12 @@ export function TopBar() {
 						projectId={workspace.project?.id}
 					/>
 				) : null}
-				{isV2WorkspaceRoute && <RightSidebarToggle />}
+				{isV2WorkspaceRoute && (
+					<RightSidebarToggle
+						isOpen={v2UserPreferences.rightSidebarOpen}
+						onToggle={toggleRightSidebar}
+					/>
+				)}
 				{!isMac && <WindowControlsInset />}
 			</div>
 		</div>

@@ -122,7 +122,9 @@ function DashboardLayout() {
 
 	// Global hotkeys for dashboard
 	useHotkey("OPEN_SETTINGS", () => navigate({ to: DEFAULT_SETTINGS_ROUTE }));
-	useHotkey("SHOW_HOTKEYS", () => navigate({ to: "/settings/keyboard" }));
+	useHotkey("SHOW_HOTKEYS", () => navigate({ to: "/settings/keyboard" }), {
+		ignoreEventWhen: (e) => e.defaultPrevented,
+	});
 	useHotkey("TOGGLE_WORKSPACE_SIDEBAR", toggleWorkspaceSidebarCollapsed);
 
 	// The collapsed rail's top strip continues the page's header row, so the

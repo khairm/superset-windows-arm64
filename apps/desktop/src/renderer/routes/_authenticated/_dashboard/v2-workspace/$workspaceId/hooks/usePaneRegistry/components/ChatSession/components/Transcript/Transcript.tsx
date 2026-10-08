@@ -12,6 +12,7 @@ import {
 } from "@superset/chat-ui/MessageScroller";
 import { ScrollToBottomButton } from "@superset/chat-ui/ScrollToBottomButton";
 import { Button } from "@superset/ui/button";
+import { Spinner } from "@superset/ui/spinner";
 import { cn } from "@superset/ui/utils";
 import {
 	type CSSProperties,
@@ -23,17 +24,21 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { env } from "renderer/env.renderer";
 import {
 	CHAT_COLUMN_CLASSNAME,
 	CHAT_SCROLLER_GUTTER_CLASSNAME,
 } from "../../constants";
 import type { ChatForkTarget } from "../../types";
+import { pageLinkFinder } from "../../utils/pageLinks";
 import { TurnGroupSection } from "./components/TurnGroupSection";
+import { useLoadOlderOnReach } from "./hooks/useLoadOlderOnReach";
 import { useScrollAnchorKey } from "./hooks/useScrollAnchorKey";
 import { useScrollbarGutter } from "./hooks/useScrollbarGutter";
 import { lastReplyKeys } from "./utils/lastReplyKeys";
 import { type TranscriptRow, transcriptRows } from "./utils/transcriptRows";
 
+const findPageLinks = pageLinkFinder(env.NEXT_PUBLIC_WEB_URL);
 const REMEMBER_SIZE_CLASSNAME = "[contain-intrinsic-size:auto_240px]";
 const OFFSCREEN_CLASSNAME = "[content-visibility:auto]";
 const RECENT_ROWS_RENDERED_IN_FULL = 30;
@@ -53,7 +58,7 @@ export type TranscriptProps = {
 	approvals: ApprovalRequest[];
 	outbox: OutboxEntry[];
 	hasOlder: boolean;
-	onLoadOlder: () => void;
+	onLoadOlder: () => Promise<boolean>;
 	onRespond: (approvalId: string, decision: Decision) => void;
 	onFork?: ((target: ChatForkTarget) => void) | undefined;
 	canForkToWorktree?: boolean;
@@ -99,6 +104,7 @@ export function Transcript({
 }: TranscriptProps) {
 	const { t } = useLingui();
 	const [viewportRef, scrollbarGutter] = useScrollbarGutter<HTMLDivElement>();
+	const olderPages = useLoadOlderOnReach({ hasOlder, onLoadOlder });
 	const scroller = useMessageScroller();
 	const scrollerRef = useRef(scroller);
 	scrollerRef.current = scroller;
@@ -152,7 +158,7 @@ export function Transcript({
 	}, [approvals]);
 
 	const rows = useMemo(
-		() => transcriptRows(groups, outbox, pendingApprovalTargets),
+		() => transcriptRows(groups, outbox, pendingApprovalTargets, findPageLinks),
 		[groups, outbox, pendingApprovalTargets],
 	);
 
@@ -220,12 +226,17 @@ export function Transcript({
 					<div
 						className={cn(
 							CHAT_COLUMN_CLASSNAME,
-							"flex items-center gap-2 px-4 pt-4",
+							"flex h-10 items-center justify-center",
 						)}
+						ref={olderPages.sentinelRef}
 					>
-						<Button onClick={onLoadOlder} size="sm" variant="ghost">
-							<Trans>Load earlier messages</Trans>
-						</Button>
+						{olderPages.failed ? (
+							<Button onClick={olderPages.retry} size="sm" variant="ghost">
+								<Trans>Couldn't load earlier messages. Retry</Trans>
+							</Button>
+						) : (
+							olderPages.loading && <Spinner className="size-4" />
+						)}
 					</div>
 				)}
 				<MessageScroller.Content
