@@ -1,4 +1,5 @@
 import { watch as probeNativeWatch } from "node:fs";
+import type { Options as ParcelWatchOptions } from "@parcel/watcher";
 import { createIgnoreMatcher } from "./ignore-matcher";
 import {
 	nativeIgnoreForWindows,
@@ -26,12 +27,12 @@ function assertNativeWatchAvailable(dir: string): void {
 	probe.close();
 }
 
-function planIgnore({
+export function planNativeWatch({
 	rootPath,
 	ignore,
 	generation,
 }: Pick<NativeWatchRequest, "rootPath" | "ignore" | "generation">): {
-	nativeIgnore: string[];
+	nativeOptions: ParcelWatchOptions;
 	isIgnored: ReturnType<typeof createIgnoreMatcher> | null;
 } {
 	if (process.platform === "win32") {
@@ -43,7 +44,11 @@ function planIgnore({
 			rootPath,
 		);
 		return {
-			nativeIgnore: nativeDirs,
+			// (WATCHER-NO-WATCHMAN-PROBE) parcel's default backend first _popens
+			// `watchman get-sockname`, which flashes a console window every time
+			// it builds a backend. The subscription's unsubscribe reuses these
+			// options.
+			nativeOptions: { ignore: nativeDirs, backend: "windows" },
 			isIgnored: createIgnoreMatcher(rootPath, jsGlobs),
 		};
 	}
@@ -52,10 +57,12 @@ function planIgnore({
 	// joined and never deliver. The pattern matches nothing real — it only
 	// forces a distinct backend identity per re-attach.
 	return {
-		nativeIgnore:
-			generation === 1
-				? ignore
-				: [...ignore, `**/${watchGenerationSentinel(generation)}/**`],
+		nativeOptions: {
+			ignore:
+				generation === 1
+					? ignore
+					: [...ignore, `**/${watchGenerationSentinel(generation)}/**`],
+		},
 		isIgnored: null,
 	};
 }
@@ -64,7 +71,7 @@ export const parcelWatchBackend: NativeWatchBackend = {
 	name: "parcel",
 	async subscribe({ rootPath, ignore, generation, onEvents, onError }) {
 		assertNativeWatchAvailable(rootPath);
-		const { nativeIgnore, isIgnored } = planIgnore({
+		const { nativeOptions, isIgnored } = planNativeWatch({
 			rootPath,
 			ignore,
 			generation,
@@ -85,7 +92,7 @@ export const parcelWatchBackend: NativeWatchBackend = {
 					: events;
 				if (kept.length > 0) onEvents(kept);
 			},
-			{ ignore: nativeIgnore },
+			nativeOptions,
 		);
 		return { unsubscribe: () => subscription.unsubscribe() };
 	},

@@ -44,7 +44,7 @@ async function main() {
 			if (error) process.stderr.write(`watcher error: ${error.message}\n`);
 			for (const event of events) waiters.get(event.path)?.();
 		},
-		{ ignore },
+		{ ignore, backend: "windows" },
 	);
 	const readyFile = path.join(root, "ready.txt");
 	const ready = waitForEvent(readyFile);

@@ -291,6 +291,10 @@ In brief:
   byte). Plain dirs go native, globs filter in JS; re-run the Windows watcher
   tests after any watcher merge (`(WATCHER-NO-NATIVE-GLOBS)`). A
   `fixture-error` line there is a broken test, not the crash.
+- Every @parcel/watcher call on Windows passes `backend: "windows"`: the
+  default backend `_popen`s `watchman get-sockname`, a visible console flash
+  `windowsHide` cannot reach. unsubscribe must get the same options
+  (`(WATCHER-NO-WATCHMAN-PROBE)`).
 - Windows renderer is never backgrounded (`(WIN-NO-BG-THROTTLE)`: constructor
   `backgroundThrottling: false` + `disable-renderer-backgrounding`). Never
   `setBackgroundThrottling` after creation (electron#42378 blank window;

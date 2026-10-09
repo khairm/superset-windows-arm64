@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FsWatcherManager, type FsWatcherManagerOptions } from "../watch";
@@ -11,26 +10,8 @@ import {
 	nativeIgnoreForWindows,
 	splitIgnoreForNative,
 } from "./native-ignore-split";
+import { createWrapper, type NativeOptions } from "./test-helpers";
 import type { NativeWatchBackend } from "./types";
-
-interface NativeOptions {
-	ignoreGlobs?: string[];
-	ignorePaths?: string[];
-}
-
-const { createWrapper } = createRequire(import.meta.url)(
-	"@parcel/watcher/wrapper.js",
-) as {
-	createWrapper(binding: {
-		subscribe(dir: string, fn: unknown, opts: NativeOptions): Promise<void>;
-	}): {
-		subscribe(
-			dir: string,
-			fn: () => void,
-			opts: { ignore: string[] },
-		): Promise<unknown>;
-	};
-};
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
