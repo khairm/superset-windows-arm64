@@ -17,6 +17,7 @@ import { publicProcedure, router } from "../..";
 import { getWorkspace } from "../workspaces/utils/db-helpers";
 import { getWorkspacePath } from "../workspaces/utils/worktree";
 import {
+	assertExistingFolder,
 	type ExternalApp,
 	getAppCommand,
 	pathIsMissing,
@@ -224,6 +225,7 @@ export const createExternalRouter = () => {
 						message: `openFolderInFinder requires an absolute path (got ${JSON.stringify(input)}).`,
 					});
 				}
+				await assertExistingFolder(input); // (OPEN-FOLDER-DIR-ONLY)
 				const errorMessage = await shell.openPath(input);
 				if (errorMessage) {
 					throw new TRPCError({

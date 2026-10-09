@@ -640,8 +640,31 @@ export async function pathIsMissing(filePath: string): Promise<boolean> {
 		await fs.stat(filePath);
 		return false;
 	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		return code === "ENOENT" || code === "ENOTDIR";
+		return isMissingPathError((error as NodeJS.ErrnoException).code);
+	}
+}
+
+function isMissingPathError(code: string | undefined): boolean {
+	return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** (OPEN-FOLDER-DIR-ONLY) `shell.openPath` runs a file with its default program. */
+export async function assertExistingFolder(folderPath: string): Promise<void> {
+	let isFolder: boolean;
+	try {
+		isFolder = (await fs.stat(folderPath)).isDirectory();
+	} catch (error) {
+		if (!isMissingPathError((error as NodeJS.ErrnoException).code)) throw error;
+		throw new TRPCError({
+			code: "NOT_FOUND",
+			message: "This folder no longer exists.",
+		});
+	}
+	if (!isFolder) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Not a folder: ${JSON.stringify(folderPath)}.`,
+		});
 	}
 }
 

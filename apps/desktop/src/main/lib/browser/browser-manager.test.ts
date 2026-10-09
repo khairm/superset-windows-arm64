@@ -14,7 +14,9 @@ mock.module("main/lib/safe-url", () => ({
 	safeOpenExternal: mock(async () => {}),
 }));
 
-const { browserManager } = await import("./browser-manager");
+const { blockNonWebMainFrame, browserManager, guestMayOpenExternal } =
+	await import("./browser-manager");
+const { markBrowserPanePopup } = await import("./popup-window");
 const { PROTOCOL_SCHEME } = await import("shared/constants");
 
 interface FakeImage {
@@ -729,5 +731,42 @@ describe("deep links from guest pages", () => {
 		expect(navigate(wc, "https://example.com/docs")).toBe(false);
 		expect(urls).toEqual([]);
 		stop();
+	});
+});
+
+describe("(WEBVIEW-WEB-ONLY-NAV) guest guards", () => {
+	test("blockNonWebMainFrame cancels only a main frame leaving the web, never a deep link or a subframe", () => {
+		const cancelled = (url: string, isMainFrame: boolean) => {
+			const event = { url, isMainFrame, preventDefault: mock(() => {}) };
+			blockNonWebMainFrame(event);
+			return event.preventDefault.mock.calls.length > 0;
+		};
+		const passing = [
+			"http://example.com/",
+			"about:blank",
+			"superset://pages/my-page",
+		];
+		expect(passing.some((url) => cancelled(url, true))).toBe(false);
+		expect(cancelled("claude-cli://open", true)).toBe(true);
+		expect(
+			[...passing, "claude-cli://open"].some((url) => cancelled(url, false)),
+		).toBe(false);
+	});
+
+	test("guestMayOpenExternal denies openExternal only to webview guests and pane popups", () => {
+		const contentsOfType = (type: string) =>
+			({ getType: () => type }) as unknown as Electron.WebContents;
+		const guest = contentsOfType("webview");
+		const panePopup = contentsOfType("window");
+		markBrowserPanePopup(panePopup);
+		const mainWindow = contentsOfType("window");
+		expect(guestMayOpenExternal(guest, "openExternal")).toBe(false);
+		expect(guestMayOpenExternal(panePopup, "openExternal")).toBe(false);
+		expect(guestMayOpenExternal(mainWindow, "openExternal")).toBe(true);
+		expect(
+			[guest, panePopup].every((contents) =>
+				guestMayOpenExternal(contents, "media"),
+			),
+		).toBe(true);
 	});
 });

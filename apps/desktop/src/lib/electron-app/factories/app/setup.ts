@@ -1,7 +1,12 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, session } from "electron";
 import { env } from "main/env.main";
+import {
+	blockNonWebMainFrame,
+	guestMayOpenExternal,
+	isAllowedGuestUrl,
+} from "main/lib/browser/browser-manager";
 import { isBrowserPanePopup } from "main/lib/browser/popup-window";
-import { loadReactDevToolsExtension } from "main/lib/extensions";
+import { APP_PARTITION, loadReactDevToolsExtension } from "main/lib/extensions";
 import { safeOpenExternal } from "main/lib/safe-url";
 import { PLATFORM } from "shared/constants";
 import { makeAppId } from "shared/utils";
@@ -10,6 +15,20 @@ import { openInitialWindow } from "../../utils/open-initial-window";
 import { isSameAppDocument } from "../../utils/same-app-document";
 
 ignoreConsoleWarnings(["Manifest version 2 is deprecated"]);
+
+// (WEBVIEW-WEB-ONLY-NAV) The only permission handler on either guest session.
+function denyGuestOpenExternal(): void {
+	for (const guestSession of [
+		session.defaultSession,
+		session.fromPartition(APP_PARTITION),
+	]) {
+		guestSession.setPermissionRequestHandler(
+			(contents, permission, callback) => {
+				callback(guestMayOpenExternal(contents, permission));
+			},
+		);
+	}
+}
 
 function guardWebContents(
 	_: Electron.Event,
@@ -27,10 +46,13 @@ function guardWebContents(
 		// classified as the app's own. The pane handler replaces this one later;
 		// until then the answer is simply no.
 		contents.setWindowOpenHandler(() => ({ action: "deny" as const }));
+		// (WEBVIEW-WEB-ONLY-NAV) Guests load only web pages.
+		contents.on("will-frame-navigate", blockNonWebMainFrame);
+		contents.on("will-redirect", blockNonWebMainFrame);
 		return;
 	}
 	// Whatever a <webview> tag asks for, guest content never gets a preload or Node.
-	contents.on("will-attach-webview", (_event, webPreferences) => {
+	contents.on("will-attach-webview", (event, webPreferences, params) => {
 		delete webPreferences.preload;
 		delete (webPreferences as { preloadURL?: string }).preloadURL;
 		webPreferences.nodeIntegration = false;
@@ -39,6 +61,7 @@ function guardWebContents(
 		webPreferences.contextIsolation = true;
 		webPreferences.webSecurity = true;
 		webPreferences.allowRunningInsecureContent = false;
+		if (!isAllowedGuestUrl(params.src)) event.preventDefault(); // (WEBVIEW-WEB-ONLY-NAV)
 	});
 	// Fallback only: app windows and browser-pane popups replace it with their own.
 	contents.setWindowOpenHandler(({ url }) => {
@@ -64,6 +87,7 @@ export async function makeAppSetup(
 	createWindow: () => Promise<BrowserWindow>,
 	restoreWindows?: () => Promise<void>,
 ) {
+	denyGuestOpenExternal();
 	await loadReactDevToolsExtension();
 
 	let window = await openInitialWindow({

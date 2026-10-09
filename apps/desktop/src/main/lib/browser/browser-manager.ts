@@ -20,7 +20,11 @@ import {
 import { DesignModeController } from "./design-mode-controller";
 import { captureDesignModeScreenshot } from "./design-mode-screenshot";
 import { buildDesignModeScript } from "./design-mode-script";
-import { markBrowserPanePopup, shouldOpenAsPopup } from "./popup-window";
+import {
+	isBrowserPanePopup,
+	markBrowserPanePopup,
+	shouldOpenAsPopup,
+} from "./popup-window";
 
 interface ConsoleEntry {
 	level: "log" | "warn" | "error" | "info" | "debug";
@@ -125,7 +129,7 @@ function protocolOf(url: string): string | null {
 	}
 }
 
-function isAllowedGuestUrl(url: string): boolean {
+export function isAllowedGuestUrl(url: string): boolean {
 	const protocol = protocolOf(url);
 	return protocol !== null && ALLOWED_GUEST_SCHEMES.has(protocol);
 }
@@ -133,6 +137,42 @@ function isAllowedGuestUrl(url: string): boolean {
 export function isDeepLinkUrl(url: string): boolean {
 	const protocol = protocolOf(url);
 	return protocol !== null && DEEP_LINK_SCHEMES.has(protocol);
+}
+
+/**
+ * (WEBVIEW-WEB-ONLY-NAV) Every guest's `will-frame-navigate` and `will-redirect`.
+ * A subframe is never cancelled (electron#54632 crash): guestMayOpenExternal
+ * refuses its hand-off to the OS instead. A deep link passes so it reaches
+ * `will-navigate`, which a cancelled `will-frame-navigate` skips, and the pane
+ * guard below forwards it.
+ */
+export function blockNonWebMainFrame(event: {
+	url: string;
+	isMainFrame: boolean;
+	preventDefault: () => void;
+}): void {
+	if (
+		event.isMainFrame &&
+		!isAllowedGuestUrl(event.url) &&
+		!isDeepLinkUrl(event.url)
+	) {
+		event.preventDefault();
+	}
+}
+
+/**
+ * (WEBVIEW-WEB-ONLY-NAV) Webview guests and browser-pane popups show web pages:
+ * neither may hand a URL to the OS. Every other request is granted, as with no
+ * handler.
+ */
+export function guestMayOpenExternal(
+	contents: Electron.WebContents,
+	permission: string,
+): boolean {
+	return (
+		permission !== "openExternal" ||
+		(contents.getType() !== "webview" && !isBrowserPanePopup(contents))
+	);
 }
 
 /**

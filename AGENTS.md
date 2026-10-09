@@ -295,6 +295,9 @@ In brief:
   default backend `_popen`s `watchman get-sockname`, a visible console flash
   `windowsHide` cannot reach. unsubscribe must get the same options
   (`(WATCHER-NO-WATCHMAN-PROBE)`).
+- Stat for a folder before `shell.openPath` (`(OPEN-FOLDER-DIR-ONLY)`).
+- Never cancel a guest subframe or a main-frame deep link; setup.ts owns the
+  only `setPermissionRequestHandler` (`(WEBVIEW-WEB-ONLY-NAV)`).
 - Windows renderer is never backgrounded (`(WIN-NO-BG-THROTTLE)`: constructor
   `backgroundThrottling: false` + `disable-renderer-backgrounding`). Never
   `setBackgroundThrottling` after creation (electron#42378 blank window;

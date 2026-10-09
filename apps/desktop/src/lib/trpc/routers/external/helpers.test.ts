@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+	assertExistingFolder,
 	getAppCommand,
 	pathIsMissing,
 	RelativePathWithoutCwdError,
@@ -796,5 +797,26 @@ describe("pathIsMissing", () => {
 		// ENAMETOOLONG: we cannot tell whether the path is there, so the app
 		// still gets to try and its failure still reports.
 		expect(await pathIsMissing(`/${"a".repeat(5000)}`)).toBe(false);
+	});
+});
+
+describe("(OPEN-FOLDER-DIR-ONLY) assertExistingFolder", () => {
+	test("passes only an existing folder, never a file", async () => {
+		const tmpDir = await fs.mkdtemp(
+			path.join(os.tmpdir(), "external-helpers-"),
+		);
+		try {
+			const file = path.join(tmpDir, "run.cmd");
+			await fs.writeFile(file, "");
+			await assertExistingFolder(tmpDir);
+			await expect(assertExistingFolder(file)).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+			});
+			await expect(
+				assertExistingFolder(path.join(tmpDir, "gone")),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		}
 	});
 });
