@@ -4,8 +4,8 @@ import { devtools, persist } from "zustand/middleware";
 /**
  * EXPERIMENT: show running agents inline under each workspace in the sidebar.
  *
- * Off by default. Single source of truth for the experiment — read it
- * everywhere via {@link useWorkspaceAgentsRowEnabled}.
+ * On by default in this fork. Single source of truth for the experiment —
+ * read it everywhere via {@link useWorkspaceAgentsRowEnabled}.
  *
  * To conclude the experiment, pick an outcome and remove the other side:
  *   1. This store + `useWorkspaceAgentsRowEnabled`.
@@ -29,7 +29,7 @@ export const useWorkspaceAgentsRowStore = create<WorkspaceAgentsRowState>()(
 	devtools(
 		persist(
 			(set) => ({
-				enabled: false,
+				enabled: true, // (AGENTS-ROW-DEFAULT-ON)
 				setEnabled: (enabled) => set({ enabled }),
 			}),
 			{ name: "workspace-agents-row" },
