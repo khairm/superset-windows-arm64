@@ -33,23 +33,13 @@ const ACCOUNT_WIDE_READERS: Record<string, string> = {
 		"v1 flip notice is per account, not per window",
 	"routes/_authenticated/components/V1FlipNotice/V2FlipWelcome.tsx":
 		"v1 flip welcome is per account, not per window",
-	"routes/_authenticated/components/V1ImportModal/V1ImportModal.tsx":
-		"v1 import is per account, not per window",
 	"hooks/useIsV2CloudEnabled.ts":
 		"reads the migration-complete flag, which is per account",
 
-	// The gate that decides whether the user has any organization at all, and
-	// the screen that creates the first one. Both run before — or outside — the
+	// The screen that creates the first organization runs outside the
 	// per-window context, so the session is the only source available.
-	"routes/_authenticated/layout.tsx":
-		"gates on having any org at all, before the per-window context exists",
 	"routes/create-organization/page.tsx":
 		"runs outside the authenticated layout, where no window org exists yet",
-
-	// The provider that establishes the per-window org. It reads the session
-	// exactly once, as the seed for a window that has no org yet.
-	"routes/_authenticated/providers/CollectionsProvider/CollectionsProvider.tsx":
-		"seeds the per-window org; this is the one sanctioned read",
 
 	// Reads the session's organization for membership and role, which is
 	// account-level data rather than a scoping decision.
@@ -81,7 +71,9 @@ describe("per-window organization", () => {
 		for (const file of walk(RENDERER_ROOT)) {
 			if (file.endsWith("sessionOrgReaders.test.ts")) continue;
 			if (!SESSION_ORG_PATTERN.test(readFileSync(file, "utf-8"))) continue;
-			const relative = file.slice(RENDERER_ROOT.length + 1);
+			const relative = file
+				.slice(RENDERER_ROOT.length + 1)
+				.replaceAll("\\", "/");
 			if (relative in ACCOUNT_WIDE_READERS) continue;
 			offenders.push(relative);
 		}

@@ -37,6 +37,7 @@ import {
 	test,
 } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { ReactNode } from "react";
 
 // happy-dom over the preloaded plain-object document, so this renders a real
 // tree. Bun runs test files in one process and happy-dom's globals are
@@ -119,6 +120,9 @@ const realLocalHostServiceProvider = await import(
 );
 const realHostWorkspacesProvider = await import(
 	"renderer/routes/_authenticated/providers/HostWorkspacesProvider"
+);
+const realWindowChrome = await import(
+	"renderer/routes/_authenticated/_dashboard/components/WindowChrome"
 );
 const realWorkspaceCreates = await import("renderer/stores/workspace-creates");
 const realPromptContext = await import(
@@ -263,6 +267,11 @@ function installMocks(): void {
 			environment: {
 				list: { useQuery: () => ({ data: [], isFetched: true }) },
 			},
+			plugins: {
+				list: {
+					useQuery: () => ({ data: undefined, isLoading: false, error: null }),
+				},
+			},
 			useUtils: () => ({
 				cloudWorkspace: {
 					list: {
@@ -275,10 +284,11 @@ function installMocks(): void {
 		},
 	}));
 
-	// The screen's only electronTrpc call is the attachment card's
-	// "reveal in Finder"; nothing here renders one.
+	// The header's window-controls inset reads the platform; the attachment
+	// card's "reveal in Finder" is never rendered here.
 	mock.module("renderer/lib/electron-trpc", () => ({
 		electronTrpc: {
+			window: { getPlatform: { useQuery: () => ({ data: "win32" }) } },
 			external: {
 				openInFinder: { useMutation: () => ({ mutate: () => {} }) },
 			},
@@ -391,6 +401,7 @@ function installMocks(): void {
 	mock.module(
 		"../DashboardNewWorkspaceForm/PromptGroup/hooks/useUploadAttachments",
 		() => ({
+			CLOUD_UPLOAD_TARGET: "cloud",
 			useUploadAttachments: () => ({
 				awaitUploads: async () => ({
 					readyIds: uploadIds,
@@ -435,6 +446,10 @@ function installMocks(): void {
 		() => ({ GitHubIssueLinkCommand: passthrough }),
 	);
 	mock.module(
+		"../DashboardNewWorkspaceForm/PromptGroup/components/LinearIssueLinkCommand",
+		() => ({ LinearIssueLinkCommand: passthrough }),
+	);
+	mock.module(
 		"../DashboardNewWorkspaceForm/PromptGroup/components/PRLinkCommand",
 		() => ({ PRLinkCommand: passthrough }),
 	);
@@ -464,17 +479,40 @@ function installMocks(): void {
 	mock.module("./components/AttachmentCard", () => ({
 		AttachmentCard: () => <div data-testid="attachment-card" />,
 	}));
+	mock.module(
+		"renderer/routes/_authenticated/_dashboard/components/WindowChrome",
+		() => ({ ...realWindowChrome, WindowChrome: () => null }),
+	);
 	mock.module("renderer/components/AgentSelect", () => ({
 		AgentSelect: () => <div data-testid="agent-select" />,
 	}));
 	mock.module("renderer/components/AgentModelSelect", () => ({
 		AgentModelSelect: () => <div data-testid="agent-model-select" />,
 	}));
-	mock.module("renderer/components/MarkdownEditor", () => ({
-		MarkdownEditor: ({ content }: { content: string }) => (
-			<div data-testid="prompt-editor">{content}</div>
-		),
-	}));
+	// The Lexical editor is replaced; its header and toolbars render for real.
+	mock.module(
+		"renderer/routes/_authenticated/components/AgentComposer",
+		() => ({
+			AgentComposer: ({
+				defaultValue,
+				header,
+				toolbar,
+				toolbarEnd,
+			}: {
+				defaultValue?: string;
+				header?: ReactNode;
+				toolbar?: ReactNode;
+				toolbarEnd?: ReactNode;
+			}) => (
+				<div>
+					{header}
+					<div data-testid="prompt-editor">{defaultValue}</div>
+					{toolbar}
+					{toolbarEnd}
+				</div>
+			),
+		}),
+	);
 }
 
 installMocks();
@@ -521,9 +559,11 @@ function renderForm() {
 }
 
 function submitButton(view: RenderedForm): HTMLButtonElement {
-	const button = view.baseElement.querySelector('button[type="submit"]');
+	const button = view.baseElement
+		.querySelector("svg.lucide-arrow-up")
+		?.closest("button");
 	if (!button) throw new Error("submit button not found");
-	return button as HTMLButtonElement;
+	return button;
 }
 
 /** Clicks the form's submit button and drains the submit's microtasks. */
@@ -602,7 +642,7 @@ describe("NewWorkspaceScreen master mode rendering", () => {
 		expect(view.getByTestId("project-picker-pill")).toBeTruthy();
 		expect(view.getByLabelText("Add attachment")).toBeTruthy();
 		expect(view.getByLabelText("Link GitHub issue")).toBeTruthy();
-		expect(view.getByLabelText("Link issue")).toBeTruthy();
+		expect(view.getByLabelText("Link task")).toBeTruthy();
 	});
 
 	test("branch mode is untouched: every branch control is still there", () => {

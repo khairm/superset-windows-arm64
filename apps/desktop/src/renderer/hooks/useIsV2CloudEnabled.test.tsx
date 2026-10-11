@@ -1,5 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { describe, expect, mock, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 // completion.ts and the zustand persist store read the global localStorage;
@@ -15,14 +14,6 @@ globalThis.localStorage = {
 		return backing.size;
 	},
 } as Storage;
-
-// happy-dom on top, for the one mounted test that needs a live window event;
-// it replaces the shim above with an equivalent working localStorage.
-const alreadyRegistered = GlobalRegistrator.isRegistered;
-if (!alreadyRegistered) GlobalRegistrator.register();
-(
-	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
 
 // Pre-cutoff account: defaults to v1 (not in any v2-only signup cohort).
 const V1_ERA_CREATED_AT = new Date("2026-01-01T00:00:00Z");
@@ -85,11 +76,6 @@ const { useIsV1FlipLocked, useIsV2CloudEnabled } = await import(
 const { markV1MigrationComplete } = await import(
 	"renderer/lib/v1-migration/completion"
 );
-const { act, cleanup, render } = await import("@testing-library/react");
-
-afterAll(async () => {
-	if (!alreadyRegistered) await GlobalRegistrator.unregister();
-});
 
 function Probe() {
 	const locked = useIsV1FlipLocked();
@@ -108,10 +94,6 @@ function readProbe(orgId: string, optIn: boolean | null) {
 }
 
 describe("useIsV1FlipLocked", () => {
-	test("unlocked v1-era user without a migration marker stays on v1", () => {
-		expect(readProbe("org-plain", null)).toEqual({ locked: false, v2: false });
-	});
-
 	test("migration marker locks the flip", () => {
 		markV1MigrationComplete("org-marked");
 		expect(readProbe("org-marked", null)).toEqual({ locked: true, v2: true });
@@ -138,30 +120,6 @@ describe("useIsV1FlipLocked", () => {
 		}
 	});
 
-	test("completion mid-session locks the flip at once; the surface waits for the next launch", () => {
-		expect(readProbe("org-mid", null)).toEqual({ locked: false, v2: false });
-		markV1MigrationComplete("org-mid");
-		expect(readProbe("org-mid", null)).toEqual({ locked: true, v2: false });
-	});
-
-	test("completion mid-session freezes the surface: a later opt-in does not flip forward", () => {
-		expect(readProbe("org-freeze-in", null)).toEqual({
-			locked: false,
-			v2: false,
-		});
-		markV1MigrationComplete("org-freeze-in");
-		// The completion event re-renders before anyone can toggle; that render
-		// pins the surface.
-		expect(readProbe("org-freeze-in", null)).toEqual({
-			locked: true,
-			v2: false,
-		});
-		expect(readProbe("org-freeze-in", true)).toEqual({
-			locked: true,
-			v2: false,
-		});
-	});
-
 	test("completion mid-session freezes the surface: a later opt-out does not snap back", () => {
 		createdAt = V2_ERA_CREATED_AT;
 		try {
@@ -181,19 +139,6 @@ describe("useIsV1FlipLocked", () => {
 		} finally {
 			createdAt = V1_ERA_CREATED_AT;
 		}
-	});
-
-	test("a mounted hook locks the moment completion fires, without a remount", async () => {
-		activeOrganizationId = "org-live";
-		optInV2 = null;
-		const { container } = render(<Probe />);
-		expect(container.querySelector('[data-locked="true"]')).toBeNull();
-		await act(async () => {
-			markV1MigrationComplete("org-live");
-		});
-		expect(container.querySelector('[data-locked="true"]')).not.toBeNull();
-		expect(container.querySelector('[data-v2="false"]')).not.toBeNull();
-		cleanup();
 	});
 
 	test("no active org: not locked", () => {

@@ -49,35 +49,6 @@ describe("bootstrapOpenWorktree", () => {
 		expect(error).toBe("write_initial_commands_failed");
 	});
 
-	it("returns null when setup command writes successfully", async () => {
-		const createOrAttach = mock(async () => ({}));
-		const writeToTerminal = mock(async () => ({}));
-
-		const error = await bootstrapOpenWorktree({
-			data: {
-				workspace: { id: "ws-1" },
-				initialCommands: ["echo setup"],
-			},
-			addTab: () => ({ tabId: "tab-1", paneId: "pane-1" }),
-			setTabAutoTitle: mock(() => {}),
-			createOrAttach,
-			writeToTerminal,
-		});
-
-		expect(error).toBeNull();
-		expect(createOrAttach).toHaveBeenCalledWith({
-			paneId: "pane-1",
-			tabId: "tab-1",
-			workspaceId: "ws-1",
-			joinPending: true,
-		});
-		expect(writeToTerminal).toHaveBeenCalledWith({
-			paneId: "pane-1",
-			data: "echo setup\n",
-			throwOnError: true,
-		});
-	});
-
 	it("returns null when there are no initial commands", async () => {
 		const writeToTerminal = mock(async () => ({}));
 

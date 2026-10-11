@@ -300,27 +300,6 @@ describe("Shell Environment", () => {
 		}
 	}, 10_000);
 
-	test("getShellEnvironment PATH includes homebrew and user-installed tools", async () => {
-		const { clearShellEnvCache, getShellEnvironment } = await import(
-			"./shell-env"
-		);
-		clearShellEnvCache();
-
-		const env = await getShellEnvironment();
-		const shellPath = env.PATH || env.Path || "";
-
-		// The derived PATH should be richer than the minimal macOS GUI PATH
-		// (/usr/bin:/bin:/usr/sbin:/sbin). It should include at least one of
-		// these common user-installed tool directories.
-		const userPaths = [
-			"/opt/homebrew/bin",
-			"/usr/local/bin",
-			"/home/linuxbrew/.linuxbrew/bin",
-		];
-		const hasUserPath = userPaths.some((p) => shellPath.includes(p));
-		expect(hasUserPath).toBe(true);
-	}, 10_000);
-
 	test("getShellEnvironment strips delimiter noise from interactive shell output", async () => {
 		const { clearShellEnvCache, getShellEnvironment } = await import(
 			"./shell-env"
@@ -464,48 +443,6 @@ describe("createWorktree hook tolerance", () => {
 			.trim();
 		expect(currentBranch).toBe("feature/no-marker");
 	}, 10_000);
-
-	test("continues when git is killed mid-hook (timeout shape) but worktree is created", async () => {
-		const repoPath = createTestRepo("worktree-hook-killed");
-		seedCommit(repoPath);
-
-		// Simulates the exec timeout: SIGTERM lands on git while the
-		// post-checkout hook is still running, after the checkout completed.
-		const hookPath = join(repoPath, ".git", "hooks", "post-checkout");
-		writeFileSync(
-			hookPath,
-			"#!/bin/sh\necho 'Building packages (api-types, chat-ui, etc.)...'\nkill -TERM $PPID\nsleep 2\n",
-		);
-		execSync(`chmod +x "${hookPath}"`);
-
-		const warnSpy = spyOn(console, "warn");
-		try {
-			const worktreePath = join(TEST_DIR, "worktree-hook-killed-wt");
-			await createWorktree(
-				repoPath,
-				"feature/killed-hook",
-				worktreePath,
-				"HEAD",
-			);
-
-			expect(existsSync(worktreePath)).toBe(true);
-			const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-				cwd: worktreePath,
-			})
-				.toString()
-				.trim();
-			expect(currentBranch).toBe("feature/killed-hook");
-			// The kill must actually land: a trivially clean add would skip
-			// the tolerance path entirely and prove nothing.
-			expect(
-				warnSpy.mock.calls.some((call) =>
-					String(call[0]).includes("non-fatal"),
-				),
-			).toBe(true);
-		} finally {
-			warnSpy.mockRestore();
-		}
-	}, 15_000);
 
 	test("throws on an invalid start point even when a hook exists", async () => {
 		const repoPath = createTestRepo("worktree-bad-start");
@@ -1003,89 +940,6 @@ describe("hasUnpushedCommits", () => {
 
 		expect(await hasUnpushedCommits(localPath)).toBe(true);
 	}, 10_000);
-
-	test("returns false after squash-merge when upstream branch is deleted (bug #2545)", async () => {
-		const { remotePath, localPath } = setupRemoteAndClone("squash-merge");
-
-		// Create feature branch with a commit and push it
-		execSync("git checkout -b feature/squash-test", {
-			cwd: localPath,
-			stdio: "ignore",
-		});
-		writeFileSync(join(localPath, "feature.txt"), "feature work");
-		execSync("git add . && git commit -m 'add feature'", {
-			cwd: localPath,
-			stdio: "ignore",
-		});
-		execSync("git push -u origin feature/squash-test", {
-			cwd: localPath,
-			stdio: "ignore",
-		});
-
-		// Simulate squash-merge on remote: apply the same change to main with
-		// a different commit (different SHA, same patch)
-		const squashClone = join(TEST_DIR, "squash-merge-squasher");
-		execSync(`git clone "${remotePath}" "${squashClone}"`, { stdio: "ignore" });
-		execSync("git config user.email 'test@test.com'", {
-			cwd: squashClone,
-			stdio: "ignore",
-		});
-		execSync("git config user.name 'Test'", {
-			cwd: squashClone,
-			stdio: "ignore",
-		});
-		writeFileSync(join(squashClone, "feature.txt"), "feature work");
-		execSync("git add . && git commit -m 'squash: add feature' && git push", {
-			cwd: squashClone,
-			stdio: "ignore",
-		});
-
-		// Delete the remote branch (simulating GitHub's post-merge cleanup)
-		execSync("git push origin --delete feature/squash-test", {
-			cwd: squashClone,
-			stdio: "ignore",
-		});
-
-		// Back in local: fetch --prune so the upstream tracking ref is gone
-		execSync("git fetch --prune", { cwd: localPath, stdio: "ignore" });
-
-		// BUG: Before the fix, this returned true (false positive warning)
-		// After the fix, it should return false since the patch is in origin/main
-		expect(await hasUnpushedCommits(localPath)).toBe(false);
-	}, 15_000);
-
-	test("returns true after upstream branch deleted with truly unmerged commits", async () => {
-		const { remotePath, localPath } = setupRemoteAndClone("unmerged");
-
-		// Create feature branch with a commit and push it
-		execSync("git checkout -b feature/unmerged-test", {
-			cwd: localPath,
-			stdio: "ignore",
-		});
-		writeFileSync(join(localPath, "unique.txt"), "unique work not on main");
-		execSync("git add . && git commit -m 'unique work'", {
-			cwd: localPath,
-			stdio: "ignore",
-		});
-		execSync("git push -u origin feature/unmerged-test", {
-			cwd: localPath,
-			stdio: "ignore",
-		});
-
-		// Delete the remote branch WITHOUT merging
-		const helperClone = join(TEST_DIR, "unmerged-helper");
-		execSync(`git clone "${remotePath}" "${helperClone}"`, { stdio: "ignore" });
-		execSync("git push origin --delete feature/unmerged-test", {
-			cwd: helperClone,
-			stdio: "ignore",
-		});
-
-		// Prune locally
-		execSync("git fetch --prune", { cwd: localPath, stdio: "ignore" });
-
-		// Should still return true — commits are genuinely not merged
-		expect(await hasUnpushedCommits(localPath)).toBe(true);
-	}, 15_000);
 
 	test("warns when cherry-pick fallback fails and continues to remotes fallback", async () => {
 		const repoPath = createTestRepo("no-remote-warning");

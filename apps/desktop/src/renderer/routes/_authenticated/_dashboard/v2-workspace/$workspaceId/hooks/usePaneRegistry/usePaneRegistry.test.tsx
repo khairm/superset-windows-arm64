@@ -10,7 +10,11 @@ if (!alreadyRegistered) GlobalRegistrator.register();
 	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-mock.module("renderer/lib/fileIcons", () => ({ FileIcon: () => null }));
+mock.module("renderer/lib/fileIcons", () => ({
+	FileIcon: () => null,
+	useFallthroughIcons: () => {},
+	useInitialTreeIcons: () => ({ set: "complete", colored: true }),
+}));
 
 const realWorkspaceClient = await import("@superset/workspace-client");
 const realWorkspaceProvider = await import(

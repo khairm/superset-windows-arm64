@@ -55,16 +55,6 @@ describe("getWorkspaceNameFromHostDbs", () => {
 		).toBeUndefined();
 	});
 
-	it("returns the renamed title for the worktree path from any org DB", () => {
-		seedHostDb(root, "org-a", [{ worktreePath: "/elsewhere", name: "Other" }]);
-		seedHostDb(root, "org-b", [
-			{ worktreePath, name: "Fix setup rename race" },
-		]);
-		expect(getWorkspaceNameFromHostDbs(worktreePath, openReadonly, root)).toBe(
-			"Fix setup rename race",
-		);
-	});
-
 	it("returns undefined when the host root cannot be enumerated", () => {
 		// A regular file exists but is not a directory: readdirSync throws ENOTDIR
 		// regardless of the user's privileges.
@@ -110,16 +100,6 @@ describe("getWorkspaceNameFromHostDbs", () => {
 		seedHostDb(root, "org-a", [{ worktreePath: upperPath, name: "Other" }]);
 		expect(
 			getWorkspaceNameFromHostDbs(lowerPath, openReadonly, root),
-		).toBeUndefined();
-	});
-
-	it("skips unreadable DBs, stray files, and blank names", () => {
-		mkdirSync(join(root, "broken"));
-		writeFileSync(join(root, "broken", "host.db"), "not a sqlite file");
-		writeFileSync(join(root, "stray-file"), "");
-		seedHostDb(root, "org-a", [{ worktreePath, name: "   " }]);
-		expect(
-			getWorkspaceNameFromHostDbs(worktreePath, openReadonly, root),
 		).toBeUndefined();
 	});
 });

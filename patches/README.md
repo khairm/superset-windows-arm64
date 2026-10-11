@@ -297,8 +297,6 @@ bundled `superset` CLI) is on the detached side.
 node-pty's loader prefers `build/Release` over the bundled `prebuilds/`, so the
 patched helper is the one that ships.
 
-**Guard test:** `apps/desktop/src/pty-crash-ports-patch.test.ts`.
-
 **Regenerating after a version bump** (~5 min):
 
 ```bash
@@ -309,7 +307,6 @@ bun patch node-pty@<new-version>
 #                            MACH_PORT_NULL, EXCEPTION_DEFAULT, THREAD_STATE_NONE);
 #   guarded by #if defined(__APPLE__), with #include <mach/mach.h>
 bun patch --commit 'node_modules/node-pty'
-bun test apps/desktop/src/pty-crash-ports-patch.test.ts
 ```
 
 **Removing:** upstream could do this properly for every embedder by setting the

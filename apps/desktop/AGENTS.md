@@ -30,12 +30,8 @@ All full-window failure screens use `FailureLayout`. Its provider-free, inline
 styles reserve the native title-bar region and scroll content independently;
 `boot-errors.ts` uses the same styles before React mounts. Do not duplicate title-bar
 spacers in individual error pages or add provider-dependent UI to the emergency
-boundary. `RendererLayout/renderer-safety.test.ts` audits its transitive imports
-and prevents additional production router roots. `RendererRouter`'s fault-injection
-fixture uses real compiled Lingui macros; mocked translation hooks cannot verify
-this provider contract.
+boundary. `RendererLayout/renderer-safety.test.ts` audits its transitive imports.
 
-The same architecture test inventories fallback registrations; new boundaries
-must be added to the audit and covered for recovery. Dashboard and Settings content use
+Dashboard and Settings content use
 `ContentBoundary`, which resets when navigation commits (`loadedAt`),
 so it does not retry the stale outlet during a pending URL change.

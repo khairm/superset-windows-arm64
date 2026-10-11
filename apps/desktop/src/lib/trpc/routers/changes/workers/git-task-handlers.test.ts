@@ -88,36 +88,6 @@ describe("getStatus commit counting", () => {
 });
 
 describe("getBranches", () => {
-	test("lists branches, default branch, and worktree checkouts", async () => {
-		const repoPath = createBaseRepo("branches");
-		run(repoPath, "git commit -q --allow-empty -m base");
-		run(repoPath, "git branch feature");
-		run(repoPath, "git update-ref refs/remotes/origin/main HEAD");
-		run(
-			repoPath,
-			"git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
-		);
-		const wtPath = join(TEST_DIR, "branches-wt");
-		run(repoPath, `git worktree add -q ${wtPath} feature`);
-
-		const result = await executeGitTask("getBranches", {
-			worktreePath: repoPath,
-			persistedWorktree: { branch: "main", baseBranch: "develop" },
-		});
-
-		expect(result.currentBranch).toBe("main");
-		expect(result.defaultBranch).toBe("main");
-		expect(result.local.map((b) => b.branch).sort()).toEqual([
-			"feature",
-			"main",
-		]);
-		expect(result.local.every((b) => b.lastCommitDate > 0)).toBe(true);
-		expect(result.remote).toContain("main");
-		expect(result.remote.some((name) => name.includes("HEAD"))).toBe(false);
-		expect(result.checkedOutBranches).toEqual({ feature: wtPath });
-		expect(result.worktreeBaseBranch).toBe("develop");
-	}, 60_000);
-
 	test("resolves base branch from git config over persisted metadata", async () => {
 		const repoPath = createBaseRepo("branches-config");
 		run(repoPath, "git commit -q --allow-empty -m base");

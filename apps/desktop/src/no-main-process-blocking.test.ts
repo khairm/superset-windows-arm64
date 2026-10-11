@@ -109,7 +109,7 @@ const RULES: Rule[] = [
 		pattern:
 			/\b(statSync|readFileSync|readSync|openSync|appendFileSync|renameSync|existsSync)\b/,
 		allowedCounts: {
-			"main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts": 4,
+			"main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts": 3,
 			// Two script-write reads on the install path, plus the read and the
 			// atomic-swap rename of the ONE synchronous hook rewrite left, which
 			// the process `exit` handler alone reaches — it has no tick to await,
@@ -127,7 +127,7 @@ const RULES: Rule[] = [
 			"main/lib/browser/chrome-cookie-import.ts": 3,
 			"main/lib/browser/chrome-history-import.ts": 3,
 			"main/lib/browser/chromium-profiles.ts": 5,
-			"main/lib/browser/download-manager.ts": 3,
+			"main/lib/browser/download-manager.ts": 2,
 			"main/lib/bundled-cli.ts": 9,
 			"main/lib/custom-ringtones.ts": 13,
 			"main/lib/dev-workspace-name.ts": 2,
@@ -135,7 +135,7 @@ const RULES: Rule[] = [
 			"main/lib/extensions/index.ts": 7,
 			"main/lib/host-db-workspace-name.ts": 3,
 			"main/lib/host-service-coordinator.ts": 3,
-			"main/lib/host-service-lock.ts": 5,
+			"main/lib/host-service-lock.ts": 4,
 			"main/lib/host-service-manifest.ts": 8,
 			"main/lib/local-db/index.ts": 4,
 			"main/lib/local-identity/local-org.ts": 9,
@@ -161,17 +161,17 @@ const EXEMPT_DIR_PREFIXES = ["lib/trpc/routers/changes/workers/"];
 const EXEMPT_FILE_PATTERNS = [/\.test\.tsx?$/, /(^|\/)test-helpers\.ts$/];
 
 /**
- * Matching lines after comment stripping — prose mentions don't count.
+ * Source lines after comment stripping — prose mentions don't count.
  * Line-comment stripping is naive (`//` inside a string truncates the rest
  * of that line), which can only under-count, never false-positive.
  */
-function countMatchingLines(contents: string, pattern: RegExp): number {
-	const stripped = contents.replace(/\/\*[\s\S]*?\*\//g, "");
-	let count = 0;
-	for (const line of stripped.split("\n")) {
-		if (pattern.test(line.replace(/\/\/.*$/, ""))) count++;
-	}
-	return count;
+function codeLines(contents: string): string[] {
+	// `.` stops at `\r`, so a CRLF checkout would keep its `//` comments.
+	return contents
+		.replace(/\r\n/g, "\n")
+		.replace(/\/\*[\s\S]*?\*\//g, "")
+		.split("\n")
+		.map((line) => line.replace(/\/\/.*$/, ""));
 }
 
 function* walk(dir: string): Generator<string> {
@@ -207,19 +207,21 @@ function relevantFiles(): string[] {
 }
 
 describe("no new main-process blocking call sites", () => {
-	const files = relevantFiles();
+	const files = relevantFiles().map((rel) => ({
+		rel,
+		lines: codeLines(fs.readFileSync(path.join(SRC_DIR, rel), "utf-8")),
+	}));
 
 	for (const rule of RULES) {
 		test(rule.name, () => {
 			const counts = new Map<string, number>();
 			const scoped = rule.restrictTo
-				? files.filter((rel) =>
+				? files.filter(({ rel }) =>
 						rule.restrictTo?.some((prefix) => rel.startsWith(prefix)),
 					)
 				: files;
-			for (const rel of scoped) {
-				const contents = fs.readFileSync(path.join(SRC_DIR, rel), "utf-8");
-				const count = countMatchingLines(contents, rule.pattern);
+			for (const { rel, lines } of scoped) {
+				const count = lines.filter((line) => rule.pattern.test(line)).length;
 				if (count > 0) counts.set(rel, count);
 			}
 

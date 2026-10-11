@@ -179,32 +179,58 @@ describe("createMirrorPushLoop", () => {
 
 	test("retries on a failed send, on the schedule it was given, and never gives up", async () => {
 		const inFlight = { current: null as Promise<void> | null };
+		const failures = RETRY_DELAYS_MS.length + 2;
 		let attempts = 0;
 		const reported: string[] = [];
-
-		const loop = createMirrorPushLoop({
-			inFlight,
-			getSnapshot: () => snapshotAt(1),
-			send: async () => {
-				attempts += 1;
-				if (attempts < 3) throw new Error("host-service is down");
-			},
-			onSynced: () => {},
-			debounceMs: DEBOUNCE_MS,
-			retryDelaysMs: RETRY_DELAYS_MS,
-			retryCapMs: RETRY_CAP_MS,
-			report: (message) => {
-				reported.push(message);
-			},
+		let succeeded = (): void => {};
+		const success = new Promise<void>((resolve) => {
+			succeeded = resolve;
 		});
-		loop.start();
-		await tick(60);
 
-		expect(attempts).toBe(3);
+		const realSetTimeout = globalThis.setTimeout;
+		const scheduled: number[] = [];
+		globalThis.setTimeout = ((
+			handler: () => void,
+			delay: number,
+			...args: unknown[]
+		) => {
+			scheduled.push(delay);
+			return realSetTimeout(handler, delay, ...args);
+		}) as typeof setTimeout;
+		try {
+			const loop = createMirrorPushLoop({
+				inFlight,
+				getSnapshot: () => snapshotAt(1),
+				send: async () => {
+					attempts += 1;
+					if (attempts <= failures) throw new Error("host-service is down");
+					succeeded();
+				},
+				onSynced: () => {},
+				debounceMs: DEBOUNCE_MS,
+				retryDelaysMs: RETRY_DELAYS_MS,
+				retryCapMs: RETRY_CAP_MS,
+				report: (message) => {
+					reported.push(message);
+				},
+			});
+			loop.start();
+			await success;
+			loop.cancel();
+		} finally {
+			globalThis.setTimeout = realSetTimeout;
+		}
+
+		expect(attempts).toBe(failures + 1);
+		expect(scheduled).toEqual([
+			DEBOUNCE_MS,
+			...RETRY_DELAYS_MS,
+			RETRY_CAP_MS,
+			RETRY_CAP_MS,
+		]);
 		// A mirror that stops updating is invisible from the desktop, so every
 		// failure is said out loud.
-		expect(reported.length).toBeGreaterThanOrEqual(2);
-		loop.cancel();
+		expect(reported).toHaveLength(failures);
 	});
 
 	test("a cancelled loop stops retrying — a newer signature has taken over", async () => {

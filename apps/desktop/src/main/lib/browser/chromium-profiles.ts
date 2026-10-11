@@ -279,15 +279,10 @@ function readProfileDisplayNames(userDataDir: string): Map<string, string> {
 	return names;
 }
 
-/** Directory name we report for a profile stored in the user-data dir itself. */
-const ROOT_PROFILE_NAME = "Default";
-
 /**
  * Lists the profiles inside a browser that have a `History` database on disk.
  * A profile directory is any subdirectory containing a `History` file, which is
  * how Chrome lays out both the "Default" profile and additional "Profile N"s.
- * Opera has no "Default" subdirectory and keeps its only profile in the
- * user-data dir itself.
  */
 export function listProfilesWithHistory(
 	browser: ChromiumBrowser,
@@ -296,29 +291,21 @@ export function listProfilesWithHistory(
 
 	const displayNames = readProfileDisplayNames(browser.userDataDir);
 
-	const profiles: ChromiumProfile[] = safeReadDirNames(browser.userDataDir)
-		.filter((dirName) => !EXCLUDED_PROFILE_DIRS.has(dirName))
-		.filter((dirName) =>
-			existsSync(path.join(browser.userDataDir, dirName, "History")),
-		)
-		.map((dirName) => ({
-			browser,
-			directoryName: dirName,
-			displayName: displayNames.get(dirName) ?? dirName,
-			profileDir: path.join(browser.userDataDir, dirName),
-		}));
-
-	if (existsSync(path.join(browser.userDataDir, "History"))) {
-		profiles.unshift({
-			browser,
-			directoryName: ROOT_PROFILE_NAME,
-			displayName: ROOT_PROFILE_NAME,
-			profileDir: browser.userDataDir,
-		});
-	}
-
-	// Arc (and similar) mark internal profiles with a "__" display name.
-	return profiles.filter((profile) => !profile.displayName.startsWith("__"));
+	return (
+		safeReadDirNames(browser.userDataDir)
+			.filter((dirName) => !EXCLUDED_PROFILE_DIRS.has(dirName))
+			.filter((dirName) =>
+				existsSync(path.join(browser.userDataDir, dirName, "History")),
+			)
+			.map((dirName) => ({
+				browser,
+				directoryName: dirName,
+				displayName: displayNames.get(dirName) ?? dirName,
+				profileDir: path.join(browser.userDataDir, dirName),
+			}))
+			// Arc (and similar) mark internal profiles with a "__" display name.
+			.filter((profile) => !profile.displayName.startsWith("__"))
+	);
 }
 
 /**

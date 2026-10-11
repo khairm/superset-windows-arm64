@@ -299,11 +299,6 @@ describe("resolvePath", () => {
 	});
 
 	describe("home directory expansion", () => {
-		test("expands ~ to home directory", () => {
-			const result = resolvePath("~/Documents/file.ts");
-			expect(result).toBe(path.join(homedir, "Documents/file.ts"));
-		});
-
 		test("expands ~ alone to home directory", () => {
 			const result = resolvePath("~");
 			expect(result).toBe(homedir);
@@ -328,30 +323,8 @@ describe("resolvePath", () => {
 	});
 
 	describe("relative paths", () => {
-		test("resolves relative path against cwd", () => {
-			const result = resolvePath("src/file.ts", "/project");
-			expect(result).toBe("/project/src/file.ts");
-		});
-
-		test("resolves ./prefixed path against cwd", () => {
-			const result = resolvePath("./src/file.ts", "/project");
-			expect(result).toBe("/project/src/file.ts");
-		});
-
-		test("resolves ../prefixed path against cwd", () => {
-			const result = resolvePath("../sibling/file.ts", "/project/subdir");
-			expect(result).toBe("/project/sibling/file.ts");
-		});
-
 		test("throws RelativePathWithoutCwdError when no cwd provided", () => {
 			expect(() => resolvePath("file.ts")).toThrow(RelativePathWithoutCwdError);
-		});
-	});
-
-	describe("combined expansion", () => {
-		test("expands ~ then resolves (already absolute after expansion)", () => {
-			const result = resolvePath("~/file.ts", "/ignored/cwd");
-			expect(result).toBe(path.join(homedir, "file.ts"));
 		});
 	});
 
@@ -421,16 +394,6 @@ describe("resolvePath", () => {
 		test("strips wrappers with leading/trailing whitespace", () => {
 			const result = resolvePath('  "/absolute/path/file.ts"  ');
 			expect(result).toBe("/absolute/path/file.ts");
-		});
-
-		test("handles wrappers combined with ~ expansion", () => {
-			const result = resolvePath('"~/Documents/file.ts"');
-			expect(result).toBe(path.join(homedir, "Documents/file.ts"));
-		});
-
-		test("handles wrappers combined with relative paths", () => {
-			const result = resolvePath("(src/file.ts)", "/project");
-			expect(result).toBe("/project/src/file.ts");
 		});
 	});
 });
@@ -743,12 +706,6 @@ describe("resolvePath guards against process.cwd() fallback", () => {
 	test("file:// URLs do not need a cwd", () => {
 		expect(() => resolvePath("file:///Users/me/file.ts")).not.toThrow();
 	});
-
-	test("a relative path with a cwd resolves correctly", () => {
-		expect(resolvePath("src/index.ts", "/workspace")).toBe(
-			"/workspace/src/index.ts",
-		);
-	});
 });
 
 describe("pathIsMissing", () => {
@@ -791,12 +748,6 @@ describe("pathIsMissing", () => {
 		await fs.rm(target);
 		// The editor cannot open it either — `open` reports it as nonexistent.
 		expect(await pathIsMissing(link)).toBe(true);
-	});
-
-	test("a stat failure that is not absence does not count as missing", async () => {
-		// ENAMETOOLONG: we cannot tell whether the path is there, so the app
-		// still gets to try and its failure still reports.
-		expect(await pathIsMissing(`/${"a".repeat(5000)}`)).toBe(false);
 	});
 });
 

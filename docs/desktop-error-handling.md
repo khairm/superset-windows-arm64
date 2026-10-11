@@ -23,16 +23,8 @@ localized diagnostics, copy action, and home navigation.
 ## Regression guardrails
 
 - `RendererLayout/renderer-safety.test.ts` traverses emergency UI imports and
-  rejects unapproved external dependencies or React context hooks. It also scans
-  production renderer imports for router or React roots bypassing the designated
-  entry points. These tests run in the existing desktop test job.
-- `RendererRouter/fixtures/route-errors.tsx` runs in an isolated process with real
-  Lingui macro compilation and French catalogs. It exercises root layout errors,
-  loader errors, 404s, a failing error page, and the provider-free emergency
-  boundary. It checks reporting, original route diagnostics, navigation recovery,
-  title-bar structure, and action ordering.
-- The fixture also exercises the pre-mount DOM fallback, long diagnostics, and
-  the rule that boot handlers cannot replace an already-mounted React tree.
+  rejects unapproved external dependencies or React context hooks. It runs in
+  the existing desktop test job.
 
 ## Validation
 
@@ -61,28 +53,13 @@ A subsequent real-app CDP sweep is documented in [the CDP verification report](d
 
 ## Systematic follow-up
 
-The boundary inventory is now an AST test covering route error/not-found options,
-TanStack content boundaries, and React error lifecycle methods. A new registration
-fails the audit until its fallback and recovery contract are reviewed. This is a
-review guard, not a proof that arbitrary third-party code cannot create a boundary.
+Settings and dashboard layouts share `ContentBoundary` and `ContentError`. The
+sidebar, search banner, and title-bar region stay outside the boundary, so a
+render error replaces only page content. The boundary resets on the router's
+`loadedAt` commit marker, not the URL, so navigation does not retry the old
+outlet. `renderer-safety.test.ts` checks that every outlet in both layouts sits
+inside `ContentBoundary`.
 
-The integration fixture now mounts the same `ContentBoundary` as the app.
-It verifies retained chrome, recovery to a sibling route, and escalation when the
-content fallback itself throws. This exposed a navigation race: resetting on the
-new URL can retry the old outlet before the new matches commit. Resetting on the
-router's `loadedAt` commit marker follows TanStack's own route-boundary behavior.
-The sibling-navigation test fails with the previous URL reset and passes with the
-commit reset.
-
-Boot and emergency diagnostics share a nonthrowing formatter. Unit tests include
-null, primitives, circular objects, throwing message getters, and revoked proxies.
-These guards and integration cases run through `bun test`; no separate CDP suite
-or production fault-injection mechanism is added.
-
-Settings and dashboard layouts now share `ContentBoundary` and `ContentError`
-under their authenticated parent. Both Settings outlet variants sit inside the
-boundary; the sidebar, search banner, and native title-bar region remain outside.
-Render errors therefore replace only page content, and committed navigation to
-another Settings section resets the boundary. The architecture test verifies the
-outlet placement in both layouts alongside the shared boundary's integration
-coverage for navigation recovery and fallback escalation.
+Boot and emergency diagnostics share a nonthrowing formatter.
+`failure-diagnostic.test.ts` covers null, primitives, circular objects,
+throwing message getters, and revoked proxies.

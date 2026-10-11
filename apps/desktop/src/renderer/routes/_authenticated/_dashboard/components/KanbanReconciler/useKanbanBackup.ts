@@ -1,7 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useRef } from "react";
-import { authClient } from "renderer/lib/auth-client";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 
 const BACKUP_DEBOUNCE_MS = 10_000;
@@ -28,8 +28,7 @@ const BACKUP_RETRY_MS = 30 * 60_000;
  */
 export function useKanbanBackup(): void {
 	const collections = useCollections();
-	const { data: session } = authClient.useSession();
-	const organizationId = session?.session?.activeOrganizationId ?? null;
+	const organizationId = useActiveOrganizationId();
 	const writeBackup = electronTrpc.window.writeKanbanBackup.useMutation();
 
 	const { data: columns } = useLiveQuery(
@@ -45,7 +44,6 @@ export function useKanbanBackup(): void {
 	mutateRef.current = writeBackup.mutate;
 
 	useEffect(() => {
-		if (!organizationId) return;
 		if (!cards || cards.length === 0) return;
 		const write = () => {
 			mutateRef.current({

@@ -158,22 +158,6 @@ describe("listProfilesWithHistory", () => {
 		]);
 	});
 
-	it("lists a profile stored in the user-data dir itself, as Opera does", () => {
-		const userDataDir = path.join(makeHome(), "com.operasoftware.Opera");
-		writeHistory(userDataDir);
-		mkdirSync(path.join(userDataDir, "Extensions"), { recursive: true });
-
-		const profiles = listProfilesWithHistory({
-			key: "opera",
-			name: "Opera",
-			userDataDir,
-		});
-
-		expect(profiles).toHaveLength(1);
-		expect(profiles[0]?.profileDir).toBe(userDataDir);
-		expect(profiles[0]?.displayName).toBe("Default");
-	});
-
 	it("falls back to the directory name without Local State", () => {
 		const home = makeHome();
 		writeHistory(path.join(home, CHROME_REL, "Default"));

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import {
-	deriveWorktreePathFromSegments,
 	getWorktreeSegmentsFromCwd,
 	resolveWorkspaceIdentity,
 } from "./patch-dev-protocol";
@@ -28,15 +27,6 @@ describe("patch-dev-protocol workspace resolution", () => {
 		]);
 	});
 
-	it("derives the worktree path without the apps/desktop suffix", () => {
-		expect(
-			deriveWorktreePathFromSegments(
-				["superset", "kitenite", "feature-2058", "apps", "desktop"],
-				WORKTREE_BASE,
-			),
-		).toBe(join(WORKTREE_BASE, "superset", "kitenite", "feature-2058"));
-	});
-
 	it("prefers the path-derived workspace name over a stale env value", () => {
 		const identity = resolveWorkspaceIdentity({
 			cwd: join(WORKTREE_BASE, "superset", "feature-2058", "apps", "desktop"),
@@ -47,21 +37,6 @@ describe("patch-dev-protocol workspace resolution", () => {
 		expect(identity.workspaceName).toBe("feature-2058");
 		expect(identity.displayWorkspaceName).toBe("feature-2058");
 		expect(identity.bundleDisplayWorkspaceName).toBe("feature-2058");
-	});
-
-	it("prefers the prod DB display name and sanitizes it for the bundle name", () => {
-		const worktreePath = join(WORKTREE_BASE, "superset", "feature-2058");
-		const identity = resolveWorkspaceIdentity({
-			cwd: join(worktreePath, "apps", "desktop"),
-			envWorkspaceName: "feature-2058",
-			worktreeBase: WORKTREE_BASE,
-			lookupDisplayName: (path) =>
-				path === worktreePath ? "Team/Alias" : undefined,
-		});
-
-		expect(identity.workspaceName).toBe("feature-2058");
-		expect(identity.displayWorkspaceName).toBe("Team/Alias");
-		expect(identity.bundleDisplayWorkspaceName).toBe("Team-Alias");
 	});
 
 	it("falls back to the env workspace name outside the worktree root", () => {

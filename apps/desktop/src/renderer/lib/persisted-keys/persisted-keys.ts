@@ -49,6 +49,8 @@ export const DEAD_KEYS: DeadKey[] = [
 	{ key: "local-chat", match: "exact" },
 	// Opening a page no longer routes to the last-visited workspace
 	{ key: "last-active-v2-workspace", match: "exact" },
+	// (CLOUD-SEVERANCE-P2) The sign-in page no longer records the last method
+	{ key: "superset-last-auth-method", match: "exact" },
 ];
 
 function matchesDeadKey(key: string): boolean {

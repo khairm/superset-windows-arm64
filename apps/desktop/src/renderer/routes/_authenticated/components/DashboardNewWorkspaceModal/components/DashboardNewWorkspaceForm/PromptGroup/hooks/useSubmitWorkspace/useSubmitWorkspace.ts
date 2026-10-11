@@ -12,7 +12,6 @@ import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 // cloud session hook upstream reads.
 import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
-import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import type { NewWorkspacePromptContextApi } from "renderer/stores/new-workspace-prompt-context";
 import { usePromptHistoryStore } from "renderer/stores/prompt-history";
@@ -66,7 +65,6 @@ export function useSubmitWorkspace(
 	// path: the modal closes and unmounts this hook, and that unmount is what
 	// makes the next open a fresh submit.
 	const masterSubmitInFlight = useRef(false);
-	const collections = useCollections();
 	// (CLOUD-SEVERANCE-P2) Frozen local organization. Upstream reads the
 	// per-window org here; with one organization every window resolves to it.
 	const activeOrganizationId = useActiveOrganizationId();

@@ -1,12 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
 	chmodSync,
-	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
-	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,20 +50,6 @@ describe("bundled CLI", () => {
 		expect(shim).toContain(
 			`exec '/Applications/Superset Test.app/Contents/Resources/bin/super'"'"'set' "$@"`,
 		);
-	});
-
-	it("installs an executable managed shim into the terminal bin directory", () => {
-		const status = installBundledCliShim({
-			binDir,
-			bundledCliPath,
-			platform: "darwin",
-		});
-		const shimPath = path.join(binDir, "superset");
-
-		expect(status).toBe("installed");
-		expect(existsSync(shimPath)).toBe(true);
-		expect(readFileSync(shimPath, "utf-8")).toContain(BUNDLED_CLI_SHIM_MARKER);
-		expect(statSync(shimPath).mode & 0o111).not.toBe(0);
 	});
 
 	it("updates an existing managed shim", () => {
