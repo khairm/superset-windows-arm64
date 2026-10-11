@@ -407,7 +407,7 @@ When done, stop. Output a one-paragraph summary of the root cause, your fix, and
     # AI_UNAVAILABLE_EXIT here lets the agent step end 0 so the push step —
     # the only place that can refuse to commit — makes the call.
     CLAUDE_RC=0
-    ( ensure_claude && run_claude "build-repair-round-$ROUND" "$REPAIR_PROMPT" ) || CLAUDE_RC=$?
+    ( ensure_claude && run_claude "build-repair-round-$ROUND" "$REPAIR_PROMPT" claude-opus-5 high ) || CLAUDE_RC=$?
     if [ "$CLAUDE_RC" -eq "$AI_UNAVAILABLE_EXIT" ]; then
       echo "(BUILD-REPAIR) AI-unavailable recorded — the push step will fail loud without committing anything."
       exit 0

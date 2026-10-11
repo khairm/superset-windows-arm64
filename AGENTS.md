@@ -36,7 +36,8 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   review. Deterministic gates follow
   (FEATURES.md marker survival, dependency/lock consistency, `(REFERR-GATE)`
   cannot-find-name + duplicate-declaration check), then a bounded
-  `(MERGE-SEMANTIC-GATE)` review → adapt → fresh-review loop (max 5 reviews /
+  `(MERGE-SEMANTIC-GATE)` review (`claude-opus-5-5`, effort medium) → adapt →
+  fresh-review loop (max 5 reviews /
   4 repairs, under GitHub's default 360-minute job cap). After the last AI pass
   it regenerates the Lingui catalogs and fills any entry extraction left empty
   with a pinned donor's own translation for that exact message — the fork's

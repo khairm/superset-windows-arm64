@@ -164,7 +164,7 @@ ensure_claude() {
     || die_ai_unavailable "claude CLI install" "npm install -g @anthropic-ai/claude-code failed"
 }
 
-# run_claude <label> <prompt>
+# run_claude <label> <prompt> <model> <effort>
 # Streams AND captures the CLI's output, retries transient API conditions in
 # place with backoff, hard-aborts the run when the CLI never reached the model,
 # and otherwise returns the CLI's own exit code so callers keep their own
@@ -173,13 +173,17 @@ ensure_claude() {
 # success or on a failure carrying no transient signature, so an outer sleep
 # would wait out a condition that cannot be in effect.
 run_claude() {
-  local label="$1" prompt="$2" log rc hit try lines bytes errexit_was_on=0
+  local label="$1" prompt="$2" model="${3:-}" effort="${4:-}" log rc hit try lines bytes errexit_was_on=0
+  if [ -z "$model" ] || [ -z "$effort" ]; then
+    echo "::error::run_claude ${label}: model and effort are required"
+    exit 1
+  fi
   case $- in *e*) errexit_was_on=1 ;; esac
   ai_arm_attempt
   log="$AI_TMPDIR/claude-${label}.log"
   for ((try = 1; try <= AI_RUN_MAX_TRIES; try++)); do
     set +e
-    claude --dangerously-skip-permissions --model claude-opus-5 --effort high -p "$prompt" 2>&1 | tee "$log"
+    claude --dangerously-skip-permissions --model "$model" --effort "$effort" -p "$prompt" 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}
     if [ "$errexit_was_on" -eq 1 ]; then set -e; fi
     # The CLI reached the model and succeeded: the log is model prose, never a

@@ -144,6 +144,14 @@ expect_has "the malformed line survives" "$CASE_DIR/new-blockers.txt" 'note: cou
 expect_has "and so does the well-formed one beside it" "$CASE_DIR/new-blockers.txt" "$BLOCKER_A"
 expect_empty "nothing reached the open record" "$CASE_DIR/open-blockers.txt"
 
+# The semantic gate reviewer runs Opus 5.5 at medium effort; every fixer stays on Opus 5 high.
+CALLS_FILE="$(mktemp)"
+TMPDIRS+=("$CALLS_FILE")
+grep -E 'run_claude "' "$WF" > "$CALLS_FILE"
+expect "the gate reviewer is Opus 5.5 at medium effort" "$(grep -c 'run_claude "review-round-$round" "$REVIEW_PROMPT" claude-opus-5-5 medium ' "$CALLS_FILE")" 1
+expect "every other call is Opus 5 at high effort" "$(grep -v 'review-round-' "$CALLS_FILE" | grep -vc ' claude-opus-5 high ')" 0
+expect "the workflow has the expected five run_claude calls" "$(wc -l < "$CALLS_FILE" | tr -d ' ')" 5
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES blocker-lifecycle assertion(s) failed"
   exit 1

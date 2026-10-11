@@ -146,6 +146,7 @@ else
 fi
 has   "the whole tree is killed, not just the direct child" "$(cat "$CALLS/timeout")" "--kill-after"
 eq    "the AI result is what the push step reads" "$(cat "$STATE/claude-rc")" "0"
+has   "the repair agent runs Opus 5 at high effort" "$(cat "$CALLS/claude-argv")" "--model claude-opus-5 --effort high"
 none  "no token in anything handed onward" "$(grep -rlF "$TOKEN_SENTINEL" "$STATE" "$CALLS" 2>/dev/null || true)"
 
 echo "== a failed install still gets the agent, and tells it so =="
