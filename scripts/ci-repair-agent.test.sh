@@ -231,6 +231,11 @@ zero  "the step succeeds so the push step decides" "$RC"
 didnt "the gate is skipped" gate_ran
 eq    "the pessimistic AI result survives for the push step" "$(cat "$STATE/claude-rc")" "99"
 
+echo "== run_claude refuses to start without a model and effort =="
+OUT="$(bash -c 'source "$1"; run_claude no-model "prompt"' _ "$SRC/ai-run.sh" 2>&1)"; RC=$?
+if [ "$RC" -ne 0 ]; then ok "it exits non-zero"; else no "it exits non-zero — got rc 0"; fi
+has   "and says why" "$OUT" "::error::run_claude no-model: model and effort are required"
+
 echo ""
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
