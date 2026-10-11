@@ -124,12 +124,28 @@ function freePort(): Promise<number> {
 	});
 }
 
+const acceptedSockets = new WeakMap<net.Server, Set<net.Socket>>();
+
+// bun 1.4.2 on Windows never closes the server side after the client destroys it.
+function trackedServer(
+	onConnection?: (socket: net.Socket) => void,
+): net.Server {
+	const sockets = new Set<net.Socket>();
+	const server = net.createServer((socket) => {
+		sockets.add(socket);
+		socket.on("close", () => sockets.delete(socket));
+		onConnection?.(socket);
+	});
+	acceptedSockets.set(server, sockets);
+	return server;
+}
+
 /** Takes the port the moment it frees up, the way any other process would. */
 function occupySoon(port: number, timeoutMs: number): Promise<net.Server> {
 	return new Promise((resolve, reject) => {
 		const deadline = Date.now() + timeoutMs;
 		const attempt = (): void => {
-			const server = net.createServer();
+			const server = trackedServer();
 			server.on("error", () => {
 				if (Date.now() > deadline) {
 					reject(new Error(`could not take 127.0.0.1:${port}`));
@@ -182,6 +198,7 @@ async function healthStubServer(port: number): Promise<{
 }
 
 function closeServer(server: net.Server): Promise<void> {
+	for (const socket of acceptedSockets.get(server) ?? []) socket.destroy();
 	return new Promise((resolve) => server.close(() => resolve()));
 }
 
@@ -537,8 +554,7 @@ describe("notify daemon supervisor", () => {
 		const port = await freePort();
 		const secret = "secret-foreign-occupant-4a7c2e19b0";
 		fs.writeFileSync(path.join(dir, "notify-daemon.secret"), secret);
-		const accepted: net.Socket[] = [];
-		const silent = net.createServer((socket) => accepted.push(socket));
+		const silent = trackedServer();
 		await new Promise<void>((resolve) => {
 			silent.listen(port, "127.0.0.1", () => resolve());
 		});
@@ -548,7 +564,6 @@ describe("notify daemon supervisor", () => {
 
 		expect(adopted).toBe(null);
 		expect(Date.now() - started).toBeLessThan(5_000);
-		for (const socket of accepted) socket.destroy();
 		await closeServer(silent);
 	}, 30_000);
 
@@ -779,10 +794,8 @@ describe("notify daemon supervisor", () => {
 	// quit cleanup has already put back.
 	it("treats a cancel inside its last health request as a cancel", async () => {
 		const port = await freePort();
-		const accepted: net.Socket[] = [];
 		let connections = 0;
-		const silent = net.createServer((socket) => {
-			accepted.push(socket);
+		const silent = trackedServer(() => {
 			connections += 1;
 			if (connections === 3) void stopNotifyDaemon();
 		});
@@ -798,7 +811,6 @@ describe("notify daemon supervisor", () => {
 
 		expect(connections).toBe(3);
 		expect(ownerIsGone).toBe(false);
-		for (const socket of accepted) socket.destroy();
 		await closeServer(silent);
 	}, 60_000);
 
