@@ -95,6 +95,7 @@ beforeAll(async () => {
 
 afterEach(async () => {
 	while (running.length > 0) await running.pop()?.stop();
+	for (const server of [...liveServers]) await closeServer(server);
 });
 
 afterAll(() => {
@@ -125,6 +126,7 @@ function freePort(): Promise<number> {
 }
 
 const acceptedSockets = new WeakMap<net.Server, Set<net.Socket>>();
+const liveServers = new Set<net.Server>();
 
 // bun 1.4.2 on Windows never closes the server side after the client destroys it.
 function trackedServer(
@@ -137,6 +139,7 @@ function trackedServer(
 		onConnection?.(socket);
 	});
 	acceptedSockets.set(server, sockets);
+	liveServers.add(server);
 	return server;
 }
 
@@ -198,7 +201,9 @@ async function healthStubServer(port: number): Promise<{
 }
 
 function closeServer(server: net.Server): Promise<void> {
+	liveServers.delete(server);
 	for (const socket of acceptedSockets.get(server) ?? []) socket.destroy();
+	if (!server.listening) return Promise.resolve();
 	return new Promise((resolve) => server.close(() => resolve()));
 }
 
