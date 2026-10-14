@@ -54,7 +54,7 @@ import {
 	resolveSessionOrganizationState,
 	type SessionOrganizationContext,
 } from "./lib/resolve-session-organization-state";
-import { stripeClient } from "./stripe";
+import { stripeClient, syncCustomerName } from "./stripe";
 import {
 	countBillableSeats,
 	formatPrice,
@@ -758,8 +758,14 @@ export const auth = betterAuth({
 				afterUpdateOrganization: async ({ organization }) => {
 					if (!organization?.stripeCustomerId) return;
 
-					await stripeClient.customers.update(organization.stripeCustomerId, {
-						name: organization.name,
+					await syncCustomerName(
+						organization.stripeCustomerId,
+						organization.name,
+					).catch((error) => {
+						console.error(
+							"[org/after-update] Failed to sync Stripe customer name:",
+							error,
+						);
 					});
 				},
 
@@ -1225,6 +1231,10 @@ export const auth = betterAuth({
 							customer: org?.stripeCustomerId ?? undefined,
 							allow_promotion_codes: !annual,
 							billing_address_collection: "required",
+							tax_id_collection: { enabled: true },
+							...(org?.stripeCustomerId && {
+								customer_update: { name: "auto", address: "auto" },
+							}),
 							metadata: {
 								organizationId: org?.id ?? "",
 								initiatedByUserId: user.id,
@@ -1247,6 +1257,17 @@ export const auth = betterAuth({
 					if (!org) return;
 
 					if (plan.name === "enterprise") return;
+
+					if (org.stripeCustomerId) {
+						await syncCustomerName(org.stripeCustomerId, org.name).catch(
+							(error) => {
+								console.error(
+									"[stripe/subscription-complete] Failed to restore customer name:",
+									error,
+								);
+							},
+						);
+					}
 
 					const owners = await getOrganizationOwners(subscription.referenceId);
 

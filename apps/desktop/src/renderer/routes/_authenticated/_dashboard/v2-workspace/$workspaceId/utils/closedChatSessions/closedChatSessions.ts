@@ -1,4 +1,6 @@
-const closed = new Set<string>();
+import { readPendingChatStopIds } from "../pendingChatStops";
+
+const closed = new Set<string>(readPendingChatStopIds());
 
 export function markChatSessionClosed(sessionId: string): () => void {
 	closed.add(sessionId);

@@ -68,5 +68,6 @@ export function fromHostPullRequestContent(
 			comments: content.comments,
 			labels: content.labels,
 		}),
+		...(content.commits !== undefined && { commits: content.commits }),
 	};
 }

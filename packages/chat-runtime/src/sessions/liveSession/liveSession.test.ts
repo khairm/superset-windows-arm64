@@ -887,6 +887,36 @@ describe("LiveSession", () => {
 		await runtime.dispose();
 	});
 
+	test("an agent that dies mid-turn discards the queue instead of sending the next prompt", async () => {
+		const { runtime, sessionId } = startSession({
+			turns: [
+				[
+					{ kind: "turn", turn: turn("t1") },
+					{
+						kind: "turn",
+						turn: turn("t1", { status: "failed", completedAtMs: 2 }),
+						delayMs: 20,
+					},
+					{ kind: "session", session: { status: "dead" } },
+				],
+				[],
+			],
+		});
+		sendPrompt(runtime, sessionId, "first");
+		const second = sendPrompt(runtime, sessionId, "second");
+
+		await waitFor(() =>
+			sessionStatuses(journalEnvelopes(runtime, sessionId)).includes("dead"),
+		);
+		const envelopes = journalEnvelopes(runtime, sessionId);
+		const snapshot = reduceMany(emptySnapshot(), envelopes);
+		expect(sessionStatuses(envelopes).at(-1)).toBe("dead");
+		expect(snapshot.items.get(second.itemId)?.item).toMatchObject({
+			discarded: true,
+		});
+		await runtime.dispose();
+	});
+
 	test("queue commands reject a prompt that is not queued", async () => {
 		const { runtime, sessionId } = startSession(SINGLE_TURN);
 		expect(() =>

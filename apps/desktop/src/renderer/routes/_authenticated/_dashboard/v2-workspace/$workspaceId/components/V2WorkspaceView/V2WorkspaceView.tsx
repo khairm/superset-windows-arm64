@@ -216,7 +216,6 @@ function V2WorkspaceCenter({
 	});
 	const paneRegistry = usePaneRegistry({
 		onOpenDiff: openDiffPane,
-		onOpenComment: openCommentPane,
 		onOpenFile: openFilePane,
 		onRevealPath: revealPath,
 		launcher,

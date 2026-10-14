@@ -20,11 +20,18 @@ import {
 	useStarNagCard,
 } from "renderer/components/SidebarCardSlot";
 import { UpdatesPill } from "renderer/components/UpdatesPill";
+import { useActiveOrganizationId } from "renderer/hooks/useActiveOrganizationId";
 import { useCloudWorkspaces } from "renderer/hooks/useCloudWorkspaces";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { useActiveRoute } from "renderer/lib/active-route";
+import { authClient } from "renderer/lib/auth-client";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
+import {
+	EMPTY_CLOUD_SIDEBAR,
+	useCloudSidebarStore,
+} from "renderer/routes/_authenticated/_dashboard/stores/cloudSidebarStore";
+import { isInCloudSidebar } from "renderer/routes/_authenticated/_dashboard/utils/buildCloudSidebar";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
@@ -525,6 +532,14 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 		[sidebarWorkspaceHostTargets, activeHostUrl],
 	);
 
+	const { data: session } = authClient.useSession();
+	const userId = session?.user?.id ?? null;
+	const organizationId = useActiveOrganizationId();
+	const cloudSidebarEntries = useCloudSidebarStore((state) =>
+		organizationId
+			? (state.byOrganization[organizationId] ?? EMPTY_CLOUD_SIDEBAR).entries
+			: EMPTY_CLOUD_SIDEBAR.entries,
+	);
 	const switcherWorkspaces = useMemo<ActiveWorkspaceSwitcherOption[]>(() => {
 		const byId = new Map<string, ActiveWorkspaceSwitcherOption>();
 		for (const workspace of pinnedWorkspaces) {
@@ -551,10 +566,19 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 			}
 		}
 		for (const cloud of cloudWorkspaces ?? []) {
+			if (!isInCloudSidebar(cloud, cloudSidebarEntries[cloud.id], userId))
+				continue;
 			byId.set(cloud.id, { id: cloud.id, name: cloud.name, detail: null });
 		}
 		return [...byId.values()];
-	}, [pinnedWorkspaces, sessionWorkspaces, sortedGroups, cloudWorkspaces]);
+	}, [
+		pinnedWorkspaces,
+		sessionWorkspaces,
+		sortedGroups,
+		cloudWorkspaces,
+		userId,
+		cloudSidebarEntries,
+	]);
 
 	// Resolve the full project object for the active workspace from the id above
 	// (used by the footer / view-in-place logic).

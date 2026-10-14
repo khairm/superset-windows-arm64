@@ -16,6 +16,7 @@ import { authClient, getAuthToken } from "renderer/lib/auth-client";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { dragDropManager } from "renderer/lib/dnd";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { terminalRuntimeRegistry } from "renderer/lib/terminal/terminal-runtime-registry";
 import { showWorkspaceAutoNameWarningToast } from "renderer/lib/workspaces/showWorkspaceAutoNameWarningToast";
 import { InitGitDialog } from "renderer/react-query/projects/InitGitDialog";
@@ -33,6 +34,8 @@ import {
 } from "renderer/routes/_authenticated/components/V1AutoMigration";
 import {
 	V1FlipNotice,
+	V1MigrationStatusCard,
+	V1TerminalsNotice,
 	V2FlipWelcome,
 } from "renderer/routes/_authenticated/components/V1FlipNotice";
 import { V1ImportModal } from "renderer/routes/_authenticated/components/V1ImportModal";
@@ -51,6 +54,7 @@ import { DockBadgeController } from "./components/DockBadgeController";
 import { FileAutoSave } from "./components/FileAutoSave";
 import { FileMenuListener } from "./components/FileMenuListener";
 import { GitInitConfirmDialog } from "./components/GitInitConfirmDialog";
+import { GlobalPaneLayoutRequests } from "./components/GlobalPaneLayoutRequests";
 import { OriginRouteTracker } from "./components/OriginRouteTracker";
 import { ScreenLockSubscriber } from "./components/ScreenLockSubscriber";
 import { TeardownLogsDialog } from "./components/TeardownLogsDialog";
@@ -86,6 +90,10 @@ function AuthenticatedLayout() {
 
 	// (CLOUD-SEVERANCE-P2) There is no signed-out state to be in.
 	const isSignedIn = true;
+	// (CLOUD-SEVERANCE-P2) The frozen local organization, not the session's —
+	// the gate that demanded one from the cloud is removed below, and this is
+	// the same id every org-keyed store in the fork already reads.
+	const activeOrganizationId = useActiveOrganizationId();
 
 	const isAuthPending =
 		(isPending || (isRefetching && !session?.user && hasLocalToken)) &&
@@ -255,6 +263,7 @@ function AuthenticatedLayout() {
 			<CollectionsProvider>
 				<WindowTitle />
 				{/* (FORK-BROWSER-OFF) */}
+				<GlobalPaneLayoutRequests />
 				<FileAutoSave />
 				<LocalHostServiceProvider>
 					{/* Above the workspace fan-out: it needs sandbox addresses to
@@ -283,7 +292,11 @@ function AuthenticatedLayout() {
 								{isV2CloudEnabled ? (
 									<>
 										<V1MigrationContinuity />
-										<V2FlipWelcome />
+										<V2FlipWelcome organizationId={activeOrganizationId} />
+										<V1MigrationStatusCard
+											organizationId={activeOrganizationId}
+										/>
+										<V1TerminalsNotice organizationId={activeOrganizationId} />
 									</>
 								) : (
 									<V1FlipNotice />

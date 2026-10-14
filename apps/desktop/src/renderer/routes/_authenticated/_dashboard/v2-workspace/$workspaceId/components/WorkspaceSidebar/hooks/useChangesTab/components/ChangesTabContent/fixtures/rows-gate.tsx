@@ -1,7 +1,10 @@
 import { afterAll, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
-GlobalRegistrator.register({ url: "http://localhost" });
+// test-setup.ts registers one happy-dom window for the whole run; register
+// here only when this fixture is the one that brought the DOM up.
+const registered = GlobalRegistrator.isRegistered;
+if (!registered) GlobalRegistrator.register({ url: "http://localhost" });
 (
 	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -26,9 +29,9 @@ mock.module("../../ChangesFileList", () => ({
 const { act, cleanup, render } = await import("@testing-library/react/pure");
 const { ChangesTabContent } = await import("../ChangesTabContent");
 
-afterAll(() => {
+afterAll(async () => {
 	cleanup();
-	GlobalRegistrator.unregister();
+	if (!registered) await GlobalRegistrator.unregister();
 });
 
 const noop = () => {};

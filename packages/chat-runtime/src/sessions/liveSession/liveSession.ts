@@ -314,6 +314,7 @@ export class LiveSession {
 				return;
 			}
 			case "session":
+				if (event.session.status === "dead") this.discardPending();
 				this.emitSession(event.session);
 				if (event.session.awaitingBackground) this.steerQueueIntoHeldTurn();
 				return;

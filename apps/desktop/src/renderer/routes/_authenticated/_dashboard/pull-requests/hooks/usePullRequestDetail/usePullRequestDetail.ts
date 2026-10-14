@@ -29,6 +29,20 @@ export interface PullRequestDetailComment {
 	url?: string | null;
 }
 
+export interface PullRequestDetailCommitAuthor {
+	/** Null when GitHub maps the commit's email to no account. */
+	login: string | null;
+	name: string | null;
+}
+
+export interface PullRequestDetailCommit {
+	oid: string;
+	messageHeadline: string;
+	committedDate: string;
+	author: PullRequestDetailCommitAuthor | null;
+	url: string;
+}
+
 /** What a host's `gh pr view` adds over the cloud shape. Every field is
  *  optional: the cloud route and hosts older than this read leave them out. */
 export interface PullRequestDetailExtras {
@@ -40,6 +54,7 @@ export interface PullRequestDetailExtras {
 	closedAt?: string | null;
 	reviewers?: PullRequestDetailActor[];
 	comments?: PullRequestDetailComment[];
+	commits?: PullRequestDetailCommit[];
 	labels?: { name: string; color: string | null }[];
 }
 
@@ -155,6 +170,11 @@ export function useInvalidatePullRequestDetail(key: PullRequestDetailKey) {
 				queryKey: V2_WORKSPACES_PULL_REQUEST_QUERY_KEY_PREFIX,
 			});
 		}
+		// The workspace pane's review threads live on the context client under
+		// tRPC's own key; a thread reply posted here must reach them too.
+		void queryClient.invalidateQueries({
+			queryKey: [["git", "getPullRequestThreads"]],
+		});
 		return queryClient.invalidateQueries({
 			queryKey: pullRequestDetailQueryKey({ projectId, hostUrl, prNumber }),
 		});

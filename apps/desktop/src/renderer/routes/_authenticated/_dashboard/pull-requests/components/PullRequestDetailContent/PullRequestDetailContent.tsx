@@ -4,6 +4,7 @@ import { lazy, type ReactNode, Suspense } from "react";
 import { WorkItemDetailState } from "../../../components/WorkItemDetailState";
 import type { PullRequestDetail } from "../../hooks/usePullRequestDetail";
 import { pullRequestReadErrorMessage } from "../../utils/combinePullRequestReadErrors";
+import type { PullRequestActivityThreads } from "../PullRequestActivity";
 import type { PullRequestCommentTarget } from "../PullRequestConversationComposer";
 import { PullRequestDetailSkeleton } from "../PullRequestDetailSkeleton";
 import type { PullRequestDetailTab } from "../PullRequestDetailTabs";
@@ -26,7 +27,8 @@ export function PullRequestDetailContent({
 	prNumber,
 	repoFullName,
 	detail,
-	children,
+	threads,
+	summaryAside,
 	commentTarget = null,
 }: {
 	activeTab: PullRequestDetailTab;
@@ -42,7 +44,9 @@ export function PullRequestDetailContent({
 		error: unknown;
 		refetch: () => unknown;
 	};
-	children?: ReactNode;
+	/** The workspace pane's review threads for the Summary's activity rail. */
+	threads?: PullRequestActivityThreads;
+	summaryAside?: ReactNode;
 	/** Where a conversation comment posts; null hides the composer. */
 	commentTarget?: PullRequestCommentTarget | null;
 }) {
@@ -86,9 +90,9 @@ export function PullRequestDetailContent({
 					<PullRequestSummaryContent
 						data={detail.data}
 						commentTarget={commentTarget}
-					>
-						{children}
-					</PullRequestSummaryContent>
+						threads={threads}
+						aside={summaryAside}
+					/>
 				</div>
 			) : activeTab === "summary" || !prUrl ? (
 				detailState

@@ -51,6 +51,10 @@ import type { HostDb } from "../db/index.ts";
 import { projects, terminalSessions, workspaces } from "../db/schema.ts";
 import type { EventBus } from "../events/index.ts";
 import { chatPortTerminalIds, portManager } from "../ports/port-manager.ts";
+import {
+	getPathState,
+	inaccessiblePathMessage,
+} from "../runtime/path-state/index.ts";
 import { issueAttributionToken } from "../terminal-agents/attribution-token.ts";
 import { sweepAgentBindingsAfterDaemonLoss } from "../terminal-agents/daemon-loss-sweep.ts";
 import { terminalHarnessSession } from "../terminal-agents/harness-session-ref.ts";
@@ -1173,6 +1177,8 @@ export type TerminalSessionErrorKind =
 	| "WORKSPACE_NOT_FOUND"
 	/** The workspace row exists but its worktree is gone from disk. */
 	| "WORKTREE_GONE"
+	/** The worktree exists but this process may not read it (OS privacy controls). */
+	| "WORKTREE_INACCESSIBLE"
 	/**
 	 * (WORKTREE-EXIT-CLEANUP) The user exited the workspace while this launch
 	 * was starting, so the terminal was refused. Any PTY it had opened is
@@ -4040,7 +4046,14 @@ async function createTerminalSessionUnlocked(
 	if (!workspace) {
 		return { kind: "WORKSPACE_NOT_FOUND", error: "Workspace not found" };
 	}
-	if (!existsSync(workspace.worktreePath)) {
+	const worktreeState = getPathState(workspace.worktreePath);
+	if (worktreeState === "inaccessible") {
+		return {
+			kind: "WORKTREE_INACCESSIBLE",
+			error: inaccessiblePathMessage(workspace.worktreePath),
+		};
+	}
+	if (worktreeState === "missing") {
 		return {
 			kind: "WORKTREE_GONE",
 			error: `Workspace worktree no longer exists: ${workspace.worktreePath}`,

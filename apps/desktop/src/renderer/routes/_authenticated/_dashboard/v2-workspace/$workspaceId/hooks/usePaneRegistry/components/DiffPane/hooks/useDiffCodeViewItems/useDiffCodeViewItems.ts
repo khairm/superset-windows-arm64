@@ -4,7 +4,7 @@ import type {
 	FileDiffMetadata,
 	LineAnnotation,
 } from "@pierre/diffs";
-import { useWorkspaceClient, workspaceTrpc } from "@superset/workspace-client";
+import { workspaceTrpc } from "@superset/workspace-client";
 import { useQueries } from "@tanstack/react-query";
 import { getQueryKey } from "@trpc/react-query";
 import {
@@ -176,7 +176,7 @@ export function useDiffCodeViewItems({
 	annotationsByPath,
 	extraAnnotationsByItemId,
 }: UseDiffCodeViewItemsOptions): UseDiffCodeViewItemsResult {
-	const { trpcClient } = useWorkspaceClient();
+	const { client: trpcClient } = workspaceTrpc.useUtils();
 	// (NON-GIT WORKSPACE) Never run a git diff for a non-git folder — the
 	// marker branch must never reach a git command. Stays true until the query
 	// positively resolves non-git so a real repo never flicker-skips on mount.

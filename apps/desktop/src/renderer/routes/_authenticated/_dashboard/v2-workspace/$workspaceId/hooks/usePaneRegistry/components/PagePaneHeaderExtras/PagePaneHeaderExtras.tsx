@@ -1,5 +1,9 @@
 import { FORK_PAGE_WATCH_DISABLED } from "@superset/shared/fork-disabled-features";
-import { CommentModeButton, PageShareButton } from "@superset/ui/page-comments";
+import {
+	CommentModeButton,
+	PageShareButton,
+	PageViewers,
+} from "@superset/ui/page-comments";
 import { usePageHeaderData } from "renderer/routes/_authenticated/_dashboard/hooks/usePageHeaderData";
 import type { PagePaneData } from "../../../../types";
 import type { CreateNewAgentSession } from "../../../useAgentSessionLauncher";
@@ -35,6 +39,7 @@ export function PagePaneHeaderExtras({
 
 	return (
 		<>
+			<PageViewers pageId={page?.id} className="mr-1" />
 			{FORK_PAGE_WATCH_DISABLED ? null : (
 				<PageWatcherMenu
 					workspaceId={workspaceId}

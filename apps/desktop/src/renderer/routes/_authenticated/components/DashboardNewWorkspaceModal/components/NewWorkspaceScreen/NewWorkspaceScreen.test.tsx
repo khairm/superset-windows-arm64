@@ -267,6 +267,16 @@ function installMocks(): void {
 			environment: {
 				list: { useQuery: () => ({ data: [], isFetched: true }) },
 			},
+			// The task-link button only renders once the organization names a
+			// tracker, so the list has to carry one for this org.
+			organization: {
+				list: {
+					useQuery: () => ({
+						data: [{ id: ORG_ID, taskTracker: "superset" }],
+						isFetched: true,
+					}),
+				},
+			},
 			plugins: {
 				list: {
 					useQuery: () => ({ data: undefined, isLoading: false, error: null }),

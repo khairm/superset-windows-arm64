@@ -26,7 +26,7 @@ import { PluginIcon } from "renderer/components/PluginIcon";
 import { pluginMentionText } from "renderer/components/PluginMention";
 import { useOpenNewWorkspace } from "renderer/hooks/useOpenNewWorkspace";
 import type { CatalogPlugin } from "renderer/hooks/usePluginCatalog";
-import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginMutations";
+import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/hooks/usePluginMutations";
 import { useNewWorkspaceDraftStore } from "renderer/stores/new-workspace-draft";
 import { ConnectedAccounts } from "./components/ConnectedAccounts";
 import { InfoRow } from "./components/InfoRow";

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
 	buildAgentHookCommand,
@@ -15,7 +14,7 @@ import {
 	type ManagedJsonHooksSpec,
 	removeManagedJsonHooks,
 } from "./managed-json-hooks";
-import { getHooksDir } from "./paths";
+import { getHooksDir, resolveUserHomeDir } from "./paths";
 
 export const GEMINI_HOOK_SCRIPT_NAME = "gemini-hook.sh";
 
@@ -35,7 +34,7 @@ export function getGeminiHookScriptPath(): string {
 }
 
 export function getGeminiSettingsJsonPath(): string {
-	return path.join(os.homedir(), ".gemini", "settings.json");
+	return path.join(resolveUserHomeDir(), ".gemini", "settings.json");
 }
 
 export function getGeminiHookScriptContent(): string {

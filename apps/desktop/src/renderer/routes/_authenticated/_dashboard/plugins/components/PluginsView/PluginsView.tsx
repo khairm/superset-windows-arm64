@@ -9,7 +9,7 @@ import {
 	type CatalogPlugin,
 	usePluginCatalog,
 } from "renderer/hooks/usePluginCatalog";
-import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginMutations";
+import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/hooks/usePluginMutations";
 import { PluginCard } from "./components/PluginCard";
 
 export function PluginsView() {

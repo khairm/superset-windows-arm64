@@ -1,9 +1,12 @@
-import { boolean, CLIError } from "@superset/cli-framework";
+import { boolean, CLIError, string } from "@superset/cli-framework";
 import { command } from "../../lib/command";
 import { readManifest, removeManifestIfOwnedBy } from "../../lib/host/manifest";
 import { stopTerminalDaemon } from "../../lib/host/terminal-daemon";
 import { terminateProcess } from "../../lib/host/terminate";
 import { requireLocalOrganizationId } from "../../lib/local-org";
+
+const ORGANIZATION_ID =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default command({
 	sandbox: false,
@@ -12,15 +15,28 @@ export default command({
 		terminals: boolean().desc(
 			"Also stop the terminal daemon, ending every terminal and agent",
 		),
+		org: string().desc(
+			"Organization the host runs under (id, slug, or name); defaults to active. An id needs no network, so it works with a revoked key",
+		),
 	},
 	run: async ({ ctx, options }) => {
 		// (CLOUD-SEVERANCE-P2) The organization is this machine's, resolved from
 		// disk — asking the cloud who we are is both impossible and pointless
-		// when the answer only ever names a local directory.
-		const organization = {
-			id: requireLocalOrganizationId(ctx.config.organizationId),
-			name: "this machine",
-		};
+		// when the answer only ever names a local directory. An explicit id needs
+		// no network and is taken as given, exactly as upstream does; a slug or a
+		// name has nowhere to be looked up.
+		if (options.org && !ORGANIZATION_ID.test(options.org)) {
+			throw new CLIError(
+				"Only an organization id can be used here",
+				"This build talks to no Superset server, so a slug or a name cannot be resolved.",
+			);
+		}
+		const organization = options.org
+			? { id: options.org, name: options.org }
+			: {
+					id: requireLocalOrganizationId(ctx.config.organizationId),
+					name: "this machine",
+				};
 
 		const manifest = readManifest(organization.id);
 		if (manifest) {

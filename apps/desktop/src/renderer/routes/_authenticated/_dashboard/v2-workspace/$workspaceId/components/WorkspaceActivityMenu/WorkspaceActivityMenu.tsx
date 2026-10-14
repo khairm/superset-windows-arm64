@@ -33,6 +33,7 @@ import type { CreateNewAgentSession } from "../../hooks/useAgentSessionLauncher"
 import { useChatWiring } from "../../hooks/usePaneRegistry/components/ChatSession/hooks/useSessionClient";
 import { usePRFlowState } from "../../hooks/usePRFlowState";
 import { useShipActions } from "../../hooks/useShipActions";
+import { useRightPaneLinkTarget } from "../../providers/RightPaneLinkTargetProvider";
 import { useWorkspaceGitStatus } from "../../providers/WorkspaceGitStatusProvider";
 import type { PagePaneData, PaneViewerData } from "../../types";
 import {
@@ -45,6 +46,7 @@ import {
 import { changesPillStats } from "../../utils/changesPillStats";
 import { focusOrAddTerminalPane } from "../../utils/focusTerminalPane";
 import { getShipMenuActions } from "../../utils/getShipMenuActions";
+import { openPagePaneInStore } from "../../utils/openPagePaneInStore";
 import { openSubagentPaneInStore } from "../../utils/openSubagentPaneInStore";
 import { ChangesStats } from "../ChangesStats";
 import { CommitForm } from "../CommitForm";
@@ -129,6 +131,7 @@ export function WorkspaceActivityMenu({
 	});
 
 	const pagePolicy = usePagePolicy("4-tier");
+	const rightPane = useRightPaneLinkTarget();
 	const utils = cloudTrpc.useUtils();
 	const seenAt = usePagesMenuSeenAt(workspaceId);
 	const markSeen = usePagesMenuSeenStore((state) => state.markSeen);
@@ -196,6 +199,37 @@ export function WorkspaceActivityMenu({
 		() => collectBackgroundWork(bindings.values(), detachedTerminals),
 		[bindings, detachedTerminals],
 	);
+	const getSourceLabelsSnapshot = useCallback(
+		() =>
+			JSON.stringify(
+				[store, ...linkedStores]
+					.flatMap((paneStore) => paneStore.getState().tabs)
+					.flatMap((tab) =>
+						Object.values(tab.panes).flatMap((pane) => {
+							const data = pane.data as {
+								terminalId?: string;
+								chatTitle?: string;
+							};
+							const label =
+								tab.titleOverride ?? pane.titleOverride ?? data.chatTitle;
+							return data.terminalId && label ? [[data.terminalId, label]] : [];
+						}),
+					),
+			),
+		[store, linkedStores],
+	);
+	const sourceLabelsKey = useSyncExternalStore(
+		subscribeAttachedStores,
+		getSourceLabelsSnapshot,
+		getSourceLabelsSnapshot,
+	);
+	const sourceLabels = useMemo(
+		() => new Map<string, string>(JSON.parse(sourceLabelsKey)),
+		[sourceLabelsKey],
+	);
+	const workSourceCount = new Set(
+		[...processes, ...subagents].map((work) => work.terminalId),
+	).size;
 	const stoppableAgentTasks = processes.filter(
 		(work) => work.stop?.type === "chat",
 	);
@@ -288,10 +322,13 @@ export function WorkspaceActivityMenu({
 			});
 			return;
 		}
-		onOpenPage(
-			{ pageId: page.id, slug: page.slug, title: page.title },
-			action === "newTab" ? "tab" : "split",
-		);
+		const pageData = { pageId: page.id, slug: page.slug, title: page.title };
+		if (action === "rightPane" && rightPane) {
+			rightPane.reveal();
+			openPagePaneInStore(rightPane.store, pageData, "tab");
+			return;
+		}
+		onOpenPage(pageData, action === "newTab" ? "tab" : "split");
 	};
 
 	const handleOpenWork = (work: BackgroundWork) => {
@@ -362,6 +399,9 @@ export function WorkspaceActivityMenu({
 			<BackgroundWorkRow
 				key={work.key}
 				work={work}
+				source={
+					workSourceCount > 1 ? sourceLabels.get(work.terminalId) : undefined
+				}
 				now={now}
 				stopping={stopping.has(work.key)}
 				onOpen={handleOpenWork}

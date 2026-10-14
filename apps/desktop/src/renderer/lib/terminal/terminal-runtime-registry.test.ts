@@ -10,19 +10,13 @@ import {
 
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { HeadlessTerminal } from "../../../../../../packages/host-service/src/terminal/headless-xterm";
-
-mock.module("renderer/lib/trpc-client", () => ({
-	electronTrpcClient: {
-		keyboardLayout: {
-			changes: { subscribe: () => {} },
-		},
-	},
-}));
-
-const { terminalRuntimeRegistry } = await import("./terminal-runtime-registry");
-const runtimeModule = await import("./terminal-runtime");
-const { terminalMeasurementsChanged, tryPersistRuntimeState } = runtimeModule;
-const { createTransport } = await import("./terminal-ws-transport");
+import * as runtimeModule from "./terminal-runtime";
+import {
+	terminalMeasurementsChanged,
+	tryPersistRuntimeState,
+} from "./terminal-runtime";
+import { terminalRuntimeRegistry } from "./terminal-runtime-registry";
+import { createTransport } from "./terminal-ws-transport";
 
 test("new theme assignments reset query overrides while identical assignments preserve them", async () => {
 	const { getDefaultTerminalAppearance } = await import("./appearance");
@@ -97,7 +91,10 @@ function createFakeStorage(): FakeStorageState {
 	return { values, storage };
 }
 
-const originalLocalStorage = globalThis.localStorage;
+const originalLocalStorage = Object.getOwnPropertyDescriptor(
+	globalThis,
+	"localStorage",
+);
 let fakeStorage: FakeStorageState;
 
 beforeEach(() => {
@@ -109,10 +106,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	Object.defineProperty(globalThis, "localStorage", {
-		configurable: true,
-		value: originalLocalStorage,
-	});
+	if (originalLocalStorage) {
+		Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
+	} else {
+		Reflect.deleteProperty(globalThis, "localStorage");
+	}
 });
 
 describe("terminalRuntimeRegistry eviction cleanup", () => {

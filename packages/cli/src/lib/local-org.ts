@@ -22,7 +22,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLIError } from "@superset/cli-framework";
-import { SUPERSET_HOME_DIR } from "./config";
+import { getSupersetHomeDir } from "./settings/paths";
 
 /** Matches the desktop resolver exactly — see the note there on why no
  * version or variant constraint. A stricter rule on either side makes the two
@@ -31,7 +31,7 @@ const UUID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function resolveLocalOrganizationId(): string | undefined {
-	const decisionFile = join(SUPERSET_HOME_DIR, "fork-local-org.json");
+	const decisionFile = join(getSupersetHomeDir(), "fork-local-org.json");
 	if (!existsSync(decisionFile)) return undefined;
 	try {
 		const raw = JSON.parse(readFileSync(decisionFile, "utf-8")) as {

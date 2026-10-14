@@ -111,6 +111,7 @@ export interface TerminalTransport {
 	 * once on first connect; it re-signs the URL and runs the relay preflight
 	 * before every (re)dial and retries indefinitely. */
 	_socket: RelaySocket | null;
+	_createSocket: typeof createRelaySocket;
 	/** The xterm instance the socket feeds. */
 	_terminal: XTerm | null;
 	/**
@@ -396,7 +397,10 @@ export function clearLogs(transport: TerminalTransport) {
 }
 
 export function createTransport(
-	options: { onSessionEnded?: () => void } = {},
+	options: {
+		onSessionEnded?: () => void;
+		createSocket?: typeof createRelaySocket;
+	} = {},
 ): TerminalTransport {
 	return {
 		connectionState: "disconnected",
@@ -412,6 +416,7 @@ export function createTransport(
 		narrowedListeners: new Set(),
 		_onSessionEnded: options.onSessionEnded ?? null,
 		_socket: null,
+		_createSocket: options.createSocket ?? createRelaySocket,
 		_terminal: null,
 		_lastHumanEventMs: null,
 		_humanInputDisposables: [],
@@ -653,7 +658,7 @@ export function connect(
 		return;
 	}
 
-	const socket = createRelaySocket({
+	const socket = transport._createSocket({
 		// buildUrl/getToken read transport state live, so a URL swap or token
 		// rotation is picked up on the next dial without recreating the socket.
 		buildUrl: async () => {

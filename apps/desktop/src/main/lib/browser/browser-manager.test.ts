@@ -1,23 +1,33 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	describe,
+	expect,
+	mock,
+	test,
+} from "bun:test";
+import { webContents } from "electron";
+import { PROTOCOL_SCHEME } from "shared/constants";
+import {
+	blockNonWebMainFrame,
+	browserManager,
+	guestMayOpenExternal,
+} from "./browser-manager";
+import { markBrowserPanePopup } from "./popup-window";
 
 const wcById = new Map<number, FakeWebContents>();
 
-mock.module("electron", () => ({
-	clipboard: { writeImage: mock(() => {}), writeText: mock(() => {}) },
-	Menu: { buildFromTemplate: mock(() => ({ popup: mock(() => {}) })) },
-	webContents: {
-		fromId: (id: number) => wcById.get(id) ?? null,
-	},
-}));
+const fromIdMock = webContents.fromId as unknown as ReturnType<typeof mock>;
+const preloadFromId = fromIdMock.getMockImplementation();
 
-mock.module("main/lib/safe-url", () => ({
-	safeOpenExternal: mock(async () => {}),
-}));
+beforeAll(() => {
+	fromIdMock.mockImplementation((id: number) => wcById.get(id) ?? null);
+});
 
-const { blockNonWebMainFrame, browserManager, guestMayOpenExternal } =
-	await import("./browser-manager");
-const { markBrowserPanePopup } = await import("./popup-window");
-const { PROTOCOL_SCHEME } = await import("shared/constants");
+afterAll(() => {
+	fromIdMock.mockImplementation(preloadFromId ?? (() => null));
+});
 
 interface FakeImage {
 	isEmpty: () => boolean;

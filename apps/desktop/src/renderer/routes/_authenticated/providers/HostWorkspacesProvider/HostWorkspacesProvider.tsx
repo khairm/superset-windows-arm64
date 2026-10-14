@@ -12,9 +12,8 @@ import {
 import { HostWorkspaceActivityStoreContext } from "./hostWorkspaceActivityStoreContext";
 import { createWorkspaceActivityStore } from "./utils/createWorkspaceActivityStore";
 
-const HostWorkspacesContext = createContext<UseHostWorkspacesResult | null>(
-	null,
-);
+export const HostWorkspacesContext =
+	createContext<UseHostWorkspacesResult | null>(null);
 
 /**
  * Runs the per-host workspace fan-out once (queries, event subscriptions,

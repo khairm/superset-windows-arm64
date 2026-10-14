@@ -37,7 +37,9 @@ export interface SandboxAccessValue {
 	agentCredentialsChangedWorkspaceId: string | null;
 }
 
-const SandboxAccessContext = createContext<SandboxAccessValue | null>(null);
+export const SandboxAccessContext = createContext<SandboxAccessValue | null>(
+	null,
+);
 
 // (NAV-LOCAL-RENDER) Module-level so the combined results keep identity.
 function toAccessStates<T>(results: UseQueryResult<T>[]) {

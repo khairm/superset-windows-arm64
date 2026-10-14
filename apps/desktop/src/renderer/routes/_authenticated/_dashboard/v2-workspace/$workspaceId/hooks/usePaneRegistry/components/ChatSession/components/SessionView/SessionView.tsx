@@ -27,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenFile } from "../../../../../../types";
 import {
 	ChatPaneActionsProvider,
+	type OpenLink,
 	type OpenPage,
 } from "../../providers/ChatPaneActionsProvider";
 import type { ChatForkTarget } from "../../types";
@@ -74,6 +75,7 @@ export function SessionView({
 	onSessionState,
 	openFile,
 	openPage,
+	openLink,
 	workspaceId,
 }: {
 	client: SessionClient;
@@ -115,6 +117,7 @@ export function SessionView({
 	};
 	openFile?: OpenFile;
 	openPage?: OpenPage;
+	openLink?: OpenLink;
 }) {
 	const { t } = useLingui();
 	const session = useChatSession({ client });
@@ -226,6 +229,7 @@ export function SessionView({
 		),
 	);
 
+	const focusComposer = useCallback(() => composerRef.current?.focus(), []);
 	const timelineRef = useRef(timeline);
 	timelineRef.current = timeline;
 	const snapshotRef = useRef(session.snapshot);
@@ -287,16 +291,17 @@ export function SessionView({
 	);
 	const holdPrompt = held?.onQueue;
 	const onSend = useCallback(
-		(content: UserContent[], { steer }: { steer: boolean }) =>
-			holdPrompt
-				? holdPrompt(content)
-				: sendPrompt(
-						content,
-						steer && runningTurnId
-							? { expectedTurnId: runningTurnId }
-							: undefined,
-					),
-		[holdPrompt, sendPrompt, runningTurnId],
+		(content: UserContent[], { steer }: { steer: boolean }) => {
+			if (holdPrompt) return holdPrompt(content);
+			for (const approval of approvals) {
+				void respondToApproval(approval.id, { type: "cancel" });
+			}
+			return sendPrompt(
+				content,
+				steer && runningTurnId ? { expectedTurnId: runningTurnId } : undefined,
+			);
+		},
+		[holdPrompt, approvals, respondToApproval, sendPrompt, runningTurnId],
 	);
 	const awaitingBackground = sessionState?.awaitingBackground === true;
 	const onCancelTurn = useMemo(
@@ -341,6 +346,7 @@ export function SessionView({
 		<ChatPaneActionsProvider
 			openFile={openFile}
 			openPage={openPage}
+			openLink={openLink}
 			workspaceId={workspaceId}
 		>
 			<ComposerDropZone className="flex h-full min-h-0 w-full min-w-0 flex-col">
@@ -366,9 +372,12 @@ export function SessionView({
 							canForkToWorktree={canForkToWorktree}
 							groups={timeline}
 							hasOlder={session.hasOlder}
+							isActive={isActive}
+							onCloseFind={focusComposer}
 							onDiscardPrompt={session.discardPrompt}
 							onFork={onFork ? forkWithTranscript : undefined}
 							onLoadOlder={loadOlder}
+							onRequestItemBodies={session.requestItemBodies}
 							onRespond={onRespond}
 							onRetryPrompt={session.retryPrompt}
 							outbox={session.outbox}

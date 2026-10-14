@@ -534,6 +534,81 @@ export const FIRST_PARTY_MANIFESTS = {
 		},
 		"skills": []
 	} as const,
+	"neon-readonly": {
+		"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
+		"name": "neon-readonly",
+		"version": "1.0.1",
+		"description": "Read your Neon Postgres without writing to it: inspect projects and branches, read schemas, and run read-only SQL.",
+		"author": {
+			"name": "Superset",
+			"url": "https://superset.sh"
+		},
+		"homepage": "https://docs.superset.sh",
+		"repository": "https://github.com/superset-sh/superset",
+		"license": "MIT",
+		"keywords": [
+			"neon",
+			"postgres",
+			"database",
+			"sql",
+			"read-only"
+		],
+		"extensions": {
+			"superset": {
+				"interface": {
+					"displayName": "Neon (read-only)",
+					"category": "Data & APIs",
+					"icon": "neon"
+				},
+				"connector": {
+					"slug": "neon_mcp"
+				},
+				"bind": {
+					"headers": {
+						"Authorization": "Bearer ${config.access_token}"
+					}
+				},
+				"mcp": {
+					"type": "streamable-http",
+					"url": "https://mcp.neon.tech/mcp?readonly=true"
+				}
+			}
+		},
+		"skills": []
+	} as const,
+	"exa": {
+		"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
+		"name": "exa",
+		"version": "1.0.1",
+		"description": "Search the web, companies, and people with Exa.",
+		"author": {
+			"name": "Superset",
+			"url": "https://superset.sh"
+		},
+		"homepage": "https://docs.superset.sh",
+		"repository": "https://github.com/superset-sh/superset",
+		"license": "MIT",
+		"keywords": [
+			"exa",
+			"search",
+			"research",
+			"companies",
+			"people"
+		],
+		"extensions": {
+			"superset": {
+				"interface": {
+					"displayName": "Exa",
+					"category": "Data & APIs"
+				},
+				"mcp": {
+					"type": "streamable-http",
+					"url": "https://mcp.exa.ai/mcp"
+				}
+			}
+		},
+		"skills": []
+	} as const,
 	"posthog": {
 		"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
 		"name": "posthog",

@@ -1,8 +1,6 @@
+import type { MessageDescriptor } from "@lingui/core";
+import { getI18nInstance } from "@superset/i18n/server";
 import { COMPANY } from "@superset/shared/constants";
-import {
-	FAQ_ITEMS,
-	faqSourceText,
-} from "@/app/[lang]/components/FAQSection/constants";
 import { API_URL, MCP_SERVER_URL } from "./api-url";
 import { getBlogPosts } from "./blog";
 import { getCategoryPages } from "./category";
@@ -16,6 +14,12 @@ import {
 } from "./product-facts";
 
 export { API_URL, MCP_SERVER_URL };
+
+// Production builds strip `message` from descriptors and keep only the hashed
+// id, so machine-facing feeds resolve the English text through the catalog.
+export function englishText(descriptor: MessageDescriptor): string {
+	return getI18nInstance()._(descriptor);
+}
 
 export function stripMdxSyntax(content: string): string {
 	return (
@@ -47,8 +51,8 @@ export function buildCompanyFactsSection(): string[] {
 		`- **License**: source-available under ${PRODUCT_LICENSE} (ELv2). The code is public on GitHub (${COMPANY.GITHUB_URL}); it is not OSI-approved open source.`,
 		`- **Not Apache Superset**: ${PRODUCT_DISAMBIGUATION}`,
 		`- **Desktop platforms**: ${PRODUCT_PLATFORM_SUMMARY} There is also a CLI, a TypeScript SDK, and an MCP server for programmatic control.`,
-		`- **Mobile**: an iPhone app on the App Store (iOS 26 or later, Pro plan) to check on agents, reply to them, review diffs, and read Pages while the agents keep running on a desktop or remote host that stays online. While the app is open, a Lock Screen and Dynamic Island Live Activity shows which agents need you, are working, or are ready for review; it does not update in the background yet. Push notifications and native iPad support are coming. Android is on a waitlist (${baseUrl}/mobile).`,
-		"- **Remote access**: add another machine as a host through the Superset relay and run workspaces and agents on it from the desktop app or the iPhone app (Pro).",
+		`- **Mobile**: an iPhone and iPad app on the App Store (iOS 26 or iPadOS 26 or later, Pro plan) to check on agents, reply to them, review diffs, and read Pages while the agents keep running on a desktop or remote host that stays online. While the app is open, a Lock Screen and Dynamic Island Live Activity shows which agents need you, are working, or are ready for review; it does not update in the background yet. Push notifications are coming. Android is on a waitlist (${baseUrl}/mobile).`,
+		"- **Remote access**: add another machine as a host through the Superset relay and run workspaces and agents on it from the desktop app or the mobile app (Pro).",
 		"- **Automations**: scheduled agent sessions on a chosen host (Pro), with a run history for you and your team and retry for failed runs.",
 		"- **Review**: a Changes pane that commits, pushes, and opens pull requests, and a pull request pane with checks, review threads, and merge.",
 		"- **Design Mode**: in the in-app browser, click an element on a page and send it with a note to an agent, which gets the element's DOM, computed styles, and a cropped screenshot.",
@@ -59,6 +63,13 @@ export function buildCompanyFactsSection(): string[] {
 		"- **Cloud workspaces**: in early access for some accounts, not generally available. Remote access to your own machines is available on Pro today.",
 		`- **Agents**: works with any CLI coding agent, including Claude Code, OpenAI Codex, OpenCode, Gemini CLI, Copilot, Cursor Agent, Amp, Grok Build, Kimi Code, Mistral Vibe, Devin, and Muse Code, plus custom agents you add.`,
 	];
+}
+
+// Turns a "## Heading" section into free text under a bold label, for the
+// part of llms.txt that may not contain headings.
+function asPreamble(section: string[]): string[] {
+	const [heading = "", ...body] = section;
+	return [`**${heading.replace(/^#+\s*/, "")}**`, ...body];
 }
 
 export function buildLlmsHeader(): string[] {
@@ -81,7 +92,7 @@ export function buildWhenToUseSection(): string[] {
 		"- Orchestrate agent work programmatically: create workspaces, launch agents with a prompt, open terminals, and track tasks from another agent or script via the Superset MCP server.",
 		"- Schedule recurring agent runs (automations) that execute a prompt on a cron-like schedule in a fresh or existing workspace.",
 		"- Review diffs, manage ports, and monitor many concurrent agent sessions from one dashboard.",
-		"- Check on agents, reply to them, and review their diffs from an iPhone while they run on your own machine.",
+		"- Check on agents, reply to them, and review their diffs from an iPhone or iPad while they run on your own machine.",
 		"",
 		"Superset is not a coding agent itself; it is the workspace and orchestration layer the agents run in. If you are an AI agent, the fastest way to act on a user's Superset account is the MCP server below (OAuth or API key auth); the fastest way to learn the product is the docs index at https://docs.superset.sh.",
 	];
@@ -123,20 +134,21 @@ export function buildLlmsTxt(): string {
 	const baseUrl = COMPANY.MARKETING_URL;
 	const docsUrl = COMPANY.DOCS_URL;
 
+	// The llms.txt format allows only free text between the summary and the
+	// first H2, and only link lists under each H2 (https://llmstxt.org).
 	const lines: string[] = [
 		...buildLlmsHeader(),
 		"",
-		...buildCompanyFactsSection(),
+		...asPreamble(buildCompanyFactsSection()),
 		"",
-		...buildWhenToUseSection(),
+		...asPreamble(buildWhenToUseSection()),
 		"",
 		...buildDeveloperResourcesSection(),
 		"",
 		"## Docs",
 		"",
-		`- [Documentation](${docsUrl})`,
-		`- [Getting Started](${docsUrl}/getting-started)`,
-		`- [GitHub](${COMPANY.GITHUB_URL})`,
+		`- [Documentation](${docsUrl}): Superset documentation`,
+		`- [GitHub](${COMPANY.GITHUB_URL}): source code`,
 		"",
 		"## Blog",
 		"",
@@ -152,14 +164,10 @@ export function buildLlmsTxt(): string {
 			(page) => `- [${page.title}](${baseUrl}/compare/${page.slug})`,
 		),
 		"",
-		"## FAQ",
+		"## Optional",
 		"",
-		...FAQ_ITEMS.flatMap((item) => [
-			`### ${faqSourceText(item.question)}`,
-			"",
-			faqSourceText(item.answer),
-			"",
-		]),
+		`- [Full context](${baseUrl}/llms-full.txt): every blog post, comparison, and the FAQ in one file`,
+		`- [Homepage as markdown](${baseUrl}/index.md): product overview and FAQ`,
 	];
 
 	return lines.join("\n");

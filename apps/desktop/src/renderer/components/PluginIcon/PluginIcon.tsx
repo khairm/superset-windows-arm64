@@ -33,6 +33,10 @@ import { SuperhumanIcon } from "./components/SuperhumanIcon";
  * own square art reads no larger than a transparent one. Black-mark brands
  * stay on the foreground token so they invert with the theme.
  */
+function ownEntry<T>(map: Record<string, T>, key: string): T | undefined {
+	return Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
 const IMAGE_ICONS: Record<string, string> = {
 	figma: figmaIconUrl,
 	slack: slackIconUrl,
@@ -71,9 +75,9 @@ export function getPluginIconUrl(
 	pluginName: string,
 	isDark: boolean,
 ): string | undefined {
-	const artwork = IMAGE_ICONS[pluginName];
+	const artwork = ownEntry(IMAGE_ICONS, pluginName);
 	if (artwork !== undefined) return artwork;
-	const entry = PLUGIN_ICONS[pluginName];
+	const entry = ownEntry(PLUGIN_ICONS, pluginName);
 	const Icon = entry?.icon ?? LuPuzzle;
 	const svg = renderToStaticMarkup(
 		<Icon color={entry?.color ?? (isDark ? "#fafafa" : "#18181b")} />,
@@ -89,8 +93,8 @@ interface PluginIconProps {
 export function PluginIcon({ pluginName, className }: PluginIconProps) {
 	const size = className ?? "size-9";
 
-	const imageIcon = IMAGE_ICONS[pluginName];
-	const entry = PLUGIN_ICONS[pluginName];
+	const imageIcon = ownEntry(IMAGE_ICONS, pluginName);
+	const entry = ownEntry(PLUGIN_ICONS, pluginName);
 	const Icon = entry?.icon ?? LuPuzzle;
 	return (
 		<div

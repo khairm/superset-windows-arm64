@@ -42,6 +42,7 @@ import { protectedProcedure, publicProcedure, userError } from "../../trpc";
 import { requireActiveOrgMembership } from "../utils/active-org";
 import { assertPageReadable, assertPageWritable } from "./access";
 import { pageAssetRouter } from "./assets";
+import { withCommentSummaries } from "./comment-summary";
 import { decodePageCursor, encodePageCursor } from "./cursor";
 import { pageUrl } from "./page-url";
 import { pagePreview } from "./preview";
@@ -77,6 +78,7 @@ import {
 	writePageManifest,
 } from "./storage";
 import { enqueuePageThumbnail } from "./thumbnail";
+import { pageToolRouter } from "./tools/router";
 import { watchState } from "./watch";
 import {
 	claimPageWatch,
@@ -397,6 +399,7 @@ async function listPageBatch({
 export const pageRouter = {
 	assets: pageAssetRouter,
 	...pageReportRouter,
+	...pageToolRouter,
 
 	/**
 	 * A page with no versions yet. Assets stage against a page id, so a first
@@ -505,13 +508,18 @@ export const pageRouter = {
 
 	listPaginated: protectedProcedure
 		.input(listPagesSchema)
-		.query(async ({ ctx, input }) =>
-			listPageBatch({
+		.query(async ({ ctx, input }) => {
+			const userId = ctx.session.user.id;
+			const batch = await listPageBatch({
 				organizationId: await requireActiveOrgMembership(ctx),
-				userId: ctx.session.user.id,
+				userId,
 				input,
-			}),
-		),
+			});
+			return {
+				...batch,
+				items: await withCommentSummaries(batch.items, userId),
+			};
+		}),
 
 	counts: protectedProcedure
 		.input(pageCountsSchema)

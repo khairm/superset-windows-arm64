@@ -76,6 +76,7 @@ import {
 	findTerminalPaneLocation,
 	focusOrAddTerminalPane,
 } from "../../utils/focusTerminalPane";
+import { openPagePaneInStore } from "../../utils/openPagePaneInStore";
 import { openSubagentPaneInStore } from "../../utils/openSubagentPaneInStore";
 import { useAgentSessionLauncher } from "../useAgentSessionLauncher";
 import type { OpenReviewDiff } from "../useReviewCommentNavigation";
@@ -111,6 +112,7 @@ import { TerminalPaneHeaderExtras } from "./components/TerminalPane/components/T
 import { TerminalPaneIcon } from "./components/TerminalPane/components/TerminalPaneIcon";
 import { TerminalSessionDropdown } from "./components/TerminalPane/components/TerminalSessionDropdown";
 import { terminalContextMenuLinkStore } from "./components/TerminalPane/contextMenuLinkStore";
+import { useUndoableChatClose } from "./hooks/useUndoableChatClose";
 import { createDisabledPaneDefinition } from "./utils/disabledPaneDefinition";
 import { openInActions } from "./utils/openInActions";
 import { pagePaneLabel } from "./utils/pagePaneLabel";
@@ -161,9 +163,8 @@ const MOD_KEY = navigator.platform.toLowerCase().includes("mac")
 
 interface UsePaneRegistryOptions {
 	onOpenDiff: OpenReviewDiff;
-	onOpenComment: (comment: CommentPaneData) => void;
 	onOpenFile: OpenFile;
-	onRevealPath: (path: string) => void;
+	onRevealPath: (path: string, options?: { isDirectory?: boolean }) => void;
 	launcher: TerminalLauncher;
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
 	linkedStores?: StoreApi<WorkspaceStore<PaneViewerData>>[];
@@ -172,7 +173,6 @@ interface UsePaneRegistryOptions {
 
 export function usePaneRegistry({
 	onOpenDiff,
-	onOpenComment,
 	onOpenFile,
 	onRevealPath,
 	launcher,
@@ -184,6 +184,11 @@ export function usePaneRegistry({
 	const { workspace } = useWorkspace();
 	const workspaceId = workspace.id;
 	const agentSurface = useAgentSurfaceSwitch(workspaceId);
+	const closeChatWithUndo = useUndoableChatClose({
+		workspaceId,
+		store,
+		stopChat: agentSurface.stopChat,
+	});
 	const host = useWorkspaceHostTarget(workspaceId);
 	const desktopUrl =
 		host.status === "ready" && host.kind === "sandbox" ? host.desktopUrl : null;
@@ -838,9 +843,10 @@ export function usePaneRegistry({
 				: {
 						"chat-v3": {
 							getIcon: (ctx) => {
-								const { terminalId } = ctx.pane.data as ChatPaneData;
+								const { agent, terminalId } = ctx.pane.data as ChatPaneData;
 								return (
 									<TerminalPaneIcon
+										agentId={agent?.id}
 										workspaceId={workspaceId}
 										terminalId={terminalId}
 									/>
@@ -857,10 +863,7 @@ export function usePaneRegistry({
 									getSnapshot: () => chatTitle,
 								};
 							},
-							onAfterClose: (pane) => {
-								const { sessionId } = pane.data as ChatPaneData;
-								if (sessionId) void agentSurface.stopChat(sessionId);
-							},
+							onAfterClose: closeChatWithUndo,
 							renderHeaderExtras: (ctx: RendererContext<PaneViewerData>) => {
 								const data = ctx.pane.data as ChatPaneData;
 								return (
@@ -884,6 +887,7 @@ export function usePaneRegistry({
 								<ChatPane
 									ctx={ctx}
 									onOpenFile={onOpenFile}
+									onRevealPath={onRevealPath}
 									workspaceId={workspaceId}
 								/>
 							),
@@ -952,7 +956,7 @@ export function usePaneRegistry({
 					<PullRequestPane
 						data={ctx.pane.data as PullRequestPaneData}
 						onOpenDiff={onOpenDiff}
-						onOpenComment={onOpenComment}
+						onOpenPage={(page) => openPagePaneInStore(ctx.store, page)}
 					/>
 				),
 				renderHeaderExtras: (ctx: RendererContext<PaneViewerData>) => (
@@ -1052,6 +1056,7 @@ export function usePaneRegistry({
 			linkedStores,
 			workspaceId,
 			agentSurface,
+			closeChatWithUndo,
 			clearWorkspaceRunTerminal,
 			clearShortcut,
 			scrollToBottomShortcut,
@@ -1060,7 +1065,6 @@ export function usePaneRegistry({
 			isKillingTerminalSession,
 			launcher,
 			onOpenDiff,
-			onOpenComment,
 			onOpenFile,
 			onRevealPath,
 			onSearch,

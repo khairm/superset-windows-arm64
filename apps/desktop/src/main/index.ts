@@ -68,10 +68,8 @@ import { runQuitCleanup } from "./lib/quit-sequence";
 import { startResourceJournal } from "./lib/resource-metrics/resource-journal";
 import { initSentry } from "./lib/sentry";
 import { stopPtyDaemons } from "./lib/stop-pty-daemons";
-import {
-	prewarmTerminalRuntime,
-	reconcileDaemonSessions,
-} from "./lib/terminal";
+import { stopMigratedV1SessionsOnBoot } from "./lib/terminal";
+import { readMigratedV1WorkspaceIds } from "./lib/terminal/stop-v1-sessions/migrated-v1-workspaces";
 import {
 	disposeTerminalHostClient,
 	getTerminalHostClient,
@@ -633,11 +631,9 @@ if (!gotTheLock) {
 			"[boot] step loadWebviewBrowserExtension done +" + bootMs() + "ms",
 		);
 
-		// Must happen before renderer restore runs
-		log.info("[boot] step reconcileDaemonSessions start +" + bootMs() + "ms");
-		await reconcileDaemonSessions();
-		log.info("[boot] step reconcileDaemonSessions done +" + bootMs() + "ms");
-		prewarmTerminalRuntime();
+		log.info("[boot] step stopMigratedV1Sessions start +" + bootMs() + "ms");
+		await stopMigratedV1SessionsOnBoot(readMigratedV1WorkspaceIds());
+		log.info("[boot] step stopMigratedV1Sessions done +" + bootMs() + "ms");
 
 		// Must be listening before any host-service spawns: the child learns the
 		// bridge endpoint/secret from its env, so a late bridge means browser

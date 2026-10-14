@@ -102,6 +102,7 @@ function createTerminal(
 		allowProposedApi: true,
 		scrollback: DEFAULT_TERMINAL_SCROLLBACK,
 		macOptionIsMeta: false,
+		macOptionClickForcesSelection: true,
 		cursorStyle: appearance.cursorStyle,
 		cursorInactiveStyle: "outline",
 		vtExtensions: { kittyKeyboard: true },

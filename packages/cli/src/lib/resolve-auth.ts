@@ -1,8 +1,9 @@
 import { type ApiClient, createApiClient } from "./api-client";
 import { readConfig, type SupersetConfig } from "./config";
+import { readHostApiToken } from "./host-api-token";
 import { resolveLocalOrganizationId } from "./local-org";
 
-export type AuthSource = "override" | "config" | "oauth" | "local";
+export type AuthSource = "override" | "host" | "config" | "oauth" | "local";
 
 /** Stands in for a session token. Authenticates nothing; see below. */
 const LOCAL_BEARER = "fork-local-mode-no-cloud-session";
@@ -16,6 +17,7 @@ export type ResolvedAuth = {
 
 export async function resolveAuth(
 	apiKeyOption: string | undefined,
+	{ useHostToken = true }: { useHostToken?: boolean } = {},
 ): Promise<ResolvedAuth> {
 	const config = readConfig();
 
@@ -25,10 +27,15 @@ export async function resolveAuth(
 		apiKeyOption?.trim() || process.env.SUPERSET_API_KEY?.trim();
 	let bearer: string | undefined;
 	let authSource: AuthSource;
+	const hostToken =
+		!overrideKey && useHostToken ? await readHostApiToken() : null;
 
 	if (overrideKey) {
 		bearer = overrideKey;
 		authSource = "override";
+	} else if (hostToken) {
+		bearer = hostToken;
+		authSource = "host";
 	} else if (config.apiKey?.trim()) {
 		bearer = config.apiKey.trim();
 		authSource = "config";

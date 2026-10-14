@@ -149,7 +149,7 @@ function invalidateStatus(workspaceId: string): void {
  * (DIFFSTATS-COLD-CACHE) */
 function runStatusSnapshot(
 	ctx: Parameters<typeof resolveWorktreePath>[0] &
-		Pick<HostServiceContext, "credentials">,
+		Pick<HostServiceContext, "credentials" | "eventBus">,
 	input: {
 		workspaceId: string;
 		baseBranch?: string;

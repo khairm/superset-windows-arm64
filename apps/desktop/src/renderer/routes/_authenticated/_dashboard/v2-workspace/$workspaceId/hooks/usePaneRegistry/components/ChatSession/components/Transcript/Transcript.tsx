@@ -4,7 +4,11 @@ import type {
 	SessionSnapshot,
 	TurnGroup,
 } from "@superset/chat/core";
-import type { ApprovalRequest, Decision } from "@superset/chat/protocol";
+import type {
+	ApprovalRequest,
+	Decision,
+	ToolCall,
+} from "@superset/chat/protocol";
 import {
 	MessageScroller,
 	useMessageScroller,
@@ -25,18 +29,27 @@ import {
 	useState,
 } from "react";
 import { env } from "renderer/env.renderer";
+import { usePluginMentionOptions } from "renderer/hooks/usePluginMentionOptions";
 import {
 	CHAT_COLUMN_CLASSNAME,
 	CHAT_SCROLLER_GUTTER_CLASSNAME,
 } from "../../constants";
 import type { ChatForkTarget } from "../../types";
 import { pageLinkFinder } from "../../utils/pageLinks";
-import { TurnGroupSection } from "./components/TurnGroupSection";
+import { TranscriptFindBar } from "./components/TranscriptFindBar";
+import { TranscriptRowItem } from "./components/TranscriptRowItem";
 import { useLoadOlderOnReach } from "./hooks/useLoadOlderOnReach";
+import { useNearRows } from "./hooks/useNearRows";
 import { useScrollAnchorKey } from "./hooks/useScrollAnchorKey";
 import { useScrollbarGutter } from "./hooks/useScrollbarGutter";
+import { useTranscriptFind } from "./hooks/useTranscriptFind";
+import { copySourceText } from "./utils/copySourceText";
 import { lastReplyKeys } from "./utils/lastReplyKeys";
-import { type TranscriptRow, transcriptRows } from "./utils/transcriptRows";
+import {
+	rowMessageId,
+	type TranscriptRow,
+	transcriptRows,
+} from "./utils/transcriptRows";
 
 const findPageLinks = pageLinkFinder(env.NEXT_PUBLIC_WEB_URL);
 const REMEMBER_SIZE_CLASSNAME = "[contain-intrinsic-size:auto_240px]";
@@ -59,11 +72,16 @@ export type TranscriptProps = {
 	outbox: OutboxEntry[];
 	hasOlder: boolean;
 	onLoadOlder: () => Promise<boolean>;
+	onRequestItemBodies: (itemIds: readonly string[]) => void;
 	onRespond: (approvalId: string, decision: Decision) => void;
 	onFork?: ((target: ChatForkTarget) => void) | undefined;
 	canForkToWorktree?: boolean;
 	onRetryPrompt: (clientId: string) => void;
 	onDiscardPrompt: (clientId: string) => void;
+	/** The pane has focus, so ⌘F opens the find bar here. */
+	isActive?: boolean;
+	/** The reader closed the find bar; focus belongs back in the composer. */
+	onCloseFind?: (() => void) | undefined;
 };
 
 function isWork(row: TranscriptRow | undefined): boolean {
@@ -83,28 +101,30 @@ function proseTopPadding(
 	return isWork(previous) ? "pt-1" : "pt-3";
 }
 
-function rowMessageId(row: TranscriptRow): string {
-	if (row.kind === "item") return row.item.id;
-	if (row.kind === "tool_run") return row.items[0]?.id ?? row.key;
-	return row.key;
-}
-
 export function Transcript({
 	approvals,
 	canForkToWorktree,
 	groups,
 	hasOlder,
+	isActive = false,
+	onCloseFind,
 	onDiscardPrompt,
 	onFork,
 	onLoadOlder,
+	onRequestItemBodies,
 	onRespond,
 	onRetryPrompt,
 	outbox,
 	snapshot,
 }: TranscriptProps) {
 	const { t } = useLingui();
-	const [viewportRef, scrollbarGutter] = useScrollbarGutter<HTMLDivElement>();
-	const olderPages = useLoadOlderOnReach({ hasOlder, onLoadOlder });
+	const plugins = usePluginMentionOptions();
+	const installedPluginNames = useMemo(
+		() => new Set(plugins.map((plugin) => plugin.name)),
+		[plugins],
+	);
+	const [viewportRef, scrollbarGutter, viewport] =
+		useScrollbarGutter<HTMLDivElement>();
 	const scroller = useMessageScroller();
 	const scrollerRef = useRef(scroller);
 	scrollerRef.current = scroller;
@@ -157,16 +177,84 @@ export function Transcript({
 		return targets;
 	}, [approvals]);
 
+	const commandsInApprovals = useMemo(() => {
+		const ids = new Set<string>();
+		for (const approval of approvals) {
+			const target = approval.targetItemId
+				? snapshot.items.get(approval.targetItemId)?.item
+				: undefined;
+			if (
+				target?.kind === "tool_call" &&
+				(target as ToolCall).toolKind === "execute" &&
+				(target as ToolCall).title === approval.title
+			) {
+				ids.add(target.id);
+			}
+		}
+		return ids;
+	}, [approvals, snapshot.items]);
+
 	const rows = useMemo(
-		() => transcriptRows(groups, outbox, pendingApprovalTargets, findPageLinks),
-		[groups, outbox, pendingApprovalTargets],
+		() =>
+			transcriptRows(
+				groups,
+				outbox,
+				pendingApprovalTargets,
+				findPageLinks,
+				commandsInApprovals,
+			),
+		[groups, outbox, pendingApprovalTargets, commandsInApprovals],
 	);
 
+	useEffect(() => {
+		const opened = rows.filter(
+			(row) =>
+				row.kind === "tool_run" &&
+				!row.defaultCollapsed &&
+				!entryOverrides.has(row.key),
+		);
+		if (opened.length === 0) return;
+		setEntryOverrides((previous) => {
+			const next = new Map(previous);
+			for (const row of opened) next.set(row.key, false);
+			return next;
+		});
+	}, [rows, entryOverrides]);
+
 	const lastReplies = useMemo(() => lastReplyKeys(rows), [rows]);
+	const availableCommands = snapshot.session?.availableCommands;
+	const commands = useMemo(
+		() => new Map(availableCommands?.map((command) => [command.name, command])),
+		[availableCommands],
+	);
+	const { seenRowKeys, observeRow } = useNearRows(
+		rows,
+		viewport,
+		onRequestItemBodies,
+	);
 
 	const anchorRowKey = useScrollAnchorKey(rows, outbox, {
 		turnRunning: groups.at(-1)?.turn?.status === "running",
 		readerScrolledAway,
+	});
+
+	const find = useTranscriptFind({
+		rows,
+		onRequestItemBodies,
+		installedPluginNames,
+		snapshot,
+		viewport,
+		isActive,
+		isEntryCollapsed,
+		onToggleEntry,
+		scrollToMessage: scroller.scrollToMessage,
+		onClose: onCloseFind,
+	});
+	// A search covers the whole conversation, so it pages every turn in.
+	const olderPages = useLoadOlderOnReach({
+		hasOlder,
+		onLoadOlder,
+		eager: find.isOpen,
 	});
 
 	const firstPendingApprovalId = approvals[0]?.id ?? null;
@@ -177,42 +265,65 @@ export function Transcript({
 		});
 	}, [firstPendingApprovalId]);
 
-	const contentChildren = rows.map((row, index) => (
-		<MessageScroller.Item
-			className={cn(
-				REMEMBER_SIZE_CLASSNAME,
-				index < rows.length - RECENT_ROWS_RENDERED_IN_FULL &&
-					OFFSCREEN_CLASSNAME,
-				"px-4 pb-1",
-				proseTopPadding(row, rows[index - 1]),
-			)}
-			key={row.key}
-			messageId={rowMessageId(row)}
-			scrollAnchor={row.key === anchorRowKey}
-		>
-			<TurnGroupSection
+	const contentChildren = rows.map((row, index) => {
+		const recent = index >= rows.length - RECENT_ROWS_RENDERED_IN_FULL;
+		const scrollAnchor = row.key === anchorRowKey;
+		return (
+			<TranscriptRowItem
 				canForkToWorktree={canForkToWorktree}
-				lastReply={lastReplies.has(row.key)}
+				className={cn(
+					REMEMBER_SIZE_CLASSNAME,
+					!recent && OFFSCREEN_CLASSNAME,
+					"px-4 pb-1",
+					proseTopPadding(row, rows[index - 1]),
+				)}
+				commands={commands}
 				isEntryCollapsed={isEntryCollapsed}
+				key={row.key}
+				lastReply={lastReplies.has(row.key)}
+				messageId={rowMessageId(row)}
 				onDiscardPrompt={onDiscardPrompt}
 				onFork={onFork}
 				onRespond={onRespond}
 				onRetryPrompt={onRetryPrompt}
 				onToggleEntry={onToggleEntry}
+				rendered={
+					recent ||
+					scrollAnchor ||
+					seenRowKeys.has(row.key) ||
+					row.key === find.currentRowKey
+				}
 				row={row}
+				rowRef={observeRow(row.key)}
+				scrollAnchor={scrollAnchor}
 				snapshot={snapshot}
 			/>
-		</MessageScroller.Item>
-	));
+		);
+	});
 
 	return (
 		<MessageScroller.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+			<TranscriptFindBar
+				currentIndex={find.currentIndex}
+				inputRef={find.inputRef}
+				isOpen={find.isOpen}
+				loading={
+					find.loading || (find.isOpen && hasOlder && !olderPages.failed)
+				}
+				matchCount={find.matchCount}
+				onClose={find.close}
+				onNext={find.next}
+				onPrevious={find.previous}
+				onQueryChange={find.setQuery}
+				query={find.query}
+			/>
 			<MessageScroller.Viewport
 				aria-label={t({ message: "Messages" })}
 				className={cn(
 					"min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]",
 					CHAT_SCROLLER_GUTTER_CLASSNAME,
 				)}
+				onCopy={copySourceText}
 				onKeyDown={onViewportKeyDown}
 				onPointerDown={onViewportPointerDown}
 				onTouchMove={markReaderScroll}

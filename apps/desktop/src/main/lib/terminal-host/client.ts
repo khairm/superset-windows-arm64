@@ -1676,6 +1676,12 @@ export class TerminalHostClient extends EventEmitter {
 		return this.sendRequest<EmptyResponse>("kill", request);
 	}
 
+	async killIfRunning(request: KillRequest): Promise<boolean> {
+		if (!(await this.tryConnectAndAuthenticate())) return false;
+		await this.sendRequest<EmptyResponse>("kill", request);
+		return true;
+	}
+
 	/**
 	 * Kill all terminal sessions
 	 */

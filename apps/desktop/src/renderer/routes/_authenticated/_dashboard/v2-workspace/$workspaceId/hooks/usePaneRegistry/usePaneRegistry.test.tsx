@@ -126,7 +126,6 @@ describe("saved disabled panes (FORK-BROWSER-OFF) (FORK-CHAT-V3-OFF)", () => {
 						store,
 						launcher: {} as never,
 						onOpenDiff: mock(() => {}),
-						onOpenComment: mock(() => {}),
 						onOpenFile: mock(() => {}),
 						onRevealPath: mock(() => {}),
 					}),
