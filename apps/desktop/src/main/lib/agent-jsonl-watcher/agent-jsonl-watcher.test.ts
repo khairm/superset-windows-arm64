@@ -1357,7 +1357,7 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		expect(errors.map((error) => error.transcriptPath)).toEqual([forked]);
 	});
 
-	test("a recreated profile transcript signals a fresh error", async () => {
+	test("a recreated profile transcript skips copied errors and signals a fresh one", async () => {
 		stopAgentJsonlWatcher();
 		const oldMs = Date.now() - 60 * 60 * 1000;
 		const profile = await profileTranscript();
@@ -1368,7 +1368,23 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		closeWatch(profile.profilesRoot);
 		const replacement = `${profile.file}.new`;
 		await fs.promises.writeFile(replacement, apiError(oldMs, "C:/work"));
+		await delay(5);
+		const copiedMs = Date.now();
+		await fs.promises.appendFile(replacement, apiError(copiedMs, "C:/work"));
+		expect(copiedMs).toBeGreaterThan(source.attachedAtMs);
+		expect(copiedMs).toBeGreaterThanOrEqual(
+			Math.floor((await fs.promises.stat(replacement)).birthtimeMs),
+		);
+		await delay(5);
+		await fs.promises.appendFile(profile.file, record({ cwd: "C:/work" }));
+		await watcher.processFile(profile.file, source, false);
+		expect(stateOf(profile.file).lastReadAtMs).toBeGreaterThan(copiedMs);
 		await fs.promises.rename(replacement, profile.file);
+		await watcher.processFile(profile.file, source, false);
+		expect(stateOf(profile.file).offset).toBe(
+			(await fs.promises.stat(profile.file)).size,
+		);
+		expect(errors).toHaveLength(0);
 		await fs.promises.appendFile(
 			profile.file,
 			apiError(Date.now() + 1, "C:/work"),

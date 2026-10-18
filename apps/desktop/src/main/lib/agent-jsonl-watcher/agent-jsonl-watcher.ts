@@ -327,6 +327,7 @@ interface FileState {
 	sessionId: string | null;
 	source: AgentSource;
 	fenceMs: number;
+	lastReadAtMs: number;
 	/**
 	 * (WATCHER-BLUE-STOMP) Watcher start time while a Claude startup-guard tail
 	 * re-read of THIS file is still outstanding; null otherwise. Everything the
@@ -935,6 +936,7 @@ function processFile(
 			sessionId: extractSessionIdFromFilename(filePath),
 			source,
 			fenceMs: source.attachedAtMs,
+			lastReadAtMs: 0,
 			preStartFenceMs: null,
 			inFlight: null,
 			trailingWork: false,
@@ -1035,8 +1037,13 @@ async function readFileStep(
 	const replaced = state.identity !== null && state.identity !== identity;
 	const isFirstSeen = !state.initialized;
 	state.identity = identity;
+	// NTFS tunnelling can give a same-name replacement the old birthtime.
 	if (isFirstSeen || replaced)
-		state.fenceMs = Math.max(source.attachedAtMs, stat.birthtimeMs);
+		state.fenceMs = Math.max(
+			source.attachedAtMs,
+			Math.floor(stat.birthtimeMs),
+			state.lastReadAtMs,
+		);
 
 	// Background-subagent transcript (Task or workflow/TeamCreate)? It never
 	// drives its own dot; its activity is mirrored to the parent terminal.
@@ -1102,6 +1109,7 @@ async function readFileStep(
 			state.offset = stat.size;
 			state.nextPollAt = nextColdPollAt(stat.mtimeMs);
 			state.initialized = true;
+			state.lastReadAtMs = Date.now();
 			return;
 		}
 	}
@@ -1156,6 +1164,7 @@ async function readFileStep(
 	// (WATCHER-ASYNC-IO)
 	if (stat.size === state.offset) {
 		clearGuardsAtEof(state);
+		state.lastReadAtMs = Date.now();
 		return;
 	}
 
@@ -1241,7 +1250,10 @@ async function readFileStep(
 		await fh.close();
 	}
 	if (!ownsFile(filePath, state, run)) return;
-	if (state.offset === stat.size) clearGuardsAtEof(state);
+	if (state.offset === stat.size) {
+		clearGuardsAtEof(state);
+		state.lastReadAtMs = Date.now();
+	}
 }
 
 /**
@@ -1891,7 +1903,6 @@ function detachProfileSource(source: AgentSource): void {
 }
 
 const rejectedProfileRoots = new Set<string>();
-const profileRootAttachedAtMs = new Map<string, number>();
 
 async function attachProfileRoots(run: number): Promise<void> {
 	if (!deps) return;
@@ -1913,9 +1924,7 @@ async function attachProfileRoots(run: number): Promise<void> {
 			}
 			continue;
 		}
-		const attachedAtMs = profileRootAttachedAtMs.get(root) ?? Date.now();
-		profileRootAttachedAtMs.set(root, attachedAtMs);
-		const source = profileSource(root, orgId, attachedAtMs);
+		const source = profileSource(root, orgId, Date.now());
 		let watcher: fs.FSWatcher;
 		try {
 			watcher = watchSource(source, run);
@@ -2086,7 +2095,6 @@ export function stopAgentJsonlWatcher(): void {
 	fileStates.clear();
 	SOURCES.splice(STATIC_SOURCES.length);
 	rejectedProfileRoots.clear();
-	profileRootAttachedAtMs.clear();
 	overflowedProfileSources.clear();
 	// (WATCHER-BLUE-STOMP) Reset with the rest of the watcher state. Safe: a
 	// restart re-seeds every existing transcript to EOF, so no history is replayed
