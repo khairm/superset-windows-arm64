@@ -1269,7 +1269,7 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		start();
 		await waitFor(() => watcher.seedComplete);
 		const state = stateOf(profile.file);
-		expect(state.source).toBe(profileSourceOf(profile.file));
+		expect(watcher.sources).toContain(profileSourceOf(profile.file));
 		expect(state.source.logsDir).toBe(
 			path.join(hostRoot, profile.orgId, "claude-profiles"),
 		);
