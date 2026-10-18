@@ -134,7 +134,8 @@ In brief:
 - **Auto-resume** — after an API failure, idle Claude terminals re-send
   automatically (bounded retries/budget, default-on, away-detection). Watches
   every workspace account folder; only errors written after a folder is
-  attached count (`(AUTO-RESUME-PROFILE-ROOTS)`).
+  attached and its transcript created count
+  (`(AUTO-RESUME-PROFILE-ROOTS)`).
 - **Recycle Bin** — every delete entry point soft-deletes (30-day display
   window); permanent delete only from inside the bin.
 - **Exiting a card closes its runtime** — Completed, Archive, Snooze and Recycle

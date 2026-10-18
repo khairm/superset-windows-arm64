@@ -126,6 +126,12 @@ async function seededProfileSource(file: string) {
 	return source;
 }
 
+function closeWatch(root: string) {
+	const watch = watcher.watchers.get(root);
+	if (!watch) throw new Error(`Unwatched root: ${root}`);
+	watch.close();
+}
+
 function stateOf(file: string) {
 	const state = watcher.fileStates.get(file);
 	if (!state) throw new Error(`Untracked transcript: ${file}`);
@@ -1286,6 +1292,7 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		expect(source.logsDir).toBe(profile.profilesRoot);
 		expect(watcher.fileStates.has(history)).toBe(false);
 		expect(watcher.fileStates.has(subagent)).toBe(false);
+		closeWatch(profile.profilesRoot);
 		await fs.promises.appendFile(
 			profile.file,
 			apiError(Date.now(), "C:/work") + interrupt(Date.now()),
@@ -1305,7 +1312,7 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		expect(events.length).toBe(0);
 	});
 
-	test("profile api errors stamped before attach never signal", async () => {
+	test("profile api errors stamped before attach or file birth never signal", async () => {
 		stopAgentJsonlWatcher();
 		const oldMs = Date.now() - 60 * 60 * 1000;
 		const undatedError = record({
@@ -1328,16 +1335,45 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		await watcher.processFile(profile.file, source, false);
 		expect(atStart.offset).toBe(atStartSize);
 
+		source.attachedAtMs = Date.now() - 10 * 60 * 1000;
+		const copiedMs = source.attachedAtMs + 60 * 1000;
 		const forked = path.join(profile.projectDir, `${randomUUID()}.jsonl`);
 		await fs.promises.writeFile(
 			forked,
-			apiError(oldMs, "C:/work") + undatedError,
+			apiError(oldMs, "C:/work") + apiError(copiedMs, "C:/work") + undatedError,
 		);
-		await watcher.discoverNewFilesAsync();
+		expect((await fs.promises.stat(forked)).birthtimeMs).toBeGreaterThan(
+			copiedMs,
+		);
+		await watcher.discoverNewFilesAsync(true);
 		const created = stateOf(forked);
 		await created.inFlight;
 		expect(created.source).toBe(source);
 		expect(created.offset).toBe((await fs.promises.stat(forked)).size);
 		expect(errors).toHaveLength(0);
+
+		await fs.promises.appendFile(forked, apiError(Date.now() + 1, "C:/work"));
+		await watcher.processFile(forked, source, false);
+		expect(errors.map((error) => error.transcriptPath)).toEqual([forked]);
+	});
+
+	test("a recreated profile transcript signals a fresh error", async () => {
+		stopAgentJsonlWatcher();
+		const oldMs = Date.now() - 60 * 60 * 1000;
+		const profile = await profileTranscript();
+		await fs.promises.writeFile(profile.file, apiError(oldMs, "C:/work"));
+		await delay(5);
+		start();
+		const source = await seededProfileSource(profile.file);
+		closeWatch(profile.profilesRoot);
+		const replacement = `${profile.file}.new`;
+		await fs.promises.writeFile(replacement, apiError(oldMs, "C:/work"));
+		await fs.promises.rename(replacement, profile.file);
+		await fs.promises.appendFile(
+			profile.file,
+			apiError(Date.now() + 1, "C:/work"),
+		);
+		await watcher.processFile(profile.file, source, false);
+		expect(errors.map((error) => error.transcriptPath)).toEqual([profile.file]);
 	});
 });

@@ -281,12 +281,16 @@ function staticSource(logsDir: string, parser: AgentParser): AgentSource {
 	};
 }
 
-function profileSource(logsDir: string, orgId: string): AgentSource {
+function profileSource(
+	logsDir: string,
+	orgId: string,
+	attachedAtMs: number,
+): AgentSource {
 	return {
 		logsDir,
 		parser: CLAUDE_PARSER,
 		profile: { orgId },
-		attachedAtMs: Date.now(),
+		attachedAtMs,
 		seeded: false,
 		accepts: (relative) =>
 			relative.endsWith(".jsonl") &&
@@ -322,6 +326,7 @@ interface FileState {
 	cwd: string | null;
 	sessionId: string | null;
 	source: AgentSource;
+	fenceMs: number;
 	/**
 	 * (WATCHER-BLUE-STOMP) Watcher start time while a Claude startup-guard tail
 	 * re-read of THIS file is still outstanding; null otherwise. Everything the
@@ -929,6 +934,7 @@ function processFile(
 			cwd: null,
 			sessionId: extractSessionIdFromFilename(filePath),
 			source,
+			fenceMs: source.attachedAtMs,
 			preStartFenceMs: null,
 			inFlight: null,
 			trailingWork: false,
@@ -1029,6 +1035,8 @@ async function readFileStep(
 	const replaced = state.identity !== null && state.identity !== identity;
 	const isFirstSeen = !state.initialized;
 	state.identity = identity;
+	if (isFirstSeen || replaced)
+		state.fenceMs = Math.max(source.attachedAtMs, stat.birthtimeMs);
 
 	// Background-subagent transcript (Task or workflow/TeamCreate)? It never
 	// drives its own dot; its activity is mirrored to the parent terminal.
@@ -1141,7 +1149,7 @@ async function readFileStep(
 		state.offset = 0;
 		state.leftover = [];
 		state.skipPartialLine = false;
-		state.replayReset = true;
+		state.replayReset = !(replaced && source.profile);
 	}
 	state.initialized = true;
 	state.nextPollAt = 0;
@@ -1260,7 +1268,7 @@ async function processLines(
 	const preStartFenceMs = state.preStartFenceMs;
 	const cwd = state.cwd;
 	if (!cwd) throw new Error("Transcript batch has no cwd");
-	const { parser, profile, attachedAtMs } = state.source;
+	const { parser, profile } = state.source;
 
 	// Claude dots are driven by the host-service POST hook (superset-notify.py);
 	// System 1 only mirrors background-subagent activity for Claude (handled
@@ -1322,10 +1330,10 @@ async function processLines(
 			// api-error stamped before the watcher started is history and would arm a
 			// resume for a dead turn.
 			if (line.includes('"isApiErrorMessage":true')) {
-				// (AUTO-RESUME-PROFILE-ROOTS) A file born after attach can still carry
-				// old history (`--fork-session`, a restored folder), so only the stamp counts.
+				// (AUTO-RESUME-PROFILE-ROOTS) A new file can carry copied history
+				// (`--fork-session`, a restored folder): count only stamps after its birth.
 				if (profile) {
-					if (lineWrittenAfterFence(line, attachedAtMs)) sawAnyApiError = true;
+					if (lineWrittenAfterFence(line, state.fenceMs)) sawAnyApiError = true;
 				} else if (preStartFenceMs === null) {
 					sawAnyApiError = true;
 				} else {
@@ -1599,6 +1607,7 @@ const STARTUP_GUARD_TAIL_BYTES = 256 * 1024;
 // Prevents overlapping discover walks (a slow walk + the 12 s timer).
 let discoverInFlight = false;
 let discoverTicks = 0;
+const overflowedProfileSources = new Set<AgentSource>();
 
 /**
  * (WATCHER-BLUE-STOMP) Is this first-seen file one the seed scan has simply not
@@ -1853,6 +1862,7 @@ function watchSource(source: AgentSource, run: number): fs.FSWatcher {
 			// Fallback when the platform didn't give us a filename:
 			// debounced async discovery (gated on seed completion, so it
 			// never replays the existing history).
+			if (source.profile) overflowedProfileSources.add(source);
 			if (scanTimer) return;
 			scanTimer = setTimeout(() => {
 				if (!isCurrent(run)) return;
@@ -1867,6 +1877,7 @@ function detachProfileSource(source: AgentSource): void {
 	const index = SOURCES.indexOf(source);
 	if (index < STATIC_SOURCES.length) return;
 	SOURCES.splice(index, 1);
+	overflowedProfileSources.delete(source);
 	watchers.get(source.logsDir)?.close();
 	watchers.delete(source.logsDir);
 	for (const [filePath, state] of fileStates) {
@@ -1880,6 +1891,7 @@ function detachProfileSource(source: AgentSource): void {
 }
 
 const rejectedProfileRoots = new Set<string>();
+const profileRootAttachedAtMs = new Map<string, number>();
 
 async function attachProfileRoots(run: number): Promise<void> {
 	if (!deps) return;
@@ -1901,7 +1913,9 @@ async function attachProfileRoots(run: number): Promise<void> {
 			}
 			continue;
 		}
-		const source = profileSource(root, orgId);
+		const attachedAtMs = profileRootAttachedAtMs.get(root) ?? Date.now();
+		profileRootAttachedAtMs.set(root, attachedAtMs);
+		const source = profileSource(root, orgId, attachedAtMs);
 		let watcher: fs.FSWatcher;
 		try {
 			watcher = watchSource(source, run);
@@ -1919,10 +1933,8 @@ async function attachProfileRoots(run: number): Promise<void> {
 		try {
 			await walkJsonlAsync(source, (full) => seedFileAsync(full, source), run);
 		} catch (error) {
-			if (!isCurrent(run) || !SOURCES.includes(source)) return;
+			if (!isCurrent(run)) return;
 			reportWatcherError(error);
-			detachProfileSource(source);
-			continue;
 		}
 		if (isCurrent(run) && SOURCES.includes(source)) source.seeded = true;
 	}
@@ -1965,15 +1977,20 @@ function runSeedScan(run: number): void {
  * genuinely-new (small, recent) files are read. The walk is async so even
  * the directory traversal never blocks the main thread.
  */
-async function discoverNewFilesAsync(): Promise<void> {
+async function discoverNewFilesAsync(allProfiles = false): Promise<void> {
 	if (!deps || !staticSourcesSeeded() || discoverInFlight) return;
 	const run = generation;
 	discoverInFlight = true;
-	const withProfiles = discoverTicks++ % PROFILE_DISCOVER_EVERY_TICKS === 0;
+	const withProfiles =
+		discoverTicks++ % PROFILE_DISCOVER_EVERY_TICKS === 0 || allProfiles;
+	const overflowed = [...overflowedProfileSources];
+	overflowedProfileSources.clear();
 	try {
 		await attachProfileRoots(run);
 		await walkAllSources(
-			withProfiles ? SOURCES.filter((source) => source.seeded) : STATIC_SOURCES,
+			(withProfiles ? SOURCES : [...STATIC_SOURCES, ...overflowed]).filter(
+				(source) => source.seeded,
+			),
 			run,
 			"Transcript discovery failed",
 			async (full, source) => {
@@ -2069,6 +2086,8 @@ export function stopAgentJsonlWatcher(): void {
 	fileStates.clear();
 	SOURCES.splice(STATIC_SOURCES.length);
 	rejectedProfileRoots.clear();
+	profileRootAttachedAtMs.clear();
+	overflowedProfileSources.clear();
 	// (WATCHER-BLUE-STOMP) Reset with the rest of the watcher state. Safe: a
 	// restart re-seeds every existing transcript to EOF, so no history is replayed
 	// through the empty uuid layer, and anything that does get re-read afterwards
@@ -2096,6 +2115,7 @@ export const agentJsonlWatcherTesting = {
 	loadPaneMapping,
 	fileStates,
 	mappingCache,
+	watchers,
 	sources: SOURCES,
 	get seedComplete() {
 		return staticSourcesSeeded();

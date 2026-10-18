@@ -183,6 +183,7 @@ export class AutoResumeManager {
 		if (existing) {
 			let updated: ResumeEntry = {
 				...existing,
+				orgId: c.orgId ?? existing.orgId,
 				transcriptPath: c.transcriptPath,
 				offset: c.offset,
 				terminalId: c.terminalId,
