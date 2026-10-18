@@ -44,6 +44,7 @@ export interface ApiErrorSignal {
 	terminalId?: string;
 	workspaceId?: string;
 	transcriptPath: string;
+	orgId?: string;
 }
 
 export interface FailureCandidate {
@@ -52,6 +53,7 @@ export interface FailureCandidate {
 	terminalId?: string;
 	workspaceId?: string;
 	transcriptPath: string;
+	orgId?: string;
 	offset: number;
 	recordTimestampMs: number;
 	error: string | null;
@@ -122,6 +124,7 @@ export class AutoResumeManager {
 			terminalId: info.terminalId,
 			workspaceId: info.workspaceId,
 			transcriptPath: info.transcriptPath,
+			orgId: info.orgId,
 			offset: last.offset,
 			recordTimestampMs: last.timestampMs,
 			error: last.error,
@@ -223,7 +226,7 @@ export class AutoResumeManager {
 		const entry: ResumeEntry = {
 			failureId,
 			sessionId: c.sessionId,
-			orgId: this.deps?.getOrganizationId() ?? undefined,
+			orgId: c.orgId ?? this.deps?.getOrganizationId() ?? undefined,
 			terminalId: c.terminalId,
 			workspaceId: c.workspaceId,
 			transcriptPath: c.transcriptPath,

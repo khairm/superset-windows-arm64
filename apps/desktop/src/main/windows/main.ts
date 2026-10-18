@@ -24,6 +24,7 @@ import {
 	startAgentJsonlWatcher,
 	stopAgentJsonlWatcher,
 } from "../lib/agent-jsonl-watcher";
+import { SUPERSET_HOME_DIR } from "../lib/app-environment";
 import {
 	appState,
 	isAppStateInitialized,
@@ -217,6 +218,7 @@ function startSharedServices(): void {
 	});
 	startAgentJsonlWatcher({
 		notificationsEmitter,
+		claudeProfilesHostRoot: join(SUPERSET_HOME_DIR, "host"),
 		onClaudeApiError: (info) => autoResumeManager.onClaudeApiErrorSignal(info),
 	});
 	log.info(
@@ -666,7 +668,7 @@ export async function createPlatformWindow({
 		}, 0);
 	});
 
-		// (T) hidden-window watchdog — failsafe for "all Superset.exe processes alive
+	// (T) hidden-window watchdog — failsafe for "all Superset.exe processes alive
 	// but no window" on Windows ARM64. The main window is created `show: false`
 	// and only revealed by the did-finish-load / did-fail-load handlers; we've
 	// seen launches where NEITHER fires (renderer crash mid-load with no reload,
@@ -744,9 +746,13 @@ export async function createPlatformWindow({
 		}
 	});
 
-window.webContents.on("did-finish-load", () => {
+	window.webContents.on("did-finish-load", () => {
 		console.log("[main-window] Renderer loaded successfully");
-		log.info("[startup] cold start: " + Math.round(process.uptime() * 1000) + "ms (process start -> did-finish-load)");
+		log.info(
+			"[startup] cold start: " +
+				Math.round(process.uptime() * 1000) +
+				"ms (process start -> did-finish-load)",
+		);
 
 		if (persistedZoomLevel !== undefined) {
 			window.webContents.setZoomLevel(persistedZoomLevel);

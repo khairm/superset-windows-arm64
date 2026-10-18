@@ -20,6 +20,7 @@ import {
 } from "node:timers/promises";
 import { NOTIFICATION_EVENTS } from "shared/constants";
 import type { AgentLifecycleEvent } from "shared/notification-types";
+import type { ApiErrorSignal } from "../auto-resume/manager/manager";
 
 // (WATCHER-ASYNC-IO)
 const tempParent = path.resolve(import.meta.dir, "../../../../../../tmp");
@@ -37,8 +38,9 @@ const claude = watcher.sources[0];
 const codex = watcher.sources[1];
 const mappingDir = path.join(home, ".superset", "session-pane-map");
 const casesDir = path.join(home, "cases");
+const hostRoot = path.join(home, "host");
 let events: AgentLifecycleEvent[];
-let errors: Array<{ sessionId: string }>;
+let errors: ApiErrorSignal[];
 let emitter: EventEmitter;
 
 setDefaultTimeout(60_000);
@@ -62,6 +64,7 @@ async function waitFor(condition: () => boolean) {
 function start() {
 	startAgentJsonlWatcher({
 		notificationsEmitter: emitter,
+		claudeProfilesHostRoot: hostRoot,
 		installPaneMapHook: () => {},
 		onClaudeApiError: (event) => errors.push(event),
 	});
@@ -80,6 +83,35 @@ const apiError = (timestamp: number, cwd?: string) =>
 		cwd,
 	});
 const sessionPath = () => path.join(casesDir, `${randomUUID()}.jsonl`);
+const interrupt = (timestamp: number) =>
+	record({
+		type: "user",
+		uuid: randomUUID(),
+		timestamp: new Date(timestamp).toISOString(),
+		message: {
+			role: "user",
+			content: [{ type: "text", text: "[Request interrupted by user]" }],
+		},
+		cwd: "C:/work",
+	});
+
+async function profileTranscript() {
+	const orgId = randomUUID();
+	const workspaceId = randomUUID();
+	const sessionId = randomUUID();
+	const profilesRoot = path.join(hostRoot, orgId, "claude-profiles");
+	const profileDir = path.join(profilesRoot, workspaceId);
+	const projectDir = path.join(profileDir, "projects", "C--work");
+	await fs.promises.mkdir(projectDir, { recursive: true });
+	const file = path.join(projectDir, `${sessionId}.jsonl`);
+	return { orgId, workspaceId, sessionId, profileDir, projectDir, file };
+}
+
+function profileSourceOf(file: string) {
+	const source = stateOf(file).source;
+	if (!source.profile) throw new Error(`Not a profile transcript: ${file}`);
+	return source;
+}
 
 function stateOf(file: string) {
 	const state = watcher.fileStates.get(file);
@@ -109,6 +141,7 @@ afterEach(async () => {
 	for (const dir of [
 		casesDir,
 		mappingDir,
+		hostRoot,
 		...watcher.sources.map((source) => source.logsDir),
 	]) {
 		await fs.promises.rm(dir, { recursive: true, force: true });
@@ -1207,5 +1240,94 @@ describe("async transcript watcher", () => {
 		expect(events.map((event) => event.eventType)).toEqual([
 			"PermissionRequest",
 		]);
+	});
+});
+
+describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
+	test("a profile transcript signals auto-resume only, with its org and mapping", async () => {
+		stopAgentJsonlWatcher();
+		const profile = await profileTranscript();
+		await fs.promises.writeFile(profile.file, record({ cwd: "C:/work" }));
+		const history = path.join(profile.profileDir, "history.jsonl");
+		await fs.promises.writeFile(history, record({ display: "hello" }));
+		const subagentDir = path.join(
+			profile.projectDir,
+			profile.sessionId,
+			"subagents",
+		);
+		await fs.promises.mkdir(subagentDir, { recursive: true });
+		const subagent = path.join(subagentDir, "agent-a1.jsonl");
+		await fs.promises.writeFile(subagent, line("task_started"));
+		await fs.promises.writeFile(
+			path.join(mappingDir, `${profile.sessionId}.json`),
+			JSON.stringify({
+				terminalId: "profile-terminal",
+				workspaceId: profile.workspaceId,
+			}),
+		);
+		await delay(5);
+		start();
+		await waitFor(() => watcher.seedComplete);
+		const state = stateOf(profile.file);
+		expect(state.source).toBe(profileSourceOf(profile.file));
+		expect(state.source.logsDir).toBe(
+			path.join(hostRoot, profile.orgId, "claude-profiles"),
+		);
+		expect(watcher.fileStates.has(history)).toBe(false);
+		expect(watcher.fileStates.has(subagent)).toBe(false);
+		await fs.promises.appendFile(
+			profile.file,
+			apiError(Date.now(), "C:/work") + interrupt(Date.now()),
+		);
+		await watcher.pollKnownFilesForGrowth();
+		await waitFor(() => errors.length === 1 && state.inFlight === null);
+		expect(errors).toEqual([
+			{
+				sessionId: profile.sessionId,
+				cwd: "C:/work",
+				terminalId: "profile-terminal",
+				workspaceId: profile.workspaceId,
+				transcriptPath: profile.file,
+				orgId: profile.orgId,
+			},
+		]);
+		expect(events.length).toBe(0);
+	});
+
+	test("profile api errors stamped before attach never signal", async () => {
+		stopAgentJsonlWatcher();
+		const oldMs = Date.now() - 60 * 60 * 1000;
+		const undatedError = record({
+			type: "assistant",
+			isApiErrorMessage: true,
+			cwd: "C:/work",
+		});
+		const profile = await profileTranscript();
+		await fs.promises.writeFile(
+			profile.file,
+			apiError(oldMs, "C:/work") + apiError(oldMs + 1, "C:/work"),
+		);
+		await delay(5);
+		start();
+		await waitFor(() => watcher.seedComplete);
+		const source = profileSourceOf(profile.file);
+		const atStart = stateOf(profile.file);
+		const atStartSize = (await fs.promises.stat(profile.file)).size;
+		expect(atStart.offset).toBe(atStartSize);
+		atStart.offset = 0;
+		await watcher.processFile(profile.file, source, false);
+		expect(atStart.offset).toBe(atStartSize);
+
+		const forked = path.join(profile.projectDir, `${randomUUID()}.jsonl`);
+		await fs.promises.writeFile(
+			forked,
+			apiError(oldMs, "C:/work") + undatedError,
+		);
+		await watcher.discoverNewFilesAsync();
+		const created = stateOf(forked);
+		await created.inFlight;
+		expect(created.source).toBe(source);
+		expect(created.offset).toBe((await fs.promises.stat(forked)).size);
+		expect(errors).toHaveLength(0);
 	});
 });

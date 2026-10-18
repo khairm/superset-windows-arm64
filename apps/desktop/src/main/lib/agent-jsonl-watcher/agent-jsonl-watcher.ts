@@ -5,6 +5,7 @@ import path from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { NOTIFICATION_EVENTS } from "shared/constants";
 import type { AgentLifecycleEvent } from "shared/notification-types";
+import { claudeProfileDirsAsync } from "./notify-daemon";
 import { installPaneMapHook } from "./pane-map-hook";
 import {
 	isSyntheticInterruptRecord,
@@ -36,6 +37,8 @@ import {
  *
  * Sources:
  *   - Claude: ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
+ *   - Claude profiles (auto-resume signal only):
+ *     <host>/<org>/claude-profiles/<uuid>/projects/<encoded-cwd>/<session-uuid>.jsonl
  *   - Codex:  ~/.codex/sessions/**\/rollout-<ts>-<uuid>.jsonl
  *
  * State derived per-agent (see CLAUDE_PARSER / CODEX_PARSER) and
@@ -58,9 +61,18 @@ interface AgentParser {
 	isPermissionRequest(line: string): boolean;
 }
 
+interface ProfileRoot {
+	readonly orgId: string;
+	readonly attachedAtMs: number;
+	seeded: boolean;
+}
+
 interface AgentSource {
 	readonly logsDir: string;
 	readonly parser: AgentParser;
+	readonly profile: ProfileRoot | null;
+	accepts(relative: string): boolean;
+	descends(relativeDir: string): boolean;
 }
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
@@ -167,6 +179,13 @@ const IDLE_TIMEOUT_MS = 45000;
 
 const CWD_REGEX = /"cwd":"((?:[^"\\]|\\.)+)"/;
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const UUID = UUID_RE.source;
+const BARE_UUID_RE = new RegExp(`^${UUID}$`, "i");
+const PROFILE_TRANSCRIPT_RE = new RegExp(
+	`^${UUID}/projects/[^/]+/${UUID}\\.jsonl$`,
+	"i",
+);
+const PROFILE_DIR_RE = new RegExp(`^${UUID}(?:/projects(?:/[^/]+)?)?$`, "i");
 
 // ---------------------------------------------------------------------------
 // Per-agent parsers
@@ -245,10 +264,49 @@ const CODEX_PARSER: AgentParser = {
 	},
 };
 
-const SOURCES: AgentSource[] = [
-	{ logsDir: CLAUDE_PROJECTS_DIR, parser: CLAUDE_PARSER },
-	{ logsDir: CODEX_SESSIONS_DIR, parser: CODEX_PARSER },
+function toPosix(relative: string): string {
+	return relative.replaceAll("\\", "/");
+}
+
+function staticSource(logsDir: string, parser: AgentParser): AgentSource {
+	return {
+		logsDir,
+		parser,
+		profile: null,
+		accepts: (relative) => relative.endsWith(".jsonl"),
+		descends: () => true,
+	};
+}
+
+function profileSource(logsDir: string, orgId: string): AgentSource {
+	return {
+		logsDir,
+		parser: CLAUDE_PARSER,
+		profile: { orgId, attachedAtMs: Date.now(), seeded: false },
+		accepts: (relative) =>
+			relative.endsWith(".jsonl") &&
+			PROFILE_TRANSCRIPT_RE.test(toPosix(relative)),
+		descends: (relativeDir) => PROFILE_DIR_RE.test(toPosix(relativeDir)),
+	};
+}
+
+const STATIC_SOURCES: readonly AgentSource[] = [
+	staticSource(CLAUDE_PROJECTS_DIR, CLAUDE_PARSER),
+	staticSource(CODEX_SESSIONS_DIR, CODEX_PARSER),
 ];
+const SOURCES: AgentSource[] = [...STATIC_SOURCES];
+
+function sourceIsLive(source: AgentSource): boolean {
+	return source.profile === null || SOURCES.includes(source);
+}
+
+function sourceAttachedAtMs(source: AgentSource): number {
+	return source.profile?.attachedAtMs ?? watcherStartedAtMs;
+}
+
+function sourceSeeded(source: AgentSource): boolean {
+	return source.profile?.seeded ?? seedComplete;
+}
 
 // ---------------------------------------------------------------------------
 // Watcher state
@@ -266,7 +324,7 @@ interface FileState {
 	nextPollAt: number;
 	cwd: string | null;
 	sessionId: string | null;
-	parser: AgentParser;
+	source: AgentSource;
 	/**
 	 * (WATCHER-BLUE-STOMP) Watcher start time while a Claude startup-guard tail
 	 * re-read of THIS file is still outstanding; null otherwise. Everything the
@@ -313,6 +371,7 @@ interface PaneMapping {
 interface WatcherDeps {
 	installPaneMapHook?: () => void;
 	notificationsEmitter: EventEmitter;
+	claudeProfilesHostRoot: string;
 	// (AUTO-RESUME) Forwarded when a Claude main session appends an API-error record.
 	// The auto-resume manager debounces + re-reads the transcript tail to confirm the
 	// failure is genuinely turn-ending before classifying — so passing a possibly-
@@ -323,6 +382,7 @@ interface WatcherDeps {
 		terminalId?: string;
 		workspaceId?: string;
 		transcriptPath: string;
+		orgId?: string;
 	}) => void;
 }
 
@@ -868,7 +928,7 @@ function processFile(
 	seedOnly: boolean,
 ): Promise<void> {
 	const run = generation;
-	if (!isCurrent(run)) return Promise.resolve();
+	if (!isCurrent(run) || !sourceIsLive(source)) return Promise.resolve();
 	let state = fileStates.get(filePath);
 	if (!state) {
 		state = {
@@ -878,7 +938,7 @@ function processFile(
 			replayReset: false,
 			cwd: null,
 			sessionId: extractSessionIdFromFilename(filePath),
-			parser: source.parser,
+			source,
 			preStartFenceMs: null,
 			inFlight: null,
 			trailingWork: false,
@@ -1004,8 +1064,10 @@ async function readFileStep(
 	// thread on a multi-megabyte transcript at startup.
 	const startupGuard =
 		isFirstSeen &&
-		(!seedOnly || state.trailingWork || stat.mtimeMs >= watcherStartedAtMs) &&
-		isUnseededPreexistingFile(stat);
+		(!seedOnly ||
+			state.trailingWork ||
+			stat.mtimeMs >= sourceAttachedAtMs(source)) &&
+		isUnseededPreexistingFile(stat, source);
 	// (WATCHER-ASYNC-IO)
 	let fencedTailRead = startupGuard || subagentChangedDuringStat;
 
@@ -1015,7 +1077,8 @@ async function readFileStep(
 	// cache cwd — for Codex the cwd lives only in the first session_meta entry, so
 	// we'd otherwise never see it once we'd skipped past.
 	const seedHistory =
-		seedOnly && (seedComplete || stat.birthtimeMs < watcherStartedAtMs);
+		seedOnly &&
+		(sourceSeeded(source) || stat.birthtimeMs < sourceAttachedAtMs(source));
 	if (
 		isFirstSeen &&
 		!subagentParent &&
@@ -1037,7 +1100,7 @@ async function readFileStep(
 			fencedTailRead ||
 			(state.trailingWork &&
 				((source.parser.id === "codex" && changedDuringStat) ||
-					isUnseededPreexistingFile(stat)))
+					isUnseededPreexistingFile(stat, source)))
 		) {
 			fencedTailRead = true;
 		} else {
@@ -1062,7 +1125,7 @@ async function readFileStep(
 			subagentChangedDuringStat ||
 			(source.parser.id === "codex" && !startupGuard)
 				? (workPendingSinceMs ?? readStartedAtMs)
-				: watcherStartedAtMs;
+				: sourceAttachedAtMs(source);
 		dbg("startup-guard-tail", {
 			filePath,
 			sessionId: state.sessionId,
@@ -1155,7 +1218,7 @@ async function readFileStep(
 					await mirrorSubagentToParent(
 						subagentParent,
 						lines,
-						state.parser,
+						state.source.parser,
 						filePath,
 						state,
 						run,
@@ -1210,7 +1273,7 @@ async function processLines(
 	const preStartFenceMs = state.preStartFenceMs;
 	const cwd = state.cwd;
 	if (!cwd) throw new Error("Transcript batch has no cwd");
-	const { parser } = state;
+	const { parser, profile } = state.source;
 
 	// Claude dots are driven by the host-service POST hook (superset-notify.py);
 	// System 1 only mirrors background-subagent activity for Claude (handled
@@ -1272,7 +1335,12 @@ async function processLines(
 			// api-error stamped before the watcher started is history and would arm a
 			// resume for a dead turn.
 			if (line.includes('"isApiErrorMessage":true')) {
-				if (preStartFenceMs === null) {
+				// (AUTO-RESUME-PROFILE-ROOTS) A file born after attach can still carry
+				// old history (`--fork-session`, a restored folder), so only the stamp counts.
+				if (profile) {
+					if (lineWrittenAfterFence(line, profile.attachedAtMs))
+						sawAnyApiError = true;
+				} else if (preStartFenceMs === null) {
 					sawAnyApiError = true;
 				} else {
 					const errRecord = parseTranscriptRecord(line);
@@ -1280,6 +1348,7 @@ async function processLines(
 						sawAnyApiError = true;
 				}
 			}
+			if (profile) continue;
 			// (WATCHER-BLUE-STOMP) A turn-end must be Claude Code's EXACT synthetic
 			// interrupt record, not a line that merely contains the phrase. The marker
 			// is quoted constantly by this repo's own agent traffic (review reports,
@@ -1372,6 +1441,7 @@ async function processLines(
 				terminalId: mapping?.terminalId,
 				workspaceId: mapping?.workspaceId,
 				transcriptPath: filePath,
+				orgId: profile?.orgId,
 			});
 		}
 		dbg("claude-gated", {
@@ -1448,15 +1518,11 @@ function schedulePerFileProcess(filePath: string, source: AgentSource): void {
 	}
 	const run = generation;
 	const timer = setTimeout(() => {
-		if (!isCurrent(run)) return;
+		if (!isCurrent(run) || !sourceIsLive(source)) return;
 		pendingFiles.delete(filePath);
 		void processFile(filePath, source, false).catch(reportWatcherError);
 	}, POLL_DEBOUNCE_MS);
 	pendingFiles.set(filePath, { source, timer });
-}
-
-function sourceForParser(parser: AgentParser): AgentSource | undefined {
-	return SOURCES.find((s) => s.parser === parser);
 }
 
 /**
@@ -1489,8 +1555,7 @@ function pollKnownFilesForGrowth(): Promise<void> {
 							fileIdentity(stat) !== state.identity
 						) {
 							state.nextPollAt = 0;
-							const source = sourceForParser(state.parser);
-							if (source) schedulePerFileProcess(filePath, source);
+							schedulePerFileProcess(filePath, state.source);
 						} else {
 							state.nextPollAt = nextColdPollAt(stat.mtimeMs, now);
 						}
@@ -1579,45 +1644,56 @@ let discoverInFlight = false;
  * Degrades safely: where birthtime is unavailable it reads 0, the guard declines,
  * and behaviour is exactly what it was before.
  */
-function isUnseededPreexistingFile(stat: fs.Stats): boolean {
+function isUnseededPreexistingFile(
+	stat: fs.Stats,
+	source: AgentSource,
+): boolean {
+	if (source.profile) {
+		return (
+			stat.birthtimeMs > 0 && stat.birthtimeMs < source.profile.attachedAtMs
+		);
+	}
 	if (seedComplete || watcherStartedAtMs === 0) return false;
 	return stat.birthtimeMs > 0 && stat.birthtimeMs < watcherStartedAtMs;
 }
 
 /**
- * Async recursive walk of a logs dir, invoking `onFile` for each `.jsonl`
- * and yielding to the event loop every SEED_SCAN_YIELD_EVERY files so even a
- * huge tree never blocks the main thread. `onFile` may be async (awaited).
+ * Async recursive walk of a logs dir, invoking `onFile` for each transcript the
+ * source accepts and yielding to the event loop every SEED_SCAN_YIELD_EVERY
+ * files so even a huge tree never blocks the main thread. `onFile` may be
+ * async (awaited).
  */
 async function walkJsonlAsync(
-	logsDir: string,
+	source: AgentSource,
 	onFile: (full: string) => void | Promise<void>,
 	run: number,
 ): Promise<void> {
-	const stack: string[] = [logsDir];
+	const live = () => isCurrent(run) && sourceIsLive(source);
+	const stack: string[] = [""];
 	const failures: unknown[] = [];
 	let n = 0;
-	while (isCurrent(run) && stack.length > 0) {
-		const dir = stack.pop();
-		if (dir === undefined) break;
+	while (live() && stack.length > 0) {
+		const relativeDir = stack.pop();
+		if (relativeDir === undefined) break;
+		const dir = path.join(source.logsDir, relativeDir);
 		let entries: fs.Dirent[];
 		try {
 			entries = await fs.promises.readdir(dir, { withFileTypes: true });
 		} catch (error) {
-			if (!isCurrent(run)) return;
+			if (!live()) return;
 			if (!isFileMissing(error)) failures.push(error);
 			continue;
 		}
 		for (const entry of entries) {
-			if (!isCurrent(run)) return;
-			const full = path.join(dir, entry.name);
+			if (!live()) return;
+			const relative = path.join(relativeDir, entry.name);
 			if (entry.isDirectory()) {
-				stack.push(full);
-			} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+				if (source.descends(relative)) stack.push(relative);
+			} else if (entry.isFile() && source.accepts(relative)) {
 				try {
-					await onFile(full);
+					await onFile(path.join(source.logsDir, relative));
 				} catch (error) {
-					if (!isCurrent(run)) return;
+					if (!live()) return;
 					failures.push(error);
 				}
 				n += 1;
@@ -1627,7 +1703,7 @@ async function walkJsonlAsync(
 			}
 		}
 	}
-	if (isCurrent(run) && failures.length)
+	if (live() && failures.length)
 		throw new AggregateError(failures, "Transcript scan failed");
 }
 
@@ -1763,15 +1839,16 @@ async function seedFileAsync(
 }
 
 async function walkAllSources(
+	sources: readonly AgentSource[],
 	run: number,
 	errorMessage: string,
 	onFile: (filePath: string, source: AgentSource) => Promise<void>,
 ): Promise<void> {
 	const failures: unknown[] = [];
-	for (const source of SOURCES) {
+	for (const source of sources) {
 		if (!isCurrent(run)) return;
 		try {
-			await walkJsonlAsync(source.logsDir, (full) => onFile(full, source), run);
+			await walkJsonlAsync(source, (full) => onFile(full, source), run);
 		} catch (error) {
 			if (!isCurrent(run)) return;
 			if (error instanceof AggregateError) failures.push(...error.errors);
@@ -1781,9 +1858,112 @@ async function walkAllSources(
 	if (failures.length) throw new AggregateError(failures, errorMessage);
 }
 
+function watchSource(source: AgentSource, run: number): fs.FSWatcher {
+	return fs.watch(
+		source.logsDir,
+		{ recursive: true },
+		(_eventType, filename) => {
+			if (!isCurrent(run) || !sourceIsLive(source)) return;
+			// Steady-state: process only the changed .jsonl file. A
+			// full recursive scan over every Codex year/month/day
+			// archive on each append would block the main process
+			// on large session histories.
+			if (filename && typeof filename === "string") {
+				if (!source.accepts(filename)) return;
+				schedulePerFileProcess(path.join(source.logsDir, filename), source);
+				return;
+			}
+			// Fallback when the platform didn't give us a filename:
+			// debounced async discovery (gated on seed completion, so it
+			// never replays the existing history).
+			if (scanTimer) return;
+			scanTimer = setTimeout(() => {
+				if (!isCurrent(run)) return;
+				scanTimer = null;
+				void discoverNewFilesAsync().catch(reportWatcherError);
+			}, POLL_DEBOUNCE_MS);
+		},
+	);
+}
+
+function detachProfileSource(source: AgentSource): void {
+	const index = SOURCES.indexOf(source);
+	if (index < STATIC_SOURCES.length) return;
+	SOURCES.splice(index, 1);
+	watchers.get(source.logsDir)?.close();
+	watchers.delete(source.logsDir);
+	for (const [filePath, state] of fileStates) {
+		if (state.source === source) fileStates.delete(filePath);
+	}
+	for (const [filePath, pending] of pendingFiles) {
+		if (pending.source !== source) continue;
+		clearTimeout(pending.timer);
+		pendingFiles.delete(filePath);
+	}
+}
+
+const rejectedProfileRoots = new Set<string>();
+
+// (AUTO-RESUME-PROFILE-ROOTS) One watch and seed per <host>/<org>/claude-profiles.
+async function attachProfileRoots(run: number): Promise<void> {
+	if (!deps) return;
+	const roots = new Set(
+		(await claudeProfileDirsAsync(deps.claudeProfilesHostRoot)).map((dir) =>
+			path.dirname(dir),
+		),
+	);
+	for (const root of roots) {
+		if (!isCurrent(run)) return;
+		if (SOURCES.some((source) => source.logsDir === root)) continue;
+		const orgId = path.basename(path.dirname(root));
+		if (!BARE_UUID_RE.test(orgId)) {
+			if (!rejectedProfileRoots.has(root)) {
+				rejectedProfileRoots.add(root);
+				console.error(
+					`[agent-watcher] Skipping ${root}: ${orgId} is not an organization id`,
+				);
+			}
+			continue;
+		}
+		const source = profileSource(root, orgId);
+		let watcher: fs.FSWatcher;
+		try {
+			watcher = watchSource(source, run);
+		} catch (error) {
+			reportWatcherError(error);
+			continue;
+		}
+		SOURCES.push(source);
+		watchers.set(root, watcher);
+		watcher.on("error", (error) => {
+			if (!isCurrent(run) || !sourceIsLive(source)) return;
+			reportWatcherError(error);
+			detachProfileSource(source);
+		});
+		try {
+			await walkJsonlAsync(source, (full) => seedFileAsync(full, source), run);
+		} catch (error) {
+			if (!isCurrent(run) || !sourceIsLive(source)) return;
+			reportWatcherError(error);
+			detachProfileSource(source);
+			continue;
+		}
+		if (isCurrent(run) && source.profile && sourceIsLive(source))
+			source.profile.seeded = true;
+	}
+}
+
 function runSeedScan(run: number): void {
 	if (!isCurrent(run)) return;
-	void walkAllSources(run, "Transcript seed failed", seedFileAsync)
+	void attachProfileRoots(run)
+		.then(() =>
+			walkAllSources(
+				STATIC_SOURCES,
+				run,
+				"Transcript seed failed",
+				seedFileAsync,
+			),
+		)
 		.then(() => {
 			if (!isCurrent(run)) return;
 			seedComplete = true;
@@ -1817,7 +1997,9 @@ async function discoverNewFilesAsync(): Promise<void> {
 	const run = generation;
 	discoverInFlight = true;
 	try {
+		await attachProfileRoots(run);
 		await walkAllSources(
+			SOURCES.filter(sourceSeeded),
 			run,
 			"Transcript discovery failed",
 			async (full, source) => {
@@ -1830,11 +2012,15 @@ async function discoverNewFilesAsync(): Promise<void> {
 }
 
 /**
- * Start watching ~/.claude/projects/ and ~/.codex/sessions/ for JSONL
- * session updates and forward derived agent lifecycle events into
- * notificationsEmitter.
+ * Start watching ~/.claude/projects/, ~/.codex/sessions/ and every Claude
+ * profile root for JSONL session updates and forward derived agent lifecycle
+ * events into notificationsEmitter.
  */
 export function startAgentJsonlWatcher(d: WatcherDeps): void {
+	if (!path.isAbsolute(d.claudeProfilesHostRoot))
+		throw new Error(
+			`claudeProfilesHostRoot must be absolute: ${d.claudeProfilesHostRoot}`,
+		);
 	stopAgentJsonlWatcher();
 	const run = generation;
 	deps = d;
@@ -1847,35 +2033,11 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
 	(d.installPaneMapHook ?? installPaneMapHook)();
 
 	// (WATCHER-ASYNC-IO)
-	for (const source of SOURCES) {
+	for (const source of STATIC_SOURCES) {
 		void (async () => {
 			await fs.promises.mkdir(source.logsDir, { recursive: true });
 			if (!isCurrent(run)) return;
-			const w = fs.watch(
-				source.logsDir,
-				{ recursive: true },
-				(_eventType, filename) => {
-					if (!isCurrent(run)) return;
-					// Steady-state: process only the changed .jsonl file. A
-					// full recursive scan over every Codex year/month/day
-					// archive on each append would block the main process
-					// on large session histories.
-					if (filename && typeof filename === "string") {
-						if (!filename.endsWith(".jsonl")) return;
-						schedulePerFileProcess(path.join(source.logsDir, filename), source);
-						return;
-					}
-					// Fallback when the platform didn't give us a filename:
-					// debounced async discovery (gated on seed completion, so it
-					// never replays the existing history).
-					if (scanTimer) return;
-					scanTimer = setTimeout(() => {
-						if (!isCurrent(run)) return;
-						scanTimer = null;
-						void discoverNewFilesAsync().catch(reportWatcherError);
-					}, POLL_DEBOUNCE_MS);
-				},
-			);
+			const w = watchSource(source, run);
 			w.on("error", (error) => {
 				if (isCurrent(run)) reportWatcherError(error);
 			});
@@ -1930,6 +2092,8 @@ export function stopAgentJsonlWatcher(): void {
 	for (const s of lifecycleStates.values()) cancelIdleTimer(s);
 	lifecycleStates.clear();
 	fileStates.clear();
+	SOURCES.splice(STATIC_SOURCES.length);
+	rejectedProfileRoots.clear();
 	// (WATCHER-BLUE-STOMP) Reset with the rest of the watcher state. Safe: a
 	// restart re-seeds every existing transcript to EOF, so no history is replayed
 	// through the empty uuid layer, and anything that does get re-read afterwards
