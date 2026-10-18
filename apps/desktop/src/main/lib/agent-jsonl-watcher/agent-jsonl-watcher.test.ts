@@ -104,11 +104,24 @@ async function profileTranscript() {
 	const projectDir = path.join(profileDir, "projects", "C--work");
 	await fs.promises.mkdir(projectDir, { recursive: true });
 	const file = path.join(projectDir, `${sessionId}.jsonl`);
-	return { orgId, workspaceId, sessionId, profileDir, projectDir, file };
+	return {
+		orgId,
+		workspaceId,
+		sessionId,
+		profilesRoot,
+		profileDir,
+		projectDir,
+		file,
+	};
 }
 
-function profileSourceOf(file: string) {
-	const source = stateOf(file).source;
+async function seededProfileSource(file: string) {
+	await waitFor(
+		() =>
+			watcher.seedComplete &&
+			watcher.fileStates.get(file)?.source.seeded === true,
+	);
+	const { source } = stateOf(file);
 	if (!source.profile) throw new Error(`Not a profile transcript: ${file}`);
 	return source;
 }
@@ -1267,12 +1280,10 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		);
 		await delay(5);
 		start();
-		await waitFor(() => watcher.seedComplete);
+		const source = await seededProfileSource(profile.file);
 		const state = stateOf(profile.file);
-		expect(watcher.sources).toContain(profileSourceOf(profile.file));
-		expect(state.source.logsDir).toBe(
-			path.join(hostRoot, profile.orgId, "claude-profiles"),
-		);
+		expect(watcher.sources).toContain(source);
+		expect(source.logsDir).toBe(profile.profilesRoot);
 		expect(watcher.fileStates.has(history)).toBe(false);
 		expect(watcher.fileStates.has(subagent)).toBe(false);
 		await fs.promises.appendFile(
@@ -1309,8 +1320,7 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		);
 		await delay(5);
 		start();
-		await waitFor(() => watcher.seedComplete);
-		const source = profileSourceOf(profile.file);
+		const source = await seededProfileSource(profile.file);
 		const atStart = stateOf(profile.file);
 		const atStartSize = (await fs.promises.stat(profile.file)).size;
 		expect(atStart.offset).toBe(atStartSize);

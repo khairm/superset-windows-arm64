@@ -47,13 +47,7 @@ export interface ApiErrorSignal {
 	orgId?: string;
 }
 
-export interface FailureCandidate {
-	sessionId: string;
-	cwd: string;
-	terminalId?: string;
-	workspaceId?: string;
-	transcriptPath: string;
-	orgId?: string;
+export interface FailureCandidate extends ApiErrorSignal {
 	offset: number;
 	recordTimestampMs: number;
 	error: string | null;
@@ -119,12 +113,7 @@ export class AutoResumeManager {
 		// The same read already told us whether the turn moved on (retried / progressed).
 		if (last.hasMeaningfulProgressAfter) return;
 		this.onClaudeFailure({
-			sessionId: info.sessionId,
-			cwd: info.cwd,
-			terminalId: info.terminalId,
-			workspaceId: info.workspaceId,
-			transcriptPath: info.transcriptPath,
-			orgId: info.orgId,
+			...info,
 			offset: last.offset,
 			recordTimestampMs: last.timestampMs,
 			error: last.error,
