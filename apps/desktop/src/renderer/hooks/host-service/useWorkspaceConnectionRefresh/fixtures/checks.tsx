@@ -51,6 +51,7 @@ mock.module("@superset/shared/fork-disabled-features", () => ({
 	FORK_CHAT_V3_DISABLED: true,
 	FORK_PAGE_WATCH_DISABLED: false,
 	FORK_PORT_SCAN_DISABLED: true,
+	FORK_PULL_REQUESTS_DISABLED: true,
 }));
 mock.module("renderer/lib/host-event-bus", () => ({
 	getHostEventBus: (url: string) => hosts.get(url),

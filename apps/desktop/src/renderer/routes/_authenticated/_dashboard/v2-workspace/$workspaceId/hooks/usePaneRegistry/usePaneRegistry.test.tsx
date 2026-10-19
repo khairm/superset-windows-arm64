@@ -110,10 +110,12 @@ afterAll(async () => {
 	if (!alreadyRegistered) await GlobalRegistrator.unregister();
 });
 
-describe("saved disabled panes (FORK-BROWSER-OFF) (FORK-CHAT-V3-OFF)", () => {
+describe("saved disabled panes (FORK-BROWSER-OFF) (FORK-CHAT-V3-OFF) (FORK-PRS-OFF)", () => {
 	for (const [kind, title] of [
 		["browser", "Browser"],
 		["chat-v3", "Chat"],
+		["review", "Review"],
+		["pull-request", "Pull request"],
 	] as const) {
 		test(`${kind} is inert and closes from the actual workspace registry`, () => {
 			const store = createWorkspaceStore<PaneViewerData>();

@@ -1,3 +1,5 @@
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
+
 /**
  * (CLOUD-SEVERANCE-P2) The routes that have nothing behind them.
  *
@@ -16,6 +18,9 @@
  * are as dead as their parents, and an upstream merge that adds a child route
  * under one of these trees should be caught by this list on the night it
  * lands rather than the night someone notices.
+ *
+ * (FORK-PRS-OFF) The list also holds routes whose local host-service feature
+ * this fork switched off; those screens have nothing behind them either.
  */
 
 /** Where a severed route sends the user. Always reachable, never severed. */
@@ -48,6 +53,8 @@ const CLOUD_SEVERED_ROUTE_PREFIXES = [
 	// than absent: a control that looks like it governs network exposure and
 	// governs nothing teaches the user to distrust the ones that do.
 	"/settings/security",
+	// (FORK-PRS-OFF)
+	...(FORK_PULL_REQUESTS_DISABLED ? ["/pull-requests"] : []),
 ] as const;
 
 export function isCloudSeveredRoute(pathname: string): boolean {

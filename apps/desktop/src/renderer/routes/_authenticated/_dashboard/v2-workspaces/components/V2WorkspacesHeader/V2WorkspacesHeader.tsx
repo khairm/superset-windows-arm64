@@ -2,6 +2,7 @@ import type { MessageDescriptor } from "@lingui/core";
 import { msg, plural } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import { i18n } from "@superset/i18n";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { Avatar, AvatarFallback, AvatarImage } from "@superset/ui/avatar";
 import { Button } from "@superset/ui/button";
 import {
@@ -453,44 +454,47 @@ export function V2WorkspacesHeader({
 							</ToolbarMenuButton>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end" className="min-w-[14rem]">
-							<DropdownMenuSub>
-								<DropdownMenuSubTrigger>
-									<span className="flex items-center gap-2">
-										<LuGitPullRequest className="size-3.5" />
-										<Trans>PR state</Trans>
-									</span>
-									{prStateFilters.length > 0 ? (
-										<SubmenuValue>
-											{prStateFilters
-												.map((state) => i18n._(PR_STATE_LABELS[state]))
-												.join(", ")}
-										</SubmenuValue>
-									) : null}
-								</DropdownMenuSubTrigger>
-								<DropdownMenuSubContent className="min-w-0">
-									{V2_WORKSPACES_PR_STATE_FILTERS.map((state) => (
-										<DropdownMenuCheckboxItem
-											indicator="end"
-											key={state}
-											checked={prStateFilters.includes(state)}
-											onSelect={(event) => event.preventDefault()}
-											onCheckedChange={() =>
-												setPrStateFilters(
-													toggleIn(
-														prStateFilters,
-														state,
-													) as V2WorkspacesPrStateFilter[],
-												)
-											}
-										>
-											<span className="flex items-center gap-2">
-												<PRIcon state={state} className="size-3.5" />
-												{i18n._(PR_STATE_LABELS[state])}
-											</span>
-										</DropdownMenuCheckboxItem>
-									))}
-								</DropdownMenuSubContent>
-							</DropdownMenuSub>
+							{/* (FORK-PRS-OFF) */}
+							{FORK_PULL_REQUESTS_DISABLED ? null : (
+								<DropdownMenuSub>
+									<DropdownMenuSubTrigger>
+										<span className="flex items-center gap-2">
+											<LuGitPullRequest className="size-3.5" />
+											<Trans>PR state</Trans>
+										</span>
+										{prStateFilters.length > 0 ? (
+											<SubmenuValue>
+												{prStateFilters
+													.map((state) => i18n._(PR_STATE_LABELS[state]))
+													.join(", ")}
+											</SubmenuValue>
+										) : null}
+									</DropdownMenuSubTrigger>
+									<DropdownMenuSubContent className="min-w-0">
+										{V2_WORKSPACES_PR_STATE_FILTERS.map((state) => (
+											<DropdownMenuCheckboxItem
+												indicator="end"
+												key={state}
+												checked={prStateFilters.includes(state)}
+												onSelect={(event) => event.preventDefault()}
+												onCheckedChange={() =>
+													setPrStateFilters(
+														toggleIn(
+															prStateFilters,
+															state,
+														) as V2WorkspacesPrStateFilter[],
+													)
+												}
+											>
+												<span className="flex items-center gap-2">
+													<PRIcon state={state} className="size-3.5" />
+													{i18n._(PR_STATE_LABELS[state])}
+												</span>
+											</DropdownMenuCheckboxItem>
+										))}
+									</DropdownMenuSubContent>
+								</DropdownMenuSub>
+							)}
 
 							<DropdownMenuSub>
 								<DropdownMenuSubTrigger>

@@ -1,4 +1,5 @@
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { Button } from "@superset/ui/button";
 import { Kbd, KbdGroup } from "@superset/ui/kbd";
 import { formatDistanceToNow } from "date-fns";
@@ -212,7 +213,7 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 					</Button>
 					{previewButton}
 				</div>
-			) : repoUrl ? (
+			) : repoUrl && !FORK_PULL_REQUESTS_DISABLED ? (
 				<div className="pt-2 border-t border-border space-y-2">
 					<div className="text-xs text-muted-foreground">
 						<Trans>No PR for this branch</Trans>
