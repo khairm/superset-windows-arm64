@@ -178,6 +178,8 @@ In brief:
   5 s for .git, 30 s file-only; is-git-repo caches yes 5 min/no 5 s, origin/HEAD
   10 min. Each host-main-thread git/gh launch blocks terminal I/O on Windows
   ARM64; keep launches rare (`(PR-SWEEP-SKIPS-EXITED)`, `(GIT-LAUNCH-BUDGET)`).
+  With PRs off (`(FORK-PRS-OFF)`) the PR sweep is a no-op and nothing
+  launches gh; branch sweeps and watcher sync read HEAD from disk.
   isGitRepo answers "no" from disk (async, 2 s cap, any doubt launches git);
   the ignored-dirs refresh skips the listing for non-git workspaces, lists in
   the worker pool, and on failure keeps its set unless ignore rules changed
@@ -206,15 +208,19 @@ In brief:
 - **Usage page stubbed** — `usage.quota` returns an empty list and calls no
   provider; usage lives in the usage tray and round screen (`(USAGE-PAGE-STUB)`).
 - **Unused upstream features hidden** — browser panes, page watchers, the v3
-  local chat pane and port scanning are off behind one `const` each in
-  `packages/shared/src/fork-disabled-features.ts`
+  local chat pane, port scanning and pull requests are off behind one `const`
+  each in `packages/shared/src/fork-disabled-features.ts`
   (`FORK_BROWSER_PANES_DISABLED`, `FORK_PAGE_WATCH_DISABLED`,
-  `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`), read by the renderer,
+  `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`,
+  `FORK_PULL_REQUESTS_DISABLED`), read by the renderer,
   Electron main and the host-service from that one place. Saved layouts still
   restore those panes, inert. Flipping a const to `false` is NOT the whole
   re-enable path for browser or chat — their callers (`addBrowserTab`,
   `onAddBrowser`, `LocalChatSetting`) were removed and must be restored from
-  upstream too. Page watch and ports come back on the const alone.
+  upstream too. Page watch and ports come back on the const alone; PRs are
+  flip-only. PRs off: no PR sweeps or gh; PR-only procedures refuse; stored
+  links hidden, not deleted; branch label follows checkouts via a disk HEAD
+  read (`(FORK-PRS-OFF-BRANCH-FOLLOW)`).
 - **Alternate-screen eviction is DEFERRED** — the snapshot-restore fixes
   shipped; evicting an alternate-screen terminal from the live registry did
   not. The exemption keeping those terminals resident is intentional, not a
