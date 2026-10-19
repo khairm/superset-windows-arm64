@@ -1392,4 +1392,74 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		await watcher.processFile(profile.file, source, false);
 		expect(errors.map((error) => error.transcriptPath)).toEqual([profile.file]);
 	});
+
+	test("a profile root re-attached after a watch error signals only fresh errors", async () => {
+		stopAgentJsonlWatcher();
+		const profile = await profileTranscript();
+		await fs.promises.writeFile(profile.file, record({ cwd: "C:/work" }));
+		await delay(5);
+		start();
+		const source = await seededProfileSource(profile.file);
+		await fs.promises.appendFile(profile.file, apiError(Date.now(), "C:/work"));
+		await watcher.processFile(profile.file, source, false);
+		expect(errors).toHaveLength(1);
+
+		spyOn(console, "error").mockImplementation(() => {});
+		watcher.watchers
+			.get(profile.profilesRoot)
+			?.emit("error", new Error("watch lost"));
+		expect(watcher.sources).not.toContain(source);
+		expect(watcher.fileStates.has(profile.file)).toBe(false);
+		await delay(5);
+		await watcher.discoverNewFilesAsync(true);
+		const reattached = await seededProfileSource(profile.file);
+		expect(reattached).not.toBe(source);
+		expect(errors).toHaveLength(1);
+
+		closeWatch(profile.profilesRoot);
+		await fs.promises.appendFile(
+			profile.file,
+			apiError(Date.now() + 1, "C:/work"),
+		);
+		await watcher.processFile(profile.file, reattached, false);
+		expect(errors.map((error) => error.transcriptPath)).toEqual([
+			profile.file,
+			profile.file,
+		]);
+	});
+
+	test("a profile transcript replaced while its read finishes signals the fresh error", async () => {
+		stopAgentJsonlWatcher();
+		const profile = await profileTranscript();
+		await fs.promises.writeFile(profile.file, record({ cwd: "C:/work" }));
+		await delay(5);
+		start();
+		const source = await seededProfileSource(profile.file);
+		closeWatch(profile.profilesRoot);
+		const replacement = `${profile.file}.new`;
+		await fs.promises.writeFile(replacement, record({ cwd: "C:/work" }));
+		await fs.promises.appendFile(profile.file, record({ cwd: "C:/work" }));
+		let freshMs = 0;
+		const open = fs.promises.open.bind(fs.promises);
+		spyOn(fs.promises, "open").mockImplementation(async (...args) => {
+			const fh = await open(...args);
+			if (args[0] !== profile.file || freshMs !== 0) return fh;
+			const close = fh.close.bind(fh);
+			fh.close = async () => {
+				await close();
+				await fs.promises.rename(replacement, profile.file);
+				freshMs = Date.now();
+				await fs.promises.appendFile(
+					profile.file,
+					apiError(freshMs, "C:/work"),
+				);
+				await waitFor(() => Date.now() > freshMs);
+			};
+			return fh;
+		});
+		await watcher.processFile(profile.file, source, false);
+		expect(freshMs).toBeGreaterThan(0);
+		await watcher.processFile(profile.file, source, false);
+		expect(errors.map((error) => error.transcriptPath)).toEqual([profile.file]);
+	});
 });

@@ -1109,7 +1109,7 @@ async function readFileStep(
 			state.offset = stat.size;
 			state.nextPollAt = nextColdPollAt(stat.mtimeMs);
 			state.initialized = true;
-			state.lastReadAtMs = Date.now();
+			state.lastReadAtMs = readStartedAtMs;
 			return;
 		}
 	}
@@ -1164,7 +1164,7 @@ async function readFileStep(
 	// (WATCHER-ASYNC-IO)
 	if (stat.size === state.offset) {
 		clearGuardsAtEof(state);
-		state.lastReadAtMs = Date.now();
+		state.lastReadAtMs = readStartedAtMs;
 		return;
 	}
 
@@ -1252,7 +1252,7 @@ async function readFileStep(
 	if (!ownsFile(filePath, state, run)) return;
 	if (state.offset === stat.size) {
 		clearGuardsAtEof(state);
-		state.lastReadAtMs = Date.now();
+		state.lastReadAtMs = readStartedAtMs;
 	}
 }
 
