@@ -997,7 +997,8 @@ const SIGNALLED_API_ERROR_ID_CAP = 32;
 
 function rememberSignalledApiErrors(state: FileState, ids: string[]): void {
 	if (ids.length === 0) return;
-	const signalled = (state.signalledApiErrorIds ??= new Set());
+	state.signalledApiErrorIds ??= new Set();
+	const signalled = state.signalledApiErrorIds;
 	for (const id of ids) signalled.add(id);
 	for (const id of signalled) {
 		if (signalled.size <= SIGNALLED_API_ERROR_ID_CAP) break;
