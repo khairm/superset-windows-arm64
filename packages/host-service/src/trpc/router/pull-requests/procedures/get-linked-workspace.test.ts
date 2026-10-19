@@ -41,6 +41,7 @@ function callerFor(db: ReturnType<typeof createTestDb>) {
 	return createCaller({
 		db,
 		isAuthenticated: true,
+		runtime: { pullRequests: { disabled: false } },
 		organizationId: "org-test",
 	} as unknown as HostServiceContext);
 }

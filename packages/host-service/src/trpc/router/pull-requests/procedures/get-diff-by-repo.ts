@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { protectedProcedure } from "../../../index";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 import { fetchPullRequestDiff } from "../shared/fetch-pull-request-diff";
 
 export const getDiffByRepo = protectedProcedure
@@ -10,7 +11,9 @@ export const getDiffByRepo = protectedProcedure
 			prNumber: z.number().int().positive(),
 		}),
 	)
-	.query(async ({ input }) => {
+	.query(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		try {
 			return await fetchPullRequestDiff(input.repoFullName, input.prNumber);
 		} catch (cause) {

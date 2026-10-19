@@ -7,6 +7,7 @@ import { addComment } from "./add-comment";
 
 const caller = createCallerFactory(router({ addComment }))({
 	isAuthenticated: true,
+	runtime: { pullRequests: { disabled: false } },
 } as HostServiceContext);
 
 afterEach(() => mock.restore());

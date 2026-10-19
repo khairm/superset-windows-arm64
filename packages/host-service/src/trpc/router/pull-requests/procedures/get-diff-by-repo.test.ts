@@ -7,6 +7,7 @@ import { getDiffByRepo } from "./get-diff-by-repo";
 const createCaller = createCallerFactory(router({ getDiffByRepo }));
 const caller = createCaller({
 	isAuthenticated: true,
+	runtime: { pullRequests: { disabled: false } },
 } as HostServiceContext);
 
 afterEach(() => {

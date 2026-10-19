@@ -28,6 +28,7 @@ import { getLocalWorkspace } from "../../../workspaces/local-workspace-store";
 import { cancelAndWaitWorkspaceTitleCommit } from "../../../workspaces/workspace-title-jobs";
 import { protectedProcedure, queryProcedure, router } from "../../index";
 import { rethrowWorkerTaskAbort } from "../../worker-abort";
+import { assertPullRequestsEnabled } from "../pull-requests/shared/assert-enabled";
 import { resolveGithubRepo } from "../workspace-creation/shared/project-helpers";
 import type {
 	ChangedFile,
@@ -1095,7 +1096,10 @@ export const gitRouter = router({
 					message: "Workspace not found",
 				});
 			}
-			if (!workspace.pullRequestId) return null;
+			// (FORK-PRS-OFF)
+			if (!workspace.pullRequestId || ctx.runtime.pullRequests.disabled) {
+				return null;
+			}
 
 			const pr = ctx.db.query.pullRequests
 				.findFirst({ where: eq(pullRequests.id, workspace.pullRequestId) })
@@ -1146,6 +1150,8 @@ export const gitRouter = router({
 		.meta({ timeoutMs: 30_000 })
 		.input(z.object({ workspaceId: z.string(), detailsUrl: z.string() }))
 		.query(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const workspace = ctx.db.query.workspaces
 				.findFirst({ where: eq(workspaces.id, input.workspaceId) })
 				.sync();
@@ -1205,7 +1211,8 @@ export const gitRouter = router({
 					message: "Workspace not found",
 				});
 			}
-			if (!workspace.pullRequestId) {
+			// (FORK-PRS-OFF)
+			if (!workspace.pullRequestId || ctx.runtime.pullRequests.disabled) {
 				return { reviewThreads: [], conversationComments: [] };
 			}
 
@@ -1304,6 +1311,8 @@ export const gitRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const workspace = ctx.db.query.workspaces
 				.findFirst({ where: eq(workspaces.id, input.workspaceId) })
 				.sync();
@@ -1352,6 +1361,8 @@ export const gitRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const workspace = ctx.db.query.workspaces
 				.findFirst({ where: eq(workspaces.id, input.workspaceId) })
 				.sync();

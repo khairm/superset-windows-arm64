@@ -5,7 +5,7 @@ describe("github router integration", () => {
 	let host: TestHost;
 
 	beforeEach(async () => {
-		host = await createTestHost();
+		host = await createTestHost({ pullRequestsDisabled: false });
 	});
 
 	afterEach(async () => {

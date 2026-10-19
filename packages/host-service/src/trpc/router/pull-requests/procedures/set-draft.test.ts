@@ -8,6 +8,7 @@ import { setDraft } from "./set-draft";
 
 const caller = createCallerFactory(router({ setDraft }))({
 	isAuthenticated: true,
+	runtime: { pullRequests: { disabled: false } },
 } as HostServiceContext);
 
 afterEach(() => mock.restore());

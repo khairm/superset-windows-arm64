@@ -985,6 +985,10 @@ async function enrichPageWithChecks(
 export const searchPullRequests = protectedProcedure
 	.input(searchPullRequestsInputSchema)
 	.query(async ({ ctx, input }): Promise<PullRequestsPage> => {
+		// (FORK-PRS-OFF)
+		if (ctx.runtime.pullRequests.disabled) {
+			return emptyPullRequestsPage(input.page ?? 1);
+		}
 		const projectIds = input.projectIds ?? [input.projectId];
 		const projectRepos: ProjectRepo[] = await resolveProjectRepos(
 			projectIds,

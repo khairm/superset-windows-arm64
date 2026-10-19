@@ -24,6 +24,8 @@ const getLinkedWorkspaceInputSchema = z.object({
 export const getLinkedWorkspace = protectedProcedure
 	.input(getLinkedWorkspaceInputSchema)
 	.query(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		if (ctx.runtime.pullRequests.disabled) return { workspaceId: null };
 		let rows: LinkedPullRequestRow[];
 		try {
 			const repo = await resolveGithubRepo(ctx, input.projectId);

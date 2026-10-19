@@ -15,6 +15,7 @@ function createCaller(opts: {
 		[];
 	const ctx = {
 		isAuthenticated: true,
+		runtime: { pullRequests: { disabled: false } },
 		db: {
 			query: {
 				workspaces: {

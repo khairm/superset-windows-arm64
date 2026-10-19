@@ -34,6 +34,8 @@ const repoContributorsCache = new Map<
 export const getRepoContributors = protectedProcedure
 	.input(getRepoContributorsInputSchema)
 	.query(async ({ ctx, input }): Promise<RepoContributor[]> => {
+		// (FORK-PRS-OFF)
+		if (ctx.runtime.pullRequests.disabled) return [];
 		const repo = await resolveGithubRepo(ctx, input.projectId);
 		const cacheKey = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
 		const cached = repoContributorsCache.get(cacheKey);

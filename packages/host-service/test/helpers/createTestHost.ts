@@ -39,6 +39,7 @@ export interface TestHostOptions {
 	 */
 	githubFactory?: () => Promise<unknown>;
 	execGh?: (args: string[], options?: unknown) => Promise<unknown>;
+	pullRequestsDisabled?: boolean;
 }
 
 export interface TestHost {
@@ -125,6 +126,7 @@ export async function createTestHost(
 				async () => {
 					throw new Error("execGh not configured in test");
 				},
+		pullRequestsDisabled: options.pullRequestsDisabled,
 	};
 
 	resetHostWorkerPoolForTests();

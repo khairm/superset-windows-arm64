@@ -6,7 +6,9 @@ describe("pullRequests router integration", () => {
 	let scenario: BasicScenario;
 
 	beforeEach(async () => {
-		scenario = await createBasicScenario();
+		scenario = await createBasicScenario({
+			hostOptions: { pullRequestsDisabled: false },
+		});
 	});
 
 	afterEach(async () => {

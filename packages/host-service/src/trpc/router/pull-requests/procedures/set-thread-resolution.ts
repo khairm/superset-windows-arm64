@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { protectedProcedure } from "../../../index";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 
 const setThreadResolutionInputSchema = z.object({
 	threadId: z.string(),
@@ -14,6 +15,8 @@ const setThreadResolutionInputSchema = z.object({
 export const setThreadResolution = protectedProcedure
 	.input(setThreadResolutionInputSchema)
 	.mutation(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		const octokit = await ctx.github();
 		const mutation = input.resolved
 			? `mutation($threadId: ID!) {

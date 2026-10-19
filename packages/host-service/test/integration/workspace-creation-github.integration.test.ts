@@ -210,7 +210,10 @@ describe("workspaceCreation github procedures with mocked Octokit", () => {
 
 	beforeEach(async () => {
 		calls.length = 0;
-		host = await createTestHost({ githubFactory: async () => fakeOctokit });
+		host = await createTestHost({
+			pullRequestsDisabled: false,
+			githubFactory: async () => fakeOctokit,
+		});
 		repoDir = await seedRepoFixture(
 			host,
 			projectId,
@@ -457,6 +460,7 @@ describe("resolveGithubRepo trusts the live local remote, never the cloud", () =
 		// The resolver MUST follow the local remote (`cli/cli`). Any cloud
 		// call at all fails the test — the fake throws on unmocked procedures.
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => fakeOctokit,
 		});
 		repoDir = await seedRepoFixture(
@@ -509,7 +513,10 @@ describe("resolveGithubRepo prefers the user-configured remoteName", () => {
 	};
 
 	beforeEach(async () => {
-		host = await createTestHost({ githubFactory: async () => fakeOctokit });
+		host = await createTestHost({
+			pullRequestsDisabled: false,
+			githubFactory: async () => fakeOctokit,
+		});
 		// origin → user's fork, upstream → real source, configured = upstream.
 		// Resolver must honor `remoteName=upstream`, not default to origin.
 		repoDir = mkdtempSync(join(tmpdir(), "ws-creation-github-test-"));
@@ -574,6 +581,7 @@ describe("both backends failing rethrows so the renderer toast fires", () => {
 
 	beforeEach(async () => {
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => failingOctokit,
 			execGh: failingExecGh,
 		});
@@ -613,7 +621,7 @@ describe("resolveGithubRepo throws PROJECT_NOT_SETUP when no local clone", () =>
 	const projectId = randomUUID();
 
 	beforeEach(async () => {
-		host = await createTestHost();
+		host = await createTestHost({ pullRequestsDisabled: false });
 	});
 
 	afterEach(async () => {
@@ -750,6 +758,7 @@ describe("gh CLI is first-class when execGh succeeds", () => {
 	beforeEach(async () => {
 		ghCalls.length = 0;
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => fakeOctokit,
 			execGh: fakeExecGh,
 		});
@@ -1116,6 +1125,7 @@ describe("multi-project batched search over gh", () => {
 	beforeEach(async () => {
 		ghCalls.length = 0;
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => fakeOctokit,
 			execGh: fakeExecGh,
 		});
@@ -1294,7 +1304,10 @@ describe("multi-project search chunks repo qualifiers at 256 chars", () => {
 
 	beforeEach(async () => {
 		ghCalls.length = 0;
-		host = await createTestHost({ execGh: fakeExecGh });
+		host = await createTestHost({
+			pullRequestsDisabled: false,
+			execGh: fakeExecGh,
+		});
 		repoA = await seedRepoFixture(
 			host,
 			projectA,
@@ -1367,6 +1380,7 @@ describe("GitHub rate-limit errors map to TOO_MANY_REQUESTS", () => {
 	test("gh search rate limit throws typed error without falling back to Octokit", async () => {
 		const octokitCalls: string[] = [];
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => ({
 				search: {
 					issuesAndPullRequests: async () => {
@@ -1413,6 +1427,7 @@ describe("GitHub rate-limit errors map to TOO_MANY_REQUESTS", () => {
 				response: { headers: { "x-ratelimit-reset": String(resetEpoch) } },
 			});
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => ({
 				search: {
 					issuesAndPullRequests: async () => {
@@ -1474,6 +1489,7 @@ describe("GitHub rejected-credential errors map to actionable UNAUTHORIZED", () 
 	test("a 401 from both gh and Octokit names the rejected token source", async () => {
 		// Default test execGh rejects, standing in for a gh CLI that 401s too.
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => ({
 				search: {
 					issuesAndPullRequests: async () => {
@@ -1528,7 +1544,10 @@ describe("GitHub rejected-credential errors map to actionable UNAUTHORIZED", () 
 	});
 
 	test("a missing token reports where the login must live", async () => {
-		host = await createTestHost({ githubToken: null });
+		host = await createTestHost({
+			pullRequestsDisabled: false,
+			githubToken: null,
+		});
 		repoDir = await seedRepoFixture(
 			host,
 			projectId,

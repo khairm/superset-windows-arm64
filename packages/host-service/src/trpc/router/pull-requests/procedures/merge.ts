@@ -2,6 +2,7 @@ import { z } from "zod";
 import { protectedProcedure } from "../../../index";
 import { actionRejectionError } from "../../github/github";
 import { resolveGithubRepo } from "../../workspace-creation/shared/project-helpers";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 import { syncPullRequestAfterWrite } from "../shared/sync-after-write";
 
 const mergeInputSchema = z.object({
@@ -19,6 +20,8 @@ const mergeInputSchema = z.object({
 export const mergePR = protectedProcedure
 	.input(mergeInputSchema)
 	.mutation(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		const repo = await resolveGithubRepo(ctx, input.projectId);
 		const octokit = await ctx.github();
 		let merged: Awaited<ReturnType<typeof octokit.pulls.merge>>["data"];

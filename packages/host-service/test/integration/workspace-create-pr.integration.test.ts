@@ -82,6 +82,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: cloudFlows.workspaceCreateOk(),
 				execGh: async (args, options?: unknown) => {
 					ghCalls.push({
@@ -211,6 +212,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: cloudFlows.workspaceCreateOk(),
 				execGh: async (args) => {
 					if (args[0] === "pr" && args[1] === "view") {
@@ -316,6 +318,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: {
 					"host.ensure.mutate": () => ({ machineId: "test-machine-1" }),
 					"v2Workspace.create.mutate": (input: unknown) => {
@@ -411,6 +414,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: cloudFlows.workspaceCreateOk(),
 				execGh: async (args) => {
 					if (args[0] === "pr" && args[1] === "view") {
@@ -476,6 +480,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: cloudFlows.workspaceCreateOk(),
 				execGh: async (args) => {
 					if (args[0] === "pr" && args[1] === "view") {
@@ -554,6 +559,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: cloudFlows.workspaceCreateOk(),
 				execGh: async (args) => {
 					if (args[0] === "pr" && args[1] === "view") {
@@ -631,6 +637,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: cloudFlows.workspaceCreateOk(),
 				execGh: async (args) => {
 					if (args[0] === "pr" && args[1] === "view") {
@@ -711,6 +718,7 @@ describe("workspaces.create PR checkout integration", () => {
 
 		const scenario = await createProjectScenario({
 			hostOptions: {
+				pullRequestsDisabled: false,
 				apiOverrides: {
 					"host.ensure.mutate": () => ({ machineId: "m1" }),
 					"v2Workspace.create.mutate": (input: unknown) => {

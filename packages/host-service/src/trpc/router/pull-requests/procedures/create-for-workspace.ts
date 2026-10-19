@@ -9,6 +9,7 @@ import { protectedProcedure } from "../../../index";
 import { resolveWorktreePath } from "../../git/utils/resolve-worktree";
 import { actionRejectionError } from "../../github/github";
 import { resolveGithubRepo } from "../../workspace-creation/shared/project-helpers";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 
 const createInputSchema = z.object({
 	workspaceId: z.string(),
@@ -27,6 +28,8 @@ const createInputSchema = z.object({
 export const createForWorkspace = protectedProcedure
 	.input(createInputSchema)
 	.mutation(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		const workspace = ctx.db.query.workspaces
 			.findFirst({ where: eq(workspaces.id, input.workspaceId) })
 			.sync();
