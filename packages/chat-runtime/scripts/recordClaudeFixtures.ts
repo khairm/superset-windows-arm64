@@ -15,7 +15,7 @@ const FIXTURES_DIR = resolve(
 	"../src/harness/claude/fixtures",
 );
 
-const MODEL = process.env.FIXTURE_MODEL ?? "claude-haiku-4-5-20251001";
+const MODEL = process.env.FIXTURE_MODEL ?? "claude-opus-5-5";
 
 type Scenario = {
 	name: string;

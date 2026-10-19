@@ -18,7 +18,11 @@ describe.skip("codexAdapter live", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "codex-live-"));
 
 		const pump = (async () => {
-			for await (const event of adapter.start({ cwd, modeId: "read-only" })) {
+			for await (const event of adapter.start({
+				cwd,
+				modeId: "read-only",
+				modelId: "gpt-6.1-sol",
+			})) {
 				events.push(event);
 				if (
 					event.kind === "turn" &&

@@ -161,6 +161,7 @@ async function record(
 		cwd,
 		sandbox: scenario.sandbox,
 		approvalPolicy: scenario.approvalPolicy,
+		model: "gpt-6.1-sol",
 	})) as { thread: { id: string } };
 	const threadId = threadResponse.thread.id;
 
