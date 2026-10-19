@@ -5,6 +5,7 @@
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { readBranchFromGit } from "../../runtime/git/head-file.ts";
 import {
 	getGitAuthorName,
 	type ResolvedGitInfo,
@@ -293,6 +294,15 @@ export const gitWorkspaceRefsTask = defineWorkerTask<
 		const git = createUserSimpleGit(worktreePath, { env: gitEnv });
 		return readWorkspaceRefs(git);
 	},
+});
+
+// (FORK-PRS-OFF-BRANCH-FOLLOW)
+export const gitHeadBranchTask = defineWorkerTask<
+	{ worktreePath: string },
+	string | null
+>({
+	type: "git/readHeadBranch",
+	handler: ({ worktreePath }) => readBranchFromGit(worktreePath),
 });
 
 export const gitIdentityTask = defineWorkerTask<
@@ -749,6 +759,7 @@ export const gitTasks = [
 	gitDiffPatchTask,
 	gitDiffSideBlobTask,
 	gitWorkspaceRefsTask,
+	gitHeadBranchTask,
 	gitIdentityTask,
 	gitAuthorNameTask,
 	gitWorktreeStateTask,

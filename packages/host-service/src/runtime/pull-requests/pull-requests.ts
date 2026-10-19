@@ -13,8 +13,10 @@ import {
 import type { EventBus } from "../../events/event-bus";
 import type { ExecGh } from "../../trpc/router/workspace-creation/utils/exec-gh";
 import type { GitFactory } from "../git";
-import { isGitRepo } from "../git/non-git";
+import { readBranchFromGit, readHeadFromDisk } from "../git/head-file";
+import { isGitRepo, probeGitEntryDiskOnly } from "../git/non-git";
 import { peekOriginHead, readOriginHead } from "../git/origin-head-cache";
+import { type BranchFollowReaders, followBranch } from "./branch-follow";
 import type { ExitedWorkspaceFilterSlot } from "./exited-workspaces";
 import type { PrSyncTrigger } from "./pr-sync-trigger";
 import { ConditionalGh } from "./utils/conditional-gh";
@@ -158,6 +160,12 @@ export interface PullRequestRuntimeManagerOptions {
 	loadExitedWorkspaceFilter?: (
 		slot: ExitedWorkspaceFilterSlot | null,
 	) => ExitedWorkspaceFilter;
+	// (FORK-PRS-OFF) No GitHub or PR git work; only the branch is followed.
+	disabled?: boolean;
+	// (FORK-PRS-OFF-BRANCH-FOLLOW)
+	readHead?: BranchFollowReaders["readHead"];
+	probeGitEntry?: BranchFollowReaders["probeGitEntry"];
+	readBranch?: BranchFollowReaders["readBranch"];
 }
 
 type ExitedWorkspaceFilter = (workspace: {
@@ -299,6 +307,8 @@ export class PullRequestRuntimeManager {
 	private readonly loadExitedWorkspaceFilter: (
 		slot: ExitedWorkspaceFilterSlot | null,
 	) => ExitedWorkspaceFilter;
+	readonly disabled: boolean;
+	private readonly branchReaders: BranchFollowReaders;
 	// Worktrees deleted out from under us (external `rm`, crashed teardown).
 	// While a workspace is listed here, sync attempts cost one existsSync and
 	// spawn no git; the probe timer re-enters the normal sync path when the
@@ -320,6 +330,12 @@ export class PullRequestRuntimeManager {
 		this.worktreeExists = options.worktreeExists ?? existsSync;
 		this.loadExitedWorkspaceFilter =
 			options.loadExitedWorkspaceFilter ?? (() => () => false);
+		this.disabled = options.disabled ?? false;
+		this.branchReaders = {
+			readHead: options.readHead ?? readHeadFromDisk,
+			probeGitEntry: options.probeGitEntry ?? probeGitEntryDiskOnly,
+			readBranch: options.readBranch ?? readBranchFromGit,
+		};
 	}
 
 	start() {
@@ -450,6 +466,16 @@ export class PullRequestRuntimeManager {
 			.where(inArray(workspaces.id, workspaceIds))
 			.all();
 
+		// (FORK-PRS-OFF) Stored links stay in the DB, hidden.
+		if (this.disabled) {
+			return rows.map((row) => ({
+				workspaceId: row.workspaceId,
+				pullRequest: null,
+				error: null,
+				lastFetchedAt: null,
+			}));
+		}
+
 		return rows.map((row) => ({
 			workspaceId: row.workspaceId,
 			pullRequest:
@@ -494,6 +520,13 @@ export class PullRequestRuntimeManager {
 		workspaceIds: string[],
 	): Promise<WorkspacePullRequestHistory[]> {
 		if (workspaceIds.length === 0) return [];
+		// (FORK-PRS-OFF)
+		if (this.disabled) {
+			return workspaceIds.map((workspaceId) => ({
+				workspaceId,
+				pullRequests: [],
+			}));
+		}
 
 		const rows = this.db
 			.select({
@@ -818,11 +851,19 @@ export class PullRequestRuntimeManager {
 		}
 		this.noteWorktreePresent(workspace.id);
 
-		// (NON-GIT WORKSPACE) A non-git workspace has no branch/HEAD/upstream
-		// to read and no PR to sync. Skip before touching git so the inert
-		// branch marker never reaches a git command.
-		if (!(await isGitRepo(workspace.worktreePath))) return null;
 		try {
+			if (this.disabled) {
+				// (FORK-PRS-OFF-BRANCH-FOLLOW) `await` keeps a rejection in this catch.
+				return await followBranch({
+					db: this.db,
+					workspace,
+					...this.branchReaders,
+				});
+			}
+			// (NON-GIT WORKSPACE) A non-git workspace has no branch/HEAD/upstream
+			// to read and no PR to sync. Skip before touching git so the inert
+			// branch marker never reaches a git command.
+			if (!(await isGitRepo(workspace.worktreePath))) return null;
 			const { branch, headSha, upstream } = await this.readWorkspaceRefs(
 				workspace.worktreePath,
 			);
@@ -913,6 +954,7 @@ export class PullRequestRuntimeManager {
 	}
 
 	private async refreshEligibleProjects(): Promise<void> {
+		if (this.disabled) return; // (FORK-PRS-OFF)
 		const isExited = this.loadExitedWorkspaceFilter(
 			this.githubGate.status() ? null : "pr-refresh", // (PR-SWEEP-LAST-KNOWN-MIRROR)
 		);
@@ -947,6 +989,7 @@ export class PullRequestRuntimeManager {
 		projectId: string,
 		options: ProjectRefreshOptions = {},
 	): Promise<void> {
+		if (this.disabled) return; // (FORK-PRS-OFF)
 		// A scoped refresh and a full one are different work; only identical
 		// requests share an in-flight promise.
 		const inFlightKey = options.workspaceIds

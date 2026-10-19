@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { projects, workspaces } from "../db/schema";
 import { destroyWorkspace } from "../trpc/router/workspace-cleanup";
 import type { HostServiceContext } from "../types";
+import { parseHeadFile, resolveGitDir } from "./git/head-file";
 
 /**
  * Finish crash-interrupted deletes. The destroy pipeline archives the row
@@ -105,16 +106,12 @@ function isSameWorktree(row: {
 /** Reads HEAD from disk: no git process, so a cold start cannot time out. */
 export function readCheckedOutBranch(worktreePath: string): string | null {
 	const dotGit = join(worktreePath, ".git");
-	let gitDir = dotGit;
-	if (statSync(dotGit).isFile()) {
-		const pointer = readFileSync(dotGit, "utf8").match(/^gitdir: (.+)$/m)?.[1];
-		if (!pointer) return null;
-		gitDir = isAbsolute(pointer) ? pointer : resolve(worktreePath, pointer);
-	}
-	const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
-	return head.startsWith("ref: refs/heads/")
-		? head.slice("ref: refs/heads/".length)
-		: null;
+	const gitDir = statSync(dotGit).isFile()
+		? resolveGitDir(worktreePath, readFileSync(dotGit, "utf8"))
+		: dotGit;
+	if (!gitDir) return null;
+	const head = parseHeadFile(readFileSync(join(gitDir, "HEAD"), "utf8"));
+	return head.kind === "branch" ? head.name : null;
 }
 
 /**
