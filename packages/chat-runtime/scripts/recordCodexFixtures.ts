@@ -20,6 +20,8 @@ type Scenario = {
 	timeoutMs: number;
 };
 
+const MODEL = "gpt-6.1-sol";
+
 const SCENARIOS: Scenario[] = [
 	{
 		name: "text",
@@ -161,7 +163,7 @@ async function record(
 		cwd,
 		sandbox: scenario.sandbox,
 		approvalPolicy: scenario.approvalPolicy,
-		model: "gpt-6.1-sol",
+		model: MODEL,
 	})) as { thread: { id: string } };
 	const threadId = threadResponse.thread.id;
 
