@@ -75,9 +75,10 @@ const paddingRecords = (count: number) =>
 	record({ padding: "x".repeat(1000) }).repeat(count);
 const line = (type: string, cwd = "C:/work") =>
 	record({ type: "event_msg", payload: { type }, cwd });
-const apiError = (timestamp: number, cwd?: string) =>
+const apiError = (timestamp: number, cwd?: string, uuid?: string) =>
 	record({
 		type: "assistant",
+		uuid,
 		isApiErrorMessage: true,
 		timestamp: new Date(timestamp).toISOString(),
 		cwd,
@@ -1357,7 +1358,7 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		expect(errors.map((error) => error.transcriptPath)).toEqual([forked]);
 	});
 
-	test("a recreated profile transcript skips copied errors and signals a fresh one", async () => {
+	test("a recreated profile transcript skips copied and already-signalled errors and signals a fresh one", async () => {
 		stopAgentJsonlWatcher();
 		const oldMs = Date.now() - 60 * 60 * 1000;
 		const profile = await profileTranscript();
@@ -1387,10 +1388,29 @@ describe("(AUTO-RESUME-PROFILE-ROOTS) workspace profile transcripts", () => {
 		expect(errors).toHaveLength(0);
 		await fs.promises.appendFile(
 			profile.file,
-			apiError(Date.now() + 1, "C:/work"),
+			apiError(Date.now() + 60_000, "C:/work", randomUUID()),
 		);
 		await watcher.processFile(profile.file, source, false);
 		expect(errors.map((error) => error.transcriptPath)).toEqual([profile.file]);
+
+		const signalledIdentity = stateOf(profile.file).identity;
+		await fs.promises.copyFile(profile.file, replacement);
+		await fs.promises.rename(replacement, profile.file);
+		await watcher.processFile(profile.file, source, false);
+		expect(stateOf(profile.file).identity).not.toBe(signalledIdentity);
+		expect(stateOf(profile.file).offset).toBe(
+			(await fs.promises.stat(profile.file)).size,
+		);
+		expect(errors).toHaveLength(1);
+		await fs.promises.appendFile(
+			profile.file,
+			apiError(Date.now() + 1, "C:/work", randomUUID()),
+		);
+		await watcher.processFile(profile.file, source, false);
+		expect(errors.map((error) => error.transcriptPath)).toEqual([
+			profile.file,
+			profile.file,
+		]);
 	});
 
 	test("a profile root re-attached after a watch error signals only fresh errors", async () => {

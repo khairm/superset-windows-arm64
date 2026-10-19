@@ -328,6 +328,7 @@ interface FileState {
 	source: AgentSource;
 	fenceMs: number;
 	lastReadAtMs: number;
+	signalledApiErrorIds: Set<string> | null;
 	/**
 	 * (WATCHER-BLUE-STOMP) Watcher start time while a Claude startup-guard tail
 	 * re-read of THIS file is still outstanding; null otherwise. Everything the
@@ -937,6 +938,7 @@ function processFile(
 			source,
 			fenceMs: source.attachedAtMs,
 			lastReadAtMs: 0,
+			signalledApiErrorIds: null,
 			preStartFenceMs: null,
 			inFlight: null,
 			trailingWork: false,
@@ -989,6 +991,18 @@ function lineWrittenAfterFence(line: string, fenceMs: number): boolean {
 	if (!record || typeof record.timestamp !== "string") return false;
 	const timestampMs = Date.parse(record.timestamp);
 	return Number.isFinite(timestampMs) && timestampMs >= fenceMs;
+}
+
+const SIGNALLED_API_ERROR_ID_CAP = 32;
+
+function rememberSignalledApiErrors(state: FileState, ids: string[]): void {
+	if (ids.length === 0) return;
+	const signalled = (state.signalledApiErrorIds ??= new Set());
+	for (const id of ids) signalled.add(id);
+	for (const id of signalled) {
+		if (signalled.size <= SIGNALLED_API_ERROR_ID_CAP) break;
+		signalled.delete(id);
+	}
 }
 
 function splitChunkIntoLines(
@@ -1321,6 +1335,7 @@ async function processLines(
 		// chunk carrying an interrupt anywhere in it still resolves to one emit.
 		let sawInterrupt = false;
 		let sawAnyApiError = false;
+		const apiErrorIds: string[] = [];
 		// (WATCHER-BLUE-STOMP) Per-entry replay gate — see judgeTurnEndRecord. A
 		// matched line sets sawInterrupt only if it describes a turn that ended JUST
 		// NOW; a re-presented one is recorded as suppressed and nothing is emitted.
@@ -1345,7 +1360,15 @@ async function processLines(
 				// (AUTO-RESUME-PROFILE-ROOTS) A new file can carry copied history
 				// (`--fork-session`, a restored folder): count only stamps after its birth.
 				if (profile) {
-					if (lineWrittenAfterFence(line, state.fenceMs)) sawAnyApiError = true;
+					if (lineWrittenAfterFence(line, state.fenceMs)) {
+						const uuid = parseTranscriptRecord(line)?.uuid;
+						if (typeof uuid !== "string") {
+							sawAnyApiError = true;
+						} else if (!state.signalledApiErrorIds?.has(uuid)) {
+							sawAnyApiError = true;
+							apiErrorIds.push(uuid);
+						}
+					}
 				} else if (preStartFenceMs === null) {
 					sawAnyApiError = true;
 				} else {
@@ -1449,6 +1472,7 @@ async function processLines(
 				transcriptPath: filePath,
 				orgId: profile?.orgId,
 			});
+			rememberSignalledApiErrors(state, apiErrorIds);
 		}
 		dbg("claude-gated", {
 			sessionId: state.sessionId,
