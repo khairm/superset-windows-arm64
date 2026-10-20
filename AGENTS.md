@@ -131,6 +131,7 @@ In brief:
   renderer reloads; companion phone/watch alerts cover blocked questions,
   ready-for-review, and terminal-agent failures.
 - **One buzz per chat**: ready alerts carry Superset's saved read mark (`companion_lifecycle_reads`). Phone and watch buzz once per chat until it's read (PC pane open, sidebar mark-read, chat on screen on the phone). Stale cards still go away. Errors buzz every time. A desktop restart or resync repair never counts as a read (`(LIFECYCLE-READ-THROUGH)`).
+- **Phone/watch answers**: typed into the terminal one screen at a time, the final Enter on its own, 2 s between them, first key at least 6 s after the question. Digits and Enter go as coded keys and text as a paste, so input that bunches up can't merge. Multi-select accepts ticks plus 'Type something' text. Anything typed or clicked in that terminal after the question appears makes the phone refuse ('changed at the PC'). Free text max 300.
 - **Hooks reach the app over HTTP** — `superset-notify.py` runs once as a
   supervised daemon on `127.0.0.1:46817` instead of one Python process per hook
   event; eleven of the twelve entries Superset writes into `settings.json` are
