@@ -233,8 +233,10 @@ function windowsEnumScript(pid?: number): string {
 	return `Get-CimInstance Win32_Process${filter} | ForEach-Object { ${WINDOWS_ROW_EXPR} }`;
 }
 
-function windowsPowerShellPath(): string {
-	const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+export function windowsPowerShellPath(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
 	return systemRoot
 		? `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
 		: "powershell.exe";

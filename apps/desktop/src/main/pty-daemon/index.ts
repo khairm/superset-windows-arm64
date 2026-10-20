@@ -37,6 +37,7 @@ import {
 	installCrashGuard,
 	readSnapshot,
 	Server,
+	startWindowsQos,
 } from "@superset/pty-daemon";
 import type { HandoffMessage } from "@superset/pty-daemon/protocol";
 import { probeTrustdHealthy } from "@superset/pty-daemon/trustd-probe";
@@ -94,6 +95,7 @@ async function runFresh(): Promise<void> {
 	// Signal handlers first: a SIGTERM landing during the (bounded) probe
 	// must still run the PTY teardown drain.
 	wireShutdown(server);
+	startWindowsQos(); // (WIN-TERMINAL-HIGHQOS)
 	// Probe AFTER binding so a slow `security` can't delay the socket coming up
 	// (the supervisor has a socket-ready timeout). The value lands before the
 	// supervisor's adoption hello, which happens well after bind.

@@ -394,7 +394,7 @@ export class DaemonSupervisor {
 			return {
 				ok: false,
 				reason:
-					"fd-handoff daemon update is not supported on Windows; use restart instead",
+					"Windows cannot swap the terminal engine without closing sessions. Force update closes every terminal once and starts the new engine.",
 			};
 		}
 

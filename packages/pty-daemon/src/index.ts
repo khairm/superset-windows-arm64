@@ -18,6 +18,7 @@ export {
 	readSnapshot,
 	writeSnapshot,
 } from "./SessionStore/index.ts";
+export { startWindowsQos } from "./WindowsQos/index.ts";
 
 /**
  * Daemon binary version. Inlined from package.json by the bundler so

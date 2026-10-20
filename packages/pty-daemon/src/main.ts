@@ -23,6 +23,7 @@ import type { HandoffMessage } from "./protocol/index.ts";
 import { Server } from "./Server/index.ts";
 import { clearSnapshot, readSnapshot } from "./SessionStore/index.ts";
 import { probeTrustdHealthy } from "./trustd-probe.ts";
+import { startWindowsQos } from "./WindowsQos/index.ts";
 
 const DAEMON_VERSION: string = packageJson.version;
 
@@ -87,6 +88,7 @@ async function runFresh(): Promise<void> {
 	// Signal handlers first: a SIGTERM landing during the (bounded) probe
 	// must still run the PTY teardown drain.
 	wireShutdown(server);
+	startWindowsQos();
 	// Probe AFTER binding so a slow `security` can't delay the socket coming up
 	// (the supervisor has a socket-ready timeout). The value lands before the
 	// supervisor's adoption hello, which happens well after bind.
