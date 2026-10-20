@@ -113,6 +113,15 @@ In brief:
   terminal visibly, never cmd.exe; PATH/override changes need an app restart;
   never change pty-daemon code for this, it cannot upgrade without killing
   terminals.
+- **Terminal full-speed helper** — the deliberate exception to "never change
+  pty-daemon code" above (`(WIN-TERMINAL-HIGHQOS)`): ptyd runs a hidden PS 5.1
+  `Add-Type` helper that lists processes with NtQuerySystemInformation and tags
+  ptyd's tree HighQoS once a second; Eco asked for by a program is respected;
+  faults cost speed only. The 0.4.0 -> 0.4.1 bump costs one Force update
+  (closes every terminal once); a rollback keeps 0.4.1 running until Settings >
+  Terminal restart. When an upstream merge brings pty-daemon to 0.4.1, bump
+  again (`package.json` + `bun.lock`, pattern `edb57b7ebd`): equal versions
+  merge silently.
 - **Agent status dots (Claude + Codex)** — per-terminal + workspace-rollup dot:
   red = needs input, yellow = working (incl. subagents/teammates/compaction/
   codex-companion holds), green = ready for review, blue = shell/background/

@@ -93,6 +93,12 @@ build.ts                        # Bun bundler → dist/pty-daemon.js (target: no
   preserved.
 - **Protocol versioned from day one.** Handshake (`hello` / `hello-ack`)
   picks the highest mutually supported version.
+- **Windows.** ConPTY via node-pty; session trees are killed through
+  `Win32_Process` (`process-tree.ts`). There is no fd handoff, so a daemon
+  version bump closes every terminal once (Force update). A hidden Windows
+  PowerShell 5.1 helper (`src/WindowsQos/`) tags the daemon and its process
+  tree HighQoS once a second, so Windows does not hold terminals on the
+  efficiency cores.
 
 ## Testing
 
@@ -127,7 +133,6 @@ by host-service with stdout reserved for protocol or kept dark).
 
 ## Out of scope
 
-- Windows ConPTY — not in the protocol; defer until Windows users justify it.
 - "since byte N" replay cursor — would close the gap where bytes the PTY
   produced during a WS-down window are dropped on reconnect (sub-second on
   a daemon swap; longer on host-service restart). Not built.
