@@ -636,9 +636,9 @@ afterAll(async () => {
 });
 
 describe("NewWorkspaceScreen master mode rendering", () => {
-	test("hides everything branch-shaped", () => {
+	test("hides the branch-shaped controls and the PR trigger", () => {
 		// The screen has no name/branch inputs and no "Runs in <label>" row to
-		// assert on. These two are its only branch-shaped controls.
+		// assert on. It has two branch-shaped controls plus the PR trigger.
 		const view = renderForm();
 		expect(view.queryByLabelText("Update naming instructions")).toBeNull();
 		expect(view.queryByTestId("compare-base-branch-picker")).toBeNull();

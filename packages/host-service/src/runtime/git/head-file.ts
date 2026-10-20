@@ -14,6 +14,7 @@ export type DiskHead =
 
 const BRANCH_REF_PREFIX = "ref: refs/heads/";
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const ASCII_SPACE_EDGES = /^[ \t\r\n]+|[ \t\r\n]+$/g;
 const BAD_REF_PATTERN =
 	/[~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.$|(?:^|\/)\.|\.lock(?:\/|$)/;
 
@@ -37,7 +38,7 @@ export function resolveGitDir(
 }
 
 export function parseHeadFile(text: string): DiskHead {
-	const head = text.trim();
+	const head = text.replace(ASCII_SPACE_EDGES, "");
 	if (head.startsWith(BRANCH_REF_PREFIX)) {
 		const name = head.slice(BRANCH_REF_PREFIX.length);
 		return isValidBranchName(name)

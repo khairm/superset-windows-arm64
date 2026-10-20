@@ -90,6 +90,12 @@ const cases: Array<[string, (worktree: string) => void, DiskHead]> = [
 		{ kind: "branch", name: "feat/über-x.y" },
 	],
 	[
+		"branch name ending in a no-break space",
+		(worktree) =>
+			writeGitDir(join(worktree, ".git"), "ref: refs/heads/nbsp \n"),
+		{ kind: "branch", name: "nbsp " },
+	],
+	[
 		"detached sha",
 		(worktree) => writeGitDir(join(worktree, ".git"), `${SHA}\n`),
 		{ kind: "detached" },
