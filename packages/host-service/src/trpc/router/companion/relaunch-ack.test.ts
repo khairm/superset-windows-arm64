@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { COMPANION_ENABLE_ENV } from "../../../companion/config";
 import {
 	createLifecycleAlertManager,
 	type LifecycleAlertManager,
 } from "../../../companion/lifecycle-alerts";
 import {
+	clearCompanionLifecycleReadSink,
 	clearCompanionRelaunchBoundarySink,
+	recordCompanionLifecycleRead,
+	setCompanionLifecycleReadSink,
 	setCompanionRelaunchBoundarySink,
 } from "../../../companion/registry";
 import type { HostServiceContext } from "../../../types";
@@ -63,6 +67,7 @@ function mountManager(hostNowMs: number): void {
 		resolveContext: null,
 		restartEvidence: null,
 		readySettleMs: 0,
+		reads: { readThroughAt: () => 0, advance: () => {} },
 		logger: { info: () => {}, warn: () => {}, error: () => {} },
 		now: () => hostNowMs,
 	});
@@ -119,5 +124,47 @@ describe("companion.retireStaleReadyAlerts acknowledgement", () => {
 			.retireStaleReadyAlerts({ boundaryMs: 9_000 });
 
 		expect(result).toEqual({ accepted: false });
+	});
+});
+
+describe("companion.reportLifecycleRead answers", () => {
+	const read = {
+		terminalId: "terminal-1",
+		workspaceId: "workspace-1",
+		origin: "user" as const,
+		seenThroughAt: 1_700_000_000_000,
+	};
+	const hostRead = {
+		hostTerminalId: read.terminalId,
+		hostWorkspaceId: read.workspaceId,
+		origin: read.origin,
+		seenThroughAt: read.seenThroughAt,
+	};
+
+	it("answers bridge-off when configuration disables the bridge", () => {
+		expect(recordCompanionLifecycleRead(hostRead, {})).toEqual({
+			accepted: false,
+			refusal: "bridge-off",
+		});
+	});
+
+	it("answers a transient refusal while an enabled bridge is not up yet", () => {
+		expect(
+			recordCompanionLifecycleRead(hostRead, { [COMPANION_ENABLE_ENV]: "1" }),
+		).toEqual({ accepted: false, refusal: null });
+	});
+
+	it("answers a transient refusal when the bridge's sink throws", async () => {
+		const sink = () => {
+			throw new Error("host.db is locked");
+		};
+		setCompanionLifecycleReadSink(sink);
+		try {
+			await expect(
+				companionRouter.createCaller(ctx).reportLifecycleRead(read),
+			).resolves.toEqual({ accepted: false, refusal: null });
+		} finally {
+			clearCompanionLifecycleReadSink(sink);
+		}
 	});
 });

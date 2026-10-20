@@ -18,7 +18,10 @@ import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated
 import { DASHBOARD_SIDEBAR_PULL_REQUEST_QUERY_KEY_PREFIX } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/derivePullRequestQueryTargets";
 import { useSidebarWorkspaceStatus } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/DashboardSidebarWorkspaceStatusProvider";
 import { useCompleteWorkspaceCard } from "renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard";
-import { markTerminalSeenAndReportRead } from "renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync";
+import {
+	markTerminalSeenAndReportRead,
+	markTerminalSeenAndRetract,
+} from "renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useOptimisticActions } from "renderer/routes/_authenticated/hooks/useOptimisticActions";
 import {
@@ -81,7 +84,8 @@ export type DismissedWorkspaceTerminal =
  * Ordering is deliberate:
  *
  *  - the local review clear goes FIRST, so a click with the host DOWN still
- *    clears green and still reports the read, exactly as it did before;
+ *    clears green and still takes the phone's ready cards down, exactly as it
+ *    did before. It is not a read: the host's read mark does not move;
  *  - the axes the host owns are dropped only once the host has confirmed it
  *    dropped them too. A failure leaves red and yellow latched, which is the
  *    honest state: the markers survived, so the next resync would re-assert
@@ -179,10 +183,10 @@ function applyWorkspaceStatusDismissal({
 				);
 			continue;
 		}
-		markTerminalSeenAndReportRead({
+		markTerminalSeenAndRetract({
 			workspaceId,
 			terminalId: terminal.terminalId,
-			lastEventAt: terminal.lastEventAt,
+			seenAt: terminal.lastEventAt,
 		});
 	}
 }
@@ -234,24 +238,26 @@ export function useDashboardSidebarWorkspaceItemActions({
 		hostWorkspaces.find((workspace) => workspace.id === workspaceId)?.tags,
 	);
 
-	const clearWorkspaceAttention = () => {
+	// Each helper marks the terminal seen itself, so it REPLACES the provider's
+	// plain mark rather than following it. Bindings come from the status store,
+	// so this costs no extra query per row.
+	const clearWorkspaceAttention = (
+		markTerminal: typeof markTerminalSeenAndReportRead,
+	) => {
 		clearManualUnread(workspaceId);
-		// (ALERT-CONTEXT-NAMES) THE SECOND USER-INTENT SITE. "Mark read" is the
-		// user saying they have dealt with the thread, so the phone's
-		// ready-for-review notifications for it come down too — but only for the
-		// terminals that actually HAD a green dot, or a retraction goes on the
-		// wire per idle terminal per click. The helper owns that rule and the
-		// stamp ordering behind it, and it marks the terminal seen itself, so it
-		// REPLACES the provider's plain mark rather than following it. Bindings
-		// come from the status store, so this costs no extra query per row.
 		for (const binding of bindings.values()) {
-			markTerminalSeenAndReportRead({
+			markTerminal({
 				workspaceId,
 				terminalId: binding.terminalId,
-				lastEventAt: binding.lastEventAt,
+				seenAt: binding.lastEventAt,
 			});
 		}
 	};
+	// (ALERT-CONTEXT-NAMES) THE SECOND USER-INTENT SITE. "Mark read" is the
+	// user saying they have dealt with the thread: every bound terminal reports
+	// a read, so the phone's ready cards come down and the next finish buzzes.
+	const markWorkspaceRead = () =>
+		clearWorkspaceAttention(markTerminalSeenAndReportRead);
 	const completeWorkspaceCard = useCompleteWorkspaceCard();
 	const {
 		archiveWorkspace,
@@ -467,7 +473,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 
 	const handleToggleUnread = () => {
 		if (isUnread) {
-			clearWorkspaceAttention();
+			markWorkspaceRead();
 		} else {
 			setManualUnread(workspaceId);
 		}
@@ -485,7 +491,8 @@ export function useDashboardSidebarWorkspaceItemActions({
 		runClearWorkspaceStatuses({
 			workspaceId,
 			workspaceHostUrl,
-			clearWorkspaceAttention,
+			clearWorkspaceAttention: () =>
+				clearWorkspaceAttention(markTerminalSeenAndRetract),
 			invalidateBindings: () =>
 				queryClient.invalidateQueries({
 					queryKey: getTerminalAgentBindingsQueryKey(workspaceId),

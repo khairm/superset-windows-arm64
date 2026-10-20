@@ -730,10 +730,7 @@ export function derivePairingKeys(input: {
 
 	// Rejects an all-zero shared secret (small-order peer point) inside x25519().
 	const z = x25519(input.dPriv, input.pPub);
-
-	const ikm = new Uint8Array(z.length + input.pairingCode.length);
-	ikm.set(z, 0);
-	ikm.set(input.pairingCode, z.length);
+	const ikm = buildPairingIkm(z, input.pairingCode);
 
 	const prk = hkdfExtract(buildHkdfSalt(input.profile, input.pairSalt), ikm);
 	zero(z);
@@ -787,8 +784,19 @@ export function deriveSrpPairingKeys(input: {
 	}
 }
 
+/** §3.1 `IKM = Z || pairingCode`, in a new buffer the caller zeroes. */
+export function buildPairingIkm(
+	z: Uint8Array,
+	pairingCode: Uint8Array,
+): Uint8Array {
+	const ikm = new Uint8Array(z.length + pairingCode.length);
+	ikm.set(z, 0);
+	ikm.set(pairingCode, z.length);
+	return ikm;
+}
+
 /** `ascii(prefix) || pairSalt`. One builder, so the two flows cannot drift. */
-function buildHkdfSalt(
+export function buildHkdfSalt(
 	profile: PairingProfile,
 	pairSalt: Uint8Array,
 ): Uint8Array {
@@ -805,7 +813,7 @@ function buildHkdfSalt(
  * key schedule, which is the intended failure mode — the MAC does not verify and
  * nothing is stored.
  */
-function expandPairingKeys(
+export function expandPairingKeys(
 	prk: Uint8Array,
 	profile: PairingProfile,
 	pidBytes: Uint8Array,

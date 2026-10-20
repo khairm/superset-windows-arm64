@@ -66,28 +66,37 @@ describe("(ALERT-CONTEXT-NAMES) v3 key sets are closed per (version, kind)", () 
 		expect(data).toMatchObject({ t: "", pn: "", wn: "", tn: "", tc: "" });
 	});
 
-	it("gives a lifecycle alert every key but `n`", () => {
+	it("gives a ready alert every v4 key but `n`", () => {
 		const data = buildLifecyclePushData({
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: context(),
 		});
 		expect(Object.keys(data).sort()).toEqual(
-			["gx", "i", "k", "pn", "t", "tc", "tn", "v", "w", "wn", "x"].sort(),
+			["gx", "i", "k", "pn", "rg", "t", "tc", "tn", "v", "w", "wn", "x"].sort(),
 		);
 		expect(data).toMatchObject({
-			v: "3",
+			v: "4",
 			k: "g",
+			rg: "",
 			pn: "PX V1 apps",
 			wn: "super simplify",
 			tn: "Claude Resume",
 			tc: "3",
 			t: TERMINAL,
 		});
+		const { rg: _dropped, ...withoutReadMark } = data as unknown as Record<
+			string,
+			string
+		>;
+		expect(() =>
+			buildEnvelope(TOKEN, withoutReadMark as unknown as PushData),
+		).toThrow(/key set is not closed/);
 	});
 
 	it("gives a lifecycle retraction NO name keys at all", () => {
@@ -137,11 +146,68 @@ describe("(ALERT-CONTEXT-NAMES) v3 key sets are closed per (version, kind)", () 
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: null,
 		});
 		const wrong = { ...data, k: "r" } as unknown as PushData;
 		expect(() => buildEnvelope(TOKEN, wrong)).toThrow(/data.k must be one of/);
+	});
+});
+
+describe("v4 moves only the ready alert", () => {
+	function ready(readThroughAtMs: number): PushData {
+		return buildLifecyclePushData({
+			alertId: ALERT,
+			workspaceId: WORKSPACE,
+			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
+			readThroughAtMs,
+			expiresAtMs: EXPIRY,
+			context: null,
+		});
+	}
+
+	it('accepts `rg` as `""` or 13 digits and refuses 12 digits or text', () => {
+		expect(ready(0)).toMatchObject({ rg: "" });
+		expect(ready(1_699_999_998_000)).toMatchObject({ rg: "1699999998000" });
+		expect(() => buildEnvelope(TOKEN, ready(0))).not.toThrow();
+		expect(() => buildEnvelope(TOKEN, ready(1_699_999_998_000))).not.toThrow();
+
+		for (const rg of ["169999999800", "read through", "0169999999800"]) {
+			const forged = { ...ready(0), rg } as unknown as PushData;
+			expect(() => buildEnvelope(TOKEN, forged)).toThrow(
+				/does not satisfy the "instant13-or-empty" rule/,
+			);
+		}
+		expect(() => ready(169_999_999_800)).toThrow(/read mark \(rg\)/);
+	});
+
+	it("keeps `e` and `c` on v3", () => {
+		const error = buildLifecyclePushData({
+			alertId: ALERT,
+			workspaceId: WORKSPACE,
+			kind: "e",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
+			readThroughAtMs: null,
+			expiresAtMs: EXPIRY,
+			context: null,
+		});
+		const retract = buildLifecycleRetractPushData({
+			alertId: ALERT,
+			workspaceId: WORKSPACE,
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
+			nowMs: EXPIRY,
+		});
+		expect(error.v).toBe("3");
+		expect("rg" in error).toBe(false);
+		expect(retract.v).toBe("3");
+		expect(() =>
+			buildEnvelope(TOKEN, { ...error, v: "4" } as unknown as PushData),
+		).toThrow(/data.k must be one of "g" for v4/);
 	});
 });
 
@@ -208,6 +274,7 @@ describe("(ALERT-CONTEXT-NAMES) the plaintext exemption", () => {
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: context(),
 		});
@@ -223,6 +290,7 @@ describe("(ALERT-CONTEXT-NAMES) the plaintext exemption", () => {
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: context(),
 		});
@@ -245,6 +313,7 @@ describe("(ALERT-CONTEXT-NAMES) the plaintext exemption", () => {
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: context({
 				projectName: huge,
@@ -386,6 +455,7 @@ describe("(ALERT-CONTEXT-NAMES) context never fails a send", () => {
 			kind: "e",
 			terminalHandle: "not a handle",
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: null,
 			expiresAtMs: EXPIRY,
 			context: context(),
 		});
@@ -403,6 +473,7 @@ describe("(ALERT-CONTEXT-NAMES) context never fails a send", () => {
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: null,
 		});
@@ -422,6 +493,7 @@ describe("(ALERT-CONTEXT-NAMES) context never fails a send", () => {
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: context({ terminalHandle: "z".repeat(22) }),
 		});
@@ -436,6 +508,7 @@ describe("(ALERT-CONTEXT-NAMES) context never fails a send", () => {
 				kind: "g",
 				terminalHandle: "not a handle",
 				outcomeAtMs: OUTCOME,
+				readThroughAtMs: 0,
 				expiresAtMs: EXPIRY,
 				context: context(),
 			}),
@@ -450,6 +523,7 @@ describe("(ALERT-CONTEXT-NAMES) context never fails a send", () => {
 				kind: "g",
 				terminalHandle: TERMINAL,
 				outcomeAtMs: 0,
+				readThroughAtMs: 0,
 				expiresAtMs: EXPIRY,
 				context: context(),
 			}),
@@ -494,6 +568,7 @@ describe("(RETRACT-TTL) the FCM envelope TTL is per message", () => {
 			kind: "g",
 			terminalHandle: TERMINAL,
 			outcomeAtMs: OUTCOME,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: null,
 		});

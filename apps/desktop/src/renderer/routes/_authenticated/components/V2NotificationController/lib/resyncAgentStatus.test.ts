@@ -17,8 +17,13 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 interface SeenCall {
 	workspaceId: string;
 	terminalId: string;
-	seenThroughAt: number;
+	origin: string;
+	seenThroughAt: number | null;
 }
+
+/** Host-clock instants are 13-digit ms values; tests name them as offsets. */
+const T0 = 1_700_000_000_000;
+const at = (ms: number): number => T0 + ms;
 
 let seenCalls: SeenCall[] = [];
 /**
@@ -40,7 +45,7 @@ let acceptRelaunch = true;
 let rejectSeen = false;
 let snapshotRows: SnapshotRow[] = [];
 let knownTerminalIds: string[] = [];
-let hostNow: number | undefined = 10_000;
+let hostNow: number | undefined = at(10_000);
 
 interface SnapshotRow {
 	terminalId: string;
@@ -70,7 +75,7 @@ mock.module("renderer/lib/host-service-client", () => ({
 			},
 		},
 		companion: {
-			markLifecycleSeen: {
+			reportLifecycleRead: {
 				mutate: async (input: SeenCall) => {
 					seenCalls.push(input);
 					if (rejectSeen) throw new Error("host gone");
@@ -102,8 +107,11 @@ const { resetV2NotificationStoreForTest } = await import(
 	"renderer/stores/v2-notifications/resetForTest"
 );
 const {
+	pendingUserReads,
 	registerWorkspaceHost,
+	reportUserRead,
 	resetRelaunchBoundaryLatchForTest,
+	resetUserReadsForTest,
 	unregisterWorkspaceHost,
 } = await import("./companionAlertSync");
 const {
@@ -136,16 +144,16 @@ function row(overrides: Partial<SnapshotRow> = {}): SnapshotRow {
 		originWorkspaceId: WORKSPACE,
 		// A clean turn end — the shape that raises a green.
 		lastEventType: "Stop",
-		lastEventAt: 5_000,
+		lastEventAt: at(5_000),
 		pendingPermission: false,
 		...overrides,
 	};
 }
 
-/** The user has read this terminal through `at` (host clock). */
-function seenThrough(terminalId: string, at: number): void {
+/** The user has read this terminal through `instant` (host clock). */
+function seenThrough(terminalId: string, instant: number): void {
 	useV2NotificationStore.setState((state) => ({
-		terminalSeenAt: { ...state.terminalSeenAt, [terminalId]: at },
+		terminalSeenAt: { ...state.terminalSeenAt, [terminalId]: instant },
 	}));
 }
 
@@ -153,9 +161,9 @@ function seenThrough(terminalId: string, at: number): void {
  * (ONE-BUZZ-UNTIL-READ) A finish this machine saw go green and has not yet had
  * a host confirm as read — the phone is still showing it.
  */
-function outstandingReady(terminalId: string, at: number): void {
+function outstandingReady(terminalId: string, instant: number): void {
 	useV2NotificationStore.setState((state) => ({
-		outstandingReadyAt: { ...state.outstandingReadyAt, [terminalId]: at },
+		outstandingReadyAt: { ...state.outstandingReadyAt, [terminalId]: instant },
 	}));
 }
 
@@ -171,8 +179,9 @@ beforeEach(() => {
 	rejectSeen = false;
 	snapshotRows = [row()];
 	knownTerminalIds = ["terminal-1"];
-	hostNow = 10_000;
+	hostNow = at(10_000);
 	__resetRepairCooldownsForTest();
+	resetUserReadsForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
 	resetV2NotificationStoreForTest();
 });
@@ -192,7 +201,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 	 * on that pane at reconnect).
 	 */
 	it("repairs a read terminal even though the replay left no review entry", async () => {
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		const result = await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -205,14 +214,15 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 			{
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-1",
-				seenThroughAt: 5_000,
+				origin: "repair-seen",
+				seenThroughAt: at(5_000),
 			},
 		]);
 		expect(result?.seenRepairsSent).toBe(1);
 	});
 
 	it("does not repair a green the user has NOT read through", async () => {
-		seenThrough("terminal-1", 4_999);
+		seenThrough("terminal-1", at(4_999));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -228,7 +238,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 	 * report a read for it.
 	 */
 	it("does not invent an outstanding record out of its own replay", async () => {
-		seenThrough("terminal-1", 4_999);
+		seenThrough("terminal-1", at(4_999));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -256,9 +266,9 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 	 * knows which finish that was.
 	 */
 	it("repairs an OUTSTANDING finish whose row has moved on to a Start", async () => {
-		snapshotRows = [row({ lastEventType: "Start", lastEventAt: 6_000 })];
-		outstandingReady("terminal-1", 5_000);
-		seenThrough("terminal-1", 6_000);
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: at(6_000) })];
+		outstandingReady("terminal-1", at(5_000));
+		seenThrough("terminal-1", at(6_000));
 		const result = await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -268,8 +278,10 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 			{
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-1",
+				// A retraction only: a seen mark is not evidence of a read.
+				origin: "repair-seen",
 				// The FINISH's instant, not the `Start` the row now rests on.
-				seenThroughAt: 5_000,
+				seenThroughAt: at(5_000),
 			},
 		]);
 		expect(result?.seenRepairsSent).toBe(1);
@@ -279,9 +291,9 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 	});
 
 	it("does not repair an outstanding finish the user has not read past", async () => {
-		snapshotRows = [row({ lastEventType: "Start", lastEventAt: 6_000 })];
-		outstandingReady("terminal-1", 5_000);
-		seenThrough("terminal-1", 4_000);
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: at(6_000) })];
+		outstandingReady("terminal-1", at(5_000));
+		seenThrough("terminal-1", at(4_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -292,9 +304,9 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 
 	it("keeps an outstanding record no host consumed", async () => {
 		acceptSeen = false;
-		snapshotRows = [row({ lastEventType: "Start", lastEventAt: 6_000 })];
-		outstandingReady("terminal-1", 5_000);
-		seenThrough("terminal-1", 6_000);
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: at(6_000) })];
+		outstandingReady("terminal-1", at(5_000));
+		seenThrough("terminal-1", at(6_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -303,13 +315,13 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 		expect(seenCalls).toHaveLength(1);
 		expect(
 			useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
-		).toBe(5_000);
+		).toBe(at(5_000));
 	});
 
 	it("does not repair an event that would never have raised a green", async () => {
 		// `Attached` is an idle signal — no axes at all, so no alert ever existed.
 		snapshotRows = [row({ lastEventType: "Attached" })];
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -324,7 +336,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 		// `statuses` map would have hidden the pending permission and called it
 		// eligible.
 		snapshotRows = [row({ pendingPermission: true })];
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -335,7 +347,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 
 	it("skips a row whose workspace this subscriber does not own", async () => {
 		snapshotRows = [row({ originWorkspaceId: "someone-elses-workspace" })];
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -355,7 +367,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 	it("caps one epoch and defers the rest rather than bursting", async () => {
 		snapshotRows = manyRows(25);
 		knownTerminalIds = snapshotRows.map((r) => r.terminalId);
-		for (const r of snapshotRows) seenThrough(r.terminalId, 5_000);
+		for (const r of snapshotRows) seenThrough(r.terminalId, at(5_000));
 
 		const result = await resyncAgentStatusFromHost({
 			hostUrl: HOST,
@@ -370,7 +382,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 	it("ROTATES: the next epoch covers rows the last one could not", async () => {
 		snapshotRows = manyRows(25);
 		knownTerminalIds = snapshotRows.map((r) => r.terminalId);
-		for (const r of snapshotRows) seenThrough(r.terminalId, 5_000);
+		for (const r of snapshotRows) seenThrough(r.terminalId, at(5_000));
 
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
@@ -396,7 +408,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 	});
 
 	it("does not re-report a terminal it has just repaired", async () => {
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -419,7 +431,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 		// alone, a finish repaired at 09:00 suppressed the 09:20 one for the rest
 		// of the half hour, and the phone held an alert for a chat the user had
 		// already read with nothing left to take it down.
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -428,8 +440,8 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 		expect(seenCalls).toHaveLength(1);
 
 		seenCalls = [];
-		snapshotRows = [row({ lastEventAt: 7_000 })];
-		seenThrough("terminal-1", 7_000);
+		snapshotRows = [row({ lastEventAt: at(7_000) })];
+		seenThrough("terminal-1", at(7_000));
 		const result = await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
@@ -439,7 +451,8 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 			{
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-1",
-				seenThroughAt: 7_000,
+				origin: "repair-seen",
+				seenThroughAt: at(7_000),
 			},
 		]);
 		expect(result?.seenRepairsSkipped).toBe(0);
@@ -448,13 +461,13 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 
 describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repair", () => {
 	it("records an ACCEPTED report under the long repair cooldown", async () => {
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).toBe(
+		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:${at(5_000)}`)).toBe(
 			"repaired",
 		);
 	});
@@ -464,36 +477,42 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repai
 		// finishes registering. Filing it as a repair would suppress the retry for
 		// half an hour and lose the retraction entirely.
 		acceptSeen = false;
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).toBe("failed");
+		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:${at(5_000)}`)).toBe(
+			"failed",
+		);
 	});
 
 	it("records a REJECTED report under the short retry cooldown too", async () => {
 		rejectSeen = true;
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).toBe("failed");
+		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:${at(5_000)}`)).toBe(
+			"failed",
+		);
 	});
 
 	it("keys the cooldown per HOST, so two hosts' terminals are separate subjects", async () => {
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).not.toBeNull();
 		expect(
-			__peekRepairOutcomeForTest("http://host-b:terminal-1:5000"),
+			__peekRepairOutcomeForTest(`${HOST}:terminal-1:${at(5_000)}`),
+		).not.toBeNull();
+		expect(
+			__peekRepairOutcomeForTest(`http://host-b:terminal-1:${at(5_000)}`),
 		).toBeNull();
 	});
 });
@@ -512,20 +531,20 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repai
 describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () => {
 	const source = { type: "terminal", id: "terminal-1" } as const;
 
-	function latchRed(workspaceId: string, at: number): void {
+	function latchRed(workspaceId: string, instant: number): void {
 		useV2NotificationStore
 			.getState()
 			.applySourceAxes(
 				source,
 				workspaceId,
 				{ set: ["permission"], clear: [] },
-				at,
+				instant,
 			);
 	}
 
 	it("clears the permission axis the host says nothing backs", async () => {
-		latchRed(WORKSPACE, 1_000);
-		snapshotRows = [row({ lastEventAt: 5_000, pendingPermission: false })];
+		latchRed(WORKSPACE, at(1_000));
+		snapshotRows = [row({ lastEventAt: at(5_000), pendingPermission: false })];
 
 		const result = await resyncAgentStatusFromHost({
 			hostUrl: HOST,
@@ -554,11 +573,11 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 	 * SAME instant, and `5_000 > 5_000` is false.
 	 */
 	it("does NOT retract while the host's own last word is a PermissionRequest", async () => {
-		latchRed(WORKSPACE, 5_000);
+		latchRed(WORKSPACE, at(5_000));
 		snapshotRows = [
 			row({
 				lastEventType: "PermissionRequest",
-				lastEventAt: 5_000,
+				lastEventAt: at(5_000),
 				pendingPermission: false,
 			}),
 		];
@@ -571,7 +590,7 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 
 		const entry =
 			useV2NotificationStore.getState().sources["terminal:terminal-1"];
-		expect(entry?.axes.permission).toBe(5_000);
+		expect(entry?.axes.permission).toBe(at(5_000));
 		expect(entry?.status).toBe("permission");
 		expect(result?.retractedPermission).toBe(0);
 	});
@@ -583,8 +602,8 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 	 * the honest witness for this branch.)
 	 */
 	it("does not retract an entry belonging to a different workspace", async () => {
-		latchRed("workspace-2", 1_000);
-		snapshotRows = [row({ lastEventAt: 5_000, pendingPermission: false })];
+		latchRed("workspace-2", at(1_000));
+		snapshotRows = [row({ lastEventAt: at(5_000), pendingPermission: false })];
 
 		const result = await resyncAgentStatusFromHost({
 			hostUrl: HOST,
@@ -602,8 +621,8 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 	 * the top of the loop skips the whole row, and it still does.
 	 */
 	it("leaves a NEWER local PermissionRequest alone", async () => {
-		latchRed(WORKSPACE, 9_000);
-		snapshotRows = [row({ lastEventAt: 5_000, pendingPermission: false })];
+		latchRed(WORKSPACE, at(9_000));
+		snapshotRows = [row({ lastEventAt: at(5_000), pendingPermission: false })];
 
 		const result = await resyncAgentStatusFromHost({
 			hostUrl: HOST,
@@ -614,7 +633,7 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 		const entry =
 			useV2NotificationStore.getState().sources["terminal:terminal-1"];
 		expect(entry?.status).toBe("permission");
-		expect(entry?.axes.permission).toBe(9_000);
+		expect(entry?.axes.permission).toBe(at(9_000));
 		expect(result?.retractedPermission).toBe(0);
 		expect(result?.skippedNewerLocal).toBe(1);
 	});
@@ -638,12 +657,12 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 			source,
 			WORKSPACE,
 			{ set: ["permission"], clear: [] },
-			1_000,
+			at(1_000),
 		);
 		snapshotRows = [
 			row({
 				lastEventType: "Stop",
-				lastEventAt: 5_000,
+				lastEventAt: at(5_000),
 				pendingPermission: false,
 			}),
 		];
@@ -668,11 +687,11 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 	 * must not put either dot back.
 	 */
 	it("does not resurrect a dismissed workspace's dots", async () => {
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		snapshotRows = [
 			row({
 				lastEventType: "Stop",
-				lastEventAt: 5_000,
+				lastEventAt: at(5_000),
 				pendingPermission: false,
 			}),
 		];
@@ -717,7 +736,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
 		const hostA = "http://host-relaunch-a";
 		// Far enough ahead of the row's 5_000 that the cold-start seed cannot be
 		// squeezed out by however long this process has been up.
-		hostNow = 1_000_000;
+		hostNow = at(1_000_000);
 		await resyncAgentStatusFromHost({
 			hostUrl: hostA,
 			workspaces: workspaces(),
@@ -733,7 +752,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
 		// THE ORDERING. The row's pre-launch finish was already seeded seen when
 		// the report went out, so the cards the host is about to retract are ones
 		// this renderer has demonstrably taken over.
-		expect(relaunchCalls[0]?.seenAtReport).toBe(5_000);
+		expect(relaunchCalls[0]?.seenAtReport).toBe(at(5_000));
 
 		// A second epoch on the same host finds it latched and says nothing.
 		await resyncAgentStatusFromHost({
@@ -831,7 +850,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
 	 */
 	it("offers a FRESHLY DERIVED boundary after the host did not take one", async () => {
 		const hostF = "http://host-relaunch-f";
-		hostNow = 1_000_000;
+		hostNow = at(1_000_000);
 		acceptRelaunch = false;
 		await resyncAgentStatusFromHost({
 			hostUrl: hostF,
@@ -842,7 +861,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
 
 		// The host's clock has moved on by the next epoch, which is exactly what
 		// makes the second offer usable where the first was not.
-		hostNow = 2_000_000;
+		hostNow = at(2_000_000);
 		acceptRelaunch = true;
 		await resyncAgentStatusFromHost({
 			hostUrl: hostF,
@@ -865,16 +884,114 @@ describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
 	});
 });
 
+describe("a desktop relaunch is never a read", () => {
+	beforeEach(() => {
+		__resetColdStartForTest();
+		resetRelaunchBoundaryLatchForTest();
+		resetV2NotificationStoreForTest();
+	});
+
+	it("reports the next epoch's repair of a cold-start seed as repair-seen", async () => {
+		hostNow = at(1_000_000);
+		const seeded = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(seeded?.seededSeen).toBe(1);
+		expect(seenCalls).toEqual([]);
+
+		await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(seenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: "terminal-1",
+				origin: "repair-seen",
+				seenThroughAt: at(5_000),
+			},
+		]);
+	});
+});
+
+describe("a PC read the host did not take", () => {
+	const resync = () =>
+		resyncAgentStatusFromHost({ hostUrl: HOST, workspaces: workspaces() });
+	const calls = () =>
+		seenCalls.map((call) => [call.origin, call.seenThroughAt]);
+
+	it("is re-sent at the next epoch, and not again once the host takes it", async () => {
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: at(5_000) })];
+		acceptSeen = false;
+		reportUserRead({
+			workspaceId: WORKSPACE,
+			terminalId: "terminal-1",
+			seenThroughAt: at(5_000),
+		});
+		await settle();
+
+		acceptSeen = true;
+		await resync();
+		await settle();
+		await resync();
+		await settle();
+		expect(calls()).toEqual([
+			["user", at(5_000)],
+			["user", at(5_000)],
+		]);
+	});
+
+	it("made with no instant, is dropped once the host shows a newer event", async () => {
+		// Recorded after the snapshot's clock reading, so after the read.
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: at(10_500) })];
+		acceptSeen = false;
+		reportUserRead({
+			workspaceId: WORKSPACE,
+			terminalId: "terminal-1",
+			seenThroughAt: null,
+		});
+		await settle();
+
+		acceptSeen = true;
+		await resync();
+		await settle();
+		expect(calls()).toEqual([["user", null]]);
+		expect(pendingUserReads(HOST)).toEqual([]);
+	});
+
+	it("made with no instant, goes again through an event older than the read", async () => {
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: at(4_000) })];
+		acceptSeen = false;
+		reportUserRead({
+			workspaceId: WORKSPACE,
+			terminalId: "terminal-1",
+			seenThroughAt: null,
+		});
+		await settle();
+
+		acceptSeen = true;
+		await resync();
+		await settle();
+		expect(calls()).toEqual([
+			["user", null],
+			["user", at(4_000)],
+		]);
+	});
+});
+
 // (NOTIF-STORE-DEBOUNCE)
 describe("snapshot publication", () => {
 	it("publishes all rows and stale clears once without transient review records", async () => {
 		__resetColdStartForTest();
 		const store = useV2NotificationStore.getState();
-		store.setTerminalStatus("terminal-1", WORKSPACE, "permission", 1_000);
-		store.setTerminalStatus("stale-agent", WORKSPACE, "working", 1_000);
-		store.setTerminalBackgroundRunning("stale-agent", WORKSPACE, 1_000);
-		store.setTerminalShellRunning("stale-agent", WORKSPACE, 1_000);
-		store.setTerminalShellRunning("plain-shell", WORKSPACE, 1_000);
+		store.setTerminalStatus("terminal-1", WORKSPACE, "permission", at(1_000));
+		store.setTerminalStatus("stale-agent", WORKSPACE, "working", at(1_000));
+		store.setTerminalBackgroundRunning("stale-agent", WORKSPACE, at(1_000));
+		store.setTerminalShellRunning("stale-agent", WORKSPACE, at(1_000));
+		store.setTerminalShellRunning("plain-shell", WORKSPACE, at(1_000));
 		snapshotRows = [
 			row({ lastEventType: "Start", pendingPermission: null }),
 			row({ terminalId: "terminal-2", pendingPermission: true }),
@@ -910,17 +1027,17 @@ describe("snapshot publication", () => {
 	it("keeps entries replaced by live events during the request", async () => {
 		__resetColdStartForTest();
 		const store = useV2NotificationStore.getState();
-		store.setTerminalStatus("terminal-1", WORKSPACE, "working", 1_000);
-		store.setTerminalBackgroundRunning("terminal-1", WORKSPACE, 1_000);
-		store.setTerminalShellRunning("terminal-1", WORKSPACE, 1_000);
+		store.setTerminalStatus("terminal-1", WORKSPACE, "working", at(1_000));
+		store.setTerminalBackgroundRunning("terminal-1", WORKSPACE, at(1_000));
+		store.setTerminalShellRunning("terminal-1", WORKSPACE, at(1_000));
 		snapshotRows = [];
 		const pending = resyncAgentStatusFromHost({
 			hostUrl: HOST,
 			workspaces: workspaces(),
 		});
-		store.setTerminalStatus("terminal-1", WORKSPACE, "working", 1_000);
-		store.setTerminalBackgroundRunning("terminal-1", WORKSPACE, 1_000);
-		store.setTerminalShellRunning("terminal-1", WORKSPACE, 1_000);
+		store.setTerminalStatus("terminal-1", WORKSPACE, "working", at(1_000));
+		store.setTerminalBackgroundRunning("terminal-1", WORKSPACE, at(1_000));
+		store.setTerminalShellRunning("terminal-1", WORKSPACE, at(1_000));
 		const latest = useV2NotificationStore.getState();
 		await pending;
 		const after = useV2NotificationStore.getState();
@@ -937,7 +1054,7 @@ describe("snapshot publication", () => {
 
 	it("publishes the complete snapshot before sending read acknowledgements", async () => {
 		__resetColdStartForTest();
-		seenThrough("terminal-1", 5_000);
+		seenThrough("terminal-1", at(5_000));
 		snapshotRows = [
 			row(),
 			row({ terminalId: "terminal-2", lastEventType: "Start" }),

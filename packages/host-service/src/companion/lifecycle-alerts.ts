@@ -2,11 +2,14 @@ import { createHash } from "node:crypto";
 import type { CompanionLifecycleEvent } from "../trpc/router/notifications";
 import { CURATION_RECHECK_MS } from "./config";
 import type { BridgeLogger } from "./http";
+import type { LifecycleReads } from "./lifecycle-reads";
+import { isReadInstant, type LifecycleReadOrigin } from "./limits";
 import { errorClassName } from "./log-privacy";
 import type { PresenceStore } from "./presence";
 import type { PushSender } from "./push";
 import type { PushAlertContext } from "./push-context";
 import type { HostDbReader } from "./read-api";
+import type { LifecycleSeenAck } from "./registry";
 import {
 	createSidebarCuration,
 	workspaceSidebarVerdict,
@@ -211,14 +214,33 @@ function isLiveAlert(alert: HeldAlert): boolean {
 	return alert.state === "sending" || alert.state === "sent";
 }
 
-export interface LifecycleSeenInput {
+interface LifecycleReadTarget {
 	hostTerminalId: string;
 	hostWorkspaceId: string;
+}
 
+/**
+ * What a read claims. `repair-seen` covers every resync repair (cold-start
+ * seeds included), the sidebar's Clear agent status and the released
+ * desktop's `markLifecycleSeen`. Only a `user` read may come without an
+ * instant: the renderer knew none, and the sink reads through the binding's
+ * `lastEventAt`.
+ */
+export type LifecycleReadClaim =
+	| { origin: "user"; seenThroughAt: number | null }
+	| { origin: Exclude<LifecycleReadOrigin, "user">; seenThroughAt: number };
+
+/** A read as the desktop reports it. */
+export type LifecycleReadInput = LifecycleReadTarget & LifecycleReadClaim;
+
+/** A read the manager applies, its instant resolved by the sink. */
+export interface LifecycleRead extends LifecycleReadTarget {
+	origin: LifecycleReadOrigin;
 	/**
-	 * The binding's `lastEventAt` the renderer marked seen THROUGH — the host
-	 * clock instant of the outcome event that raised the alert. It is what makes
-	 * the `g` id recomputable without any durable state (see `lifecycleAlertId`).
+	 * Host clock. For `user`, the read's cutoff. For a repair, the finish to
+	 * retract: the outcome instant the `g` id is hashed from, which is what
+	 * makes the id recomputable without any durable state (see
+	 * `lifecycleAlertId`).
 	 */
 	seenThroughAt: number;
 }
@@ -228,10 +250,20 @@ export interface LifecycleAlertManager {
 	observeStatus(hostTerminalId: string, eventType: string): void;
 
 	/**
-	 * (ALERT-CONTEXT-NAMES) The user read the chat on the desktop: take the
-	 * ready-for-review alert back off their phone and watch.
+	 * (ALERT-CONTEXT-NAMES) The user read the chat on the desktop, or the
+	 * renderer retracts without a read: take the alerts it covers back off their
+	 * phone and watch. Only a `user` read also raises the durable read mark.
 	 */
-	markLifecycleSeen(input: LifecycleSeenInput): void;
+	markLifecycleRead(input: LifecycleRead): void;
+
+	/**
+	 * The chat was on screen in the companion app. `lastEventAt` is the host
+	 * binding's. Never sends a blind `c`.
+	 */
+	markReadFromCompanion(input: {
+		hostTerminalId: string;
+		lastEventAt: number;
+	}): void;
 
 	/**
 	 * (ALERT-RETIRE-ON-EXIT) The terminal process is GONE — a confirmed pty
@@ -282,6 +314,145 @@ export function isLifecycleWorkspaceCuratedOff(input: {
 			workspace: input.db.findWorkspace(input.hostWorkspaceId),
 		}) !== "show"
 	);
+}
+
+/**
+ * (ALERT-CONTEXT-NAMES) The desktop's "the user read this chat" signal.
+ *
+ * Registered separately from the lifecycle sink, and it must stay that way:
+ * that sink is the HOOK stream — one validated producer, its own idempotency
+ * window — and threading a renderer-originated seen mark through it would make
+ * a user's click indistinguishable from an agent event in the one place that
+ * decides whether an alert is minted.
+ *
+ * THE RELATIONSHIP IS RE-DERIVED FROM host.db, exactly as the tab-context
+ * registry does before it accepts a snapshot. The renderer is local and
+ * authenticated, but "authenticated" is not "correct": a stale layout row or a
+ * terminal re-parented since the mark would otherwise let one workspace's read
+ * retract another workspace's notification, which is the one thing a
+ * retraction must never do. A mismatch drops the signal with an ID-ONLY log —
+ * the failure is diagnosable and no name goes near it.
+ *
+ * A DROP SAYS WHICH KIND IT IS, and the two are not interchangeable to the
+ * renderer. `accepted: true` means THE READ WAS APPLIED, never merely that a
+ * bridge was listening — a signal this bridge drops retired nothing, and
+ * calling that `true` would have the renderer forget an outstanding finish the
+ * phone is still showing, with nothing left to take that card down.
+ *
+ * A host.db read that FAILED is transient — the next report may well land — so
+ * it answers `refusal: null` and the renderer keeps offering it. A PLACEMENT
+ * MISMATCH is a judgement host.db will repeat for that exact (terminal,
+ * workspace) pair, and the renderer's focus path re-reports on every binding
+ * change: without a distinct answer it re-sent the same refused report
+ * indefinitely. `workspace-mismatch` lets it stop re-sending THAT pair while
+ * keeping the outstanding record, so the resync — which reports the workspace
+ * host.db itself owns — can still repair it.
+ *
+ * Only a `user` read looks up the binding, so the mark only ever names an
+ * instant the host itself recorded.
+ */
+export function createLifecycleReadSink(deps: {
+	db: Pick<HostDbReader, "findTerminal" | "findBinding">;
+	manager: Pick<LifecycleAlertManager, "markLifecycleRead">;
+	logger: BridgeLogger;
+}): (input: LifecycleReadInput) => LifecycleSeenAck {
+	/** `null` when host.db places the terminal in that workspace. */
+	function refusePlacement(
+		input: LifecycleReadTarget,
+	): LifecycleSeenAck | null {
+		let placed = false;
+		try {
+			const row = deps.db.findTerminal(input.hostTerminalId);
+			placed = row !== null && row.originWorkspaceId === input.hostWorkspaceId;
+		} catch (error) {
+			// Uncertain is NOT permission here, unlike the alert path's fail-open
+			// rules: the cost of dropping this is one notification staying up a
+			// little longer, while the cost of acting on it wrongly is retracting
+			// an alert about a chat the user has not read.
+			deps.logger.error(
+				"could not revalidate a lifecycle seen signal against host.db; dropping it",
+				{
+					hostTerminalId: input.hostTerminalId,
+					hostWorkspaceId: input.hostWorkspaceId,
+					error,
+				},
+			);
+			return { accepted: false, refusal: null };
+		}
+		if (!placed) {
+			deps.logger.info(
+				"dropping a lifecycle seen signal for a terminal host.db does not place in that workspace",
+				{
+					hostTerminalId: input.hostTerminalId,
+					hostWorkspaceId: input.hostWorkspaceId,
+				},
+			);
+			return { accepted: false, refusal: "workspace-mismatch" };
+		}
+		return null;
+	}
+
+	return (input) => {
+		const refused = refusePlacement(input);
+		if (refused !== null) return refused;
+		if (input.origin === "repair-seen") {
+			deps.manager.markLifecycleRead(input);
+			return { accepted: true, refusal: null };
+		}
+		let lastEventAt: number | null;
+		try {
+			lastEventAt =
+				deps.db.findBinding(input.hostTerminalId)?.lastEventAt ?? null;
+		} catch (error) {
+			deps.logger.error(
+				"could not read the agent binding for a lifecycle read; dropping it",
+				{
+					hostTerminalId: input.hostTerminalId,
+					hostWorkspaceId: input.hostWorkspaceId,
+					error,
+				},
+			);
+			return { accepted: false, refusal: null };
+		}
+		// Every refusal below answers `refusal: null`: only a placement mismatch
+		// is a permanent verdict.
+		if (lastEventAt === null) {
+			deps.logger.info(
+				"dropping a lifecycle read for a terminal with no agent binding",
+				{
+					hostTerminalId: input.hostTerminalId,
+					hostWorkspaceId: input.hostWorkspaceId,
+				},
+			);
+			return { accepted: false, refusal: null };
+		}
+		if (input.seenThroughAt !== null && input.seenThroughAt > lastEventAt) {
+			deps.logger.error(
+				"refusing a lifecycle read for an instant after the terminal's last event",
+				{
+					hostTerminalId: input.hostTerminalId,
+					hostWorkspaceId: input.hostWorkspaceId,
+					seenThroughAt: input.seenThroughAt,
+					lastEventAt,
+				},
+			);
+			return { accepted: false, refusal: null };
+		}
+		const seenThroughAt = input.seenThroughAt ?? lastEventAt;
+		if (!isReadInstant(seenThroughAt)) {
+			deps.logger.error(
+				"refusing a lifecycle read whose instant is not a 13-digit ms instant",
+				{
+					hostTerminalId: input.hostTerminalId,
+					hostWorkspaceId: input.hostWorkspaceId,
+					seenThroughAt,
+				},
+			);
+			return { accepted: false, refusal: null };
+		}
+		deps.manager.markLifecycleRead({ ...input, seenThroughAt });
+		return { accepted: true, refusal: null };
+	};
 }
 
 /**
@@ -514,6 +685,11 @@ export interface LifecycleAlertManagerDeps {
 				lastEventType: string;
 		  }>)
 		| null;
+	/**
+	 * The durable read marks. Asked before every `g` delivery attempt and never
+	 * for an `e`; a throw holds the alert for retry.
+	 */
+	reads: LifecycleReads;
 	/** Required so the composition root declares the ready-settle policy. */
 	readySettleMs: number;
 	logger: BridgeLogger;
@@ -529,7 +705,7 @@ export interface LifecycleAlertManagerDeps {
  * the moment retraction arrived: the renderer knows a terminal was read
  * "through" its binding's `lastEventAt`, which is the OUTCOME event's stamp, and
  * nothing outside this process has ever seen the cycle's start. Hashing the
- * outcome instant makes the id something `markLifecycleSeen` can recompute from
+ * outcome instant makes the id something `retractRead` can recompute from
  * a signal that survives a host-service restart — with no durable alert state
  * and no schema change.
  *
@@ -586,7 +762,7 @@ export function createLifecycleAlertManager(
 	 * (ALERT-CONTEXT-NAMES) When this manager began holding alert state.
 	 *
 	 * It is the evidence that turns "I have no row for this id" into "no such
-	 * alert ever existed" — see `markLifecycleSeen`. A manager is constructed
+	 * alert ever existed" — see `retractRead`. A manager is constructed
 	 * once per bridge start, so this is effectively the bridge's own start
 	 * instant.
 	 */
@@ -747,7 +923,7 @@ export function createLifecycleAlertManager(
 	 * capacity bound, or `null` if that has never happened.
 	 *
 	 * It is the second half of the proof-of-absence test in
-	 * `markLifecycleSeen`. "Started before the read" only implies "every alert I
+	 * `retractRead`. "Started before the read" only implies "every alert I
 	 * minted is still here" while nothing has been evicted out from under that
 	 * claim, and an evicted `sending` row can still be ACCEPTED by FCM
 	 * afterwards — so the alert reaches the phone with no record of it anywhere.
@@ -782,7 +958,7 @@ export function createLifecycleAlertManager(
 			const unexpired = evicted.expiresAtMs > now();
 			if (unexpired) {
 				// (ALERT-CONTEXT-NAMES) It also destroys the proof-of-absence
-				// argument in `markLifecycleSeen`: "no row for this terminal" only
+				// argument in `retractRead`: "no row for this terminal" only
 				// means "no alert existed" while nothing unexpired has been thrown
 				// away. One eviction and that stops being true process-wide, so the
 				// silent-return is disabled from here on rather than tracked per
@@ -1054,6 +1230,10 @@ export function createLifecycleAlertManager(
 				// the handle a ready notification is keyed by.
 				terminalHandle: deps.terminalHandle(claimed.hostTerminalId),
 				outcomeAtMs: claimed.outcomeAtMs,
+				resolveReadThroughAtMs:
+					claimed.kind === "g"
+						? () => deps.reads.readThroughAt(claimed.hostTerminalId)
+						: null,
 				// (ALERT-CONTEXT-NAMES) Resolved INSIDE the send, so every retry gets a
 				// fresh answer and a rename between attempts is reflected. The result
 				// is deliberately not written back to `claimed`.
@@ -1291,7 +1471,7 @@ export function createLifecycleAlertManager(
 	 * the phone nagging about something already dealt with. An `e` the read
 	 * covers is now retired like any other row.
 	 *
-	 * WHY THE RECOMPUTED ID IS NOT ENOUGH ON ITS OWN. `markLifecycleSeen` derives
+	 * WHY THE RECOMPUTED ID IS NOT ENOUGH ON ITS OWN. `retractRead` derives
 	 * the `g` id by hashing the instant the renderer says it read the chat
 	 * "through", and the renderer can only report an instant it can see. Those
 	 * two instants are the same in the common case and NOT the same in an
@@ -1339,6 +1519,113 @@ export function createLifecycleAlertManager(
 			covered.push(alert);
 		}
 		return covered.sort((a, b) => b.outcomeAtMs - a.outcomeAtMs);
+	}
+
+	/**
+	 * A genuine read through `cutoff`: raise the durable mark (the store throws
+	 * on a bad terminal id or instant), then retire what the read covers, the
+	 * inherited card included. No blind `c`: the cutoff need not be any alert's
+	 * instant, and a `c` for an id no phone holds still takes a slot in its
+	 * dedupe window.
+	 */
+	function readThrough(hostTerminalId: string, cutoff: number): void {
+		deps.reads.advance(hostTerminalId, cutoff);
+		for (const alert of findReadAlerts(hostTerminalId, cutoff)) {
+			retireAlert(alert, "seen");
+		}
+		const inherited = inheritedReadyByTerminal.get(hostTerminalId);
+		if (inherited !== undefined && inherited.outcomeAtMs <= cutoff) {
+			retractInheritedReady(hostTerminalId, "seen");
+		}
+	}
+
+	/**
+	 * (ALERT-CONTEXT-NAMES) Retract what a read through `seenThroughAt` names:
+	 * the live map first, the blind restart fallback only when absence cannot be
+	 * proven. Never touches the read mark.
+	 */
+	function retractRead(read: LifecycleRead): void {
+		const { seenThroughAt } = read;
+		// (ALERT-RETIRE-ON-EXIT) THE LIVE MAP COVERS BOTH KINDS. A read retires
+		// the `e` rows it covers as well as the `g` ones — USER DECISION,
+		// 2026-08-20, overriding the original design. The old rule kept an
+		// agent-died card on the wrist after the user had opened the very chat
+		// that tells them the agent died, which reads as a nag rather than a
+		// warning.
+		//
+		// THE BLIND FALLBACK BELOW STAYS READY-ONLY. It hashes an id from an
+		// instant nobody has confirmed raised an alert, so an `e` hash would
+		// DOUBLE the blind broadcasts on a path whose whole job is to be rare —
+		// and every bogus `c` the phone receives evicts a real claim from its
+		// 64-slot window (see the note in the proof branch below).
+		//
+		// THE LIVE MAP IS ASKED FIRST — see `findReadAlerts` for why the
+		// recomputed id alone would name a notification nobody holds whenever
+		// the renderer's "seen through" instant belongs to an event that raised
+		// no alert. The hash is the RESTART fallback, and only that.
+		const covered = findReadAlerts(read.hostTerminalId, seenThroughAt);
+		if (
+			covered.length === 0 &&
+			canProveAbsence(read.hostTerminalId, seenThroughAt)
+		) {
+			// NOTHING EVER EXISTED, AND THAT IS PROVABLE — so send nothing.
+			//
+			// This process has been holding alert state since BEFORE the instant
+			// the user read through. Every alert it minted since then is still in
+			// the map: `sent` and `retracted` rows are retained until their TTL
+			// precisely so a cycle cannot re-mint, and `findReadAlerts`
+			// accepts any state. An empty answer therefore is not ignorance, it
+			// is proof — and a `c` broadcast on proof of absence is pure harm.
+			//
+			// "Empty" here means "nothing this read
+			// COVERS". A generation minted after `seenThroughAt` is not evidence
+			// that the read's own generation existed, so it neither suppresses
+			// this branch nor gets retracted by it.
+			//
+			// WHY THAT MATTERS SO MUCH HERE. The renderer's repair path re-offers
+			// every already-read terminal on a reconnect, and most read-green
+			// terminals never raised a phone alert at all (the user was at the
+			// desk, so presence gating held it). Broadcasting for each one would
+			// put a bogus retraction on every paired device — and each one the
+			// phone receives inserts into its 64-slot `SeenLifecycleEvents`
+			// window, so a handful of reconnects would evict every REAL claim and
+			// tombstone in it, re-enabling the double-buzz and already-read
+			// re-posts that window exists to prevent.
+			//
+			// A host started AFTER `seenThroughAt` has no such proof: the alert
+			// may well have been minted by the process before it, and the blind
+			// broadcast below is the only thing that can take it off the phone.
+			//
+			// Deliberately NOT logged: this is the ordinary path on every warm
+			// reconnect, and a line per read terminal per epoch is noise that
+			// would bury the events worth reading.
+			//
+			// HONEST LIMIT — none, now. Two things used to be able to make this
+			// branch lie and both are part of `canProveAbsence`: `evictOldest`
+			// dropping an unexpired row (latched by `hasEvictedUnexpired`), and
+			// the wall-clock start being compared against a per-terminal
+			// MONOTONIC generation, which a restart inside a clock backstep
+			// turns into a false "I was here first" (bounded by the proof
+			// epoch).
+			return;
+		}
+		if (covered.length > 0) {
+			// EVERY covered generation is retired, newest first, not just the
+			// newest one: an older `sent` card can still be on the handset while
+			// the newest generation has only ever been `held`, and retiring the
+			// newest alone would delete the held row silently and leave the
+			// visible notification up forever. Each retirement is per-alert and
+			// idempotent: `held` is deleted in silence, `sent` fires its one `c`,
+			// `retracted` is inert. Rows past the boundary are not in this list.
+			for (const alert of covered) retireAlert(alert, "seen");
+			return;
+		}
+		retractReadyById({
+			hostTerminalId: read.hostTerminalId,
+			hostWorkspaceId: read.hostWorkspaceId,
+			outcomeAtMs: seenThroughAt,
+			reason: "seen",
+		});
 	}
 
 	function mint(
@@ -1489,7 +1776,7 @@ export function createLifecycleAlertManager(
 			if (!armedByWork && !armedByBlockedFailure) return;
 			mint(input, input.outcome === "failed" ? "e" : "g");
 		},
-		markLifecycleSeen(input) {
+		markLifecycleRead(input) {
 			if (stopped) return;
 			if (
 				typeof input.hostTerminalId !== "string" ||
@@ -1500,7 +1787,7 @@ export function createLifecycleAlertManager(
 				input.seenThroughAt <= 0
 			) {
 				deps.logger.error(
-					"ignoring an unusable lifecycle seen signal; a notification may outlive the chat the user just read",
+					"ignoring an unusable lifecycle read; a notification may outlive the chat the user just read",
 					{
 						hostTerminalId: input.hostTerminalId,
 						hostWorkspaceId: input.hostWorkspaceId,
@@ -1510,86 +1797,20 @@ export function createLifecycleAlertManager(
 			}
 			prune(now());
 
-			// (ALERT-RETIRE-ON-EXIT) THE LIVE MAP COVERS BOTH KINDS. A read retires
-			// the `e` rows it covers as well as the `g` ones — USER DECISION,
-			// 2026-08-20, overriding the original design. The old rule kept an
-			// agent-died card on the wrist after the user had opened the very chat
-			// that tells them the agent died, which reads as a nag rather than a
-			// warning.
-			//
-			// THE BLIND FALLBACK BELOW STAYS READY-ONLY. It hashes an id from an
-			// instant nobody has confirmed raised an alert, so an `e` hash would
-			// DOUBLE the blind broadcasts on a path whose whole job is to be rare —
-			// and every bogus `c` the phone receives evicts a real claim from its
-			// 64-slot window (see the note in the proof branch below).
-			//
-			// THE LIVE MAP IS ASKED FIRST — see `findReadAlerts` for why the
-			// recomputed id alone would name a notification nobody holds whenever
-			// the renderer's "seen through" instant belongs to an event that raised
-			// no alert. The hash is the RESTART fallback, and only that.
-			const read = findReadAlerts(input.hostTerminalId, input.seenThroughAt);
-			if (
-				read.length === 0 &&
-				canProveAbsence(input.hostTerminalId, input.seenThroughAt)
-			) {
-				// NOTHING EVER EXISTED, AND THAT IS PROVABLE — so send nothing.
-				//
-				// This process has been holding alert state since BEFORE the instant
-				// the user read through. Every alert it minted since then is still in
-				// the map: `sent` and `retracted` rows are retained until their TTL
-				// precisely so a cycle cannot re-mint, and `findReadAlerts`
-				// accepts any state. An empty answer therefore is not ignorance, it
-				// is proof — and a `c` broadcast on proof of absence is pure harm.
-				//
-				// "Empty" here means "nothing this read
-				// COVERS". A generation minted after `seenThroughAt` is not evidence
-				// that the read's own generation existed, so it neither suppresses
-				// this branch nor gets retracted by it.
-				//
-				// WHY THAT MATTERS SO MUCH HERE. The renderer's repair path re-offers
-				// every already-read terminal on a reconnect, and most read-green
-				// terminals never raised a phone alert at all (the user was at the
-				// desk, so presence gating held it). Broadcasting for each one would
-				// put a bogus retraction on every paired device — and each one the
-				// phone receives inserts into its 64-slot `SeenLifecycleEvents`
-				// window, so a handful of reconnects would evict every REAL claim and
-				// tombstone in it, re-enabling the double-buzz and already-read
-				// re-posts that window exists to prevent.
-				//
-				// A host started AFTER `seenThroughAt` has no such proof: the alert
-				// may well have been minted by the process before it, and the blind
-				// broadcast below is the only thing that can take it off the phone.
-				//
-				// Deliberately NOT logged: this is the ordinary path on every warm
-				// reconnect, and a line per read terminal per epoch is noise that
-				// would bury the events worth reading.
-				//
-				// HONEST LIMIT — none, now. Two things used to be able to make this
-				// branch lie and both are part of `canProveAbsence`: `evictOldest`
-				// dropping an unexpired row (latched by `hasEvictedUnexpired`), and
-				// the wall-clock start being compared against a per-terminal
-				// MONOTONIC generation, which a restart inside a clock backstep
-				// turns into a false "I was here first" (bounded by the proof
-				// epoch).
+			// (LIFECYCLE-READ-THROUGH) Only a genuine read raises the durable mark:
+			// `user` reads through its cutoff. `repair-seen` (every resync repair,
+			// Clear agent status, the released desktop) only retracts, so a desktop
+			// relaunch's cold-start seeds can never count as a read.
+			if (input.origin === "user") {
+				readThrough(input.hostTerminalId, input.seenThroughAt);
 				return;
 			}
-			if (read.length > 0) {
-				// EVERY covered generation is retired, newest first, not just the
-				// newest one: an older `sent` card can still be on the handset while
-				// the newest generation has only ever been `held`, and retiring the
-				// newest alone would delete the held row silently and leave the
-				// visible notification up forever. Each retirement is per-alert and
-				// idempotent: `held` is deleted in silence, `sent` fires its one `c`,
-				// `retracted` is inert. Rows past the boundary are not in this list.
-				for (const alert of read) retireAlert(alert, "seen");
-				return;
-			}
-			retractReadyById({
-				hostTerminalId: input.hostTerminalId,
-				hostWorkspaceId: input.hostWorkspaceId,
-				outcomeAtMs: input.seenThroughAt,
-				reason: "seen",
-			});
+			retractRead(input);
+		},
+		markReadFromCompanion({ hostTerminalId, lastEventAt }) {
+			if (stopped) return;
+			prune(now());
+			readThrough(hostTerminalId, lastEventAt);
 		},
 		/**
 		 * (ALERT-RETIRE-ON-EXIT) The pty died. Same retirement `session-end`

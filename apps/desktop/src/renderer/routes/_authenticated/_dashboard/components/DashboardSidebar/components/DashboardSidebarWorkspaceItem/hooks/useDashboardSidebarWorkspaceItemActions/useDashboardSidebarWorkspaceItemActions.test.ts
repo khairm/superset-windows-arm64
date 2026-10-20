@@ -20,14 +20,28 @@ import type { DismissedWorkspaceTerminal } from "./useDashboardSidebarWorkspaceI
 interface SeenCall {
 	workspaceId: string;
 	terminalId: string;
-	seenThroughAt: number;
+	origin: string;
+	seenThroughAt: number | null;
 }
 
+/** Host-clock instants are 13-digit ms values; tests name them as offsets. */
+const T0 = 1_700_000_000_000;
+const at = (ms: number): number => T0 + ms;
+
 let seenCalls: SeenCall[] = [];
+let acceptSeen = true;
 let dismissCalls: { workspaceId: string; terminalId?: string }[] = [];
 let dismissTerminals: DismissedWorkspaceTerminal[] = [];
 let dismissRejects = false;
 let errorToasts: string[] = [];
+/** What the host's status snapshot answers a resync with. */
+let snapshotRows: Array<{
+	terminalId: string;
+	originWorkspaceId: string;
+	lastEventType: string;
+	lastEventAt: number;
+	pendingPermission: boolean | null;
+}> = [];
 
 /**
  * `mock.module` is PROCESS-GLOBAL and there is no unmock, so these are
@@ -66,16 +80,28 @@ function installMocks(): void {
 					}) => {
 						dismissCalls.push(input);
 						if (dismissRejects) throw new Error("host gone");
-						return { dismissStartedAtMs: 9_000, terminals: dismissTerminals };
+						return {
+							dismissStartedAtMs: at(9_000),
+							terminals: dismissTerminals,
+						};
 					},
 				},
 			},
 			companion: {
-				markLifecycleSeen: {
+				reportLifecycleRead: {
 					mutate: async (input: SeenCall) => {
 						seenCalls.push(input);
-						return { accepted: true };
+						return { accepted: acceptSeen, refusal: null };
 					},
+				},
+			},
+			notifications: {
+				agentStatusSnapshot: {
+					query: async () => ({
+						rows: snapshotRows,
+						knownTerminalIds: snapshotRows.map((row) => row.terminalId),
+						hostNow: at(10_000),
+					}),
 				},
 			},
 		}),
@@ -90,11 +116,23 @@ const { useV2NotificationStore } = await import(
 const { resetV2NotificationStoreForTest } = await import(
 	"renderer/stores/v2-notifications/resetForTest"
 );
-const { registerWorkspaceHost } = await import(
+const {
+	markTerminalSeenAndRetract,
+	pendingUserReads,
+	registerWorkspaceHost,
+	resetUserReadsForTest,
+} = await import(
 	"renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync"
 );
 const { runClearWorkspaceStatuses } = await import(
 	"./useDashboardSidebarWorkspaceItemActions"
+);
+const {
+	__resetColdStartForTest,
+	__resetRepairCooldownsForTest,
+	resyncAgentStatusFromHost,
+} = await import(
+	"renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus"
 );
 
 const HOST = "http://host-a";
@@ -126,7 +164,7 @@ function terminal(
 ): DismissedWorkspaceTerminal {
 	return {
 		terminalId: "terminal-1",
-		lastEventAt: 5_000,
+		lastEventAt: at(5_000),
 		markersRemoved: 1,
 		pendingAfter: false,
 		questionDismissed: true,
@@ -141,30 +179,33 @@ function seedEveryDot(): void {
 		{ type: "terminal", id: "terminal-1" },
 		WORKSPACE,
 		{ set: ["permission", "working"], clear: [] },
-		1_000,
+		at(1_000),
 	);
 	store.applySourceAxes(
 		{ type: "terminal", id: "terminal-2" },
 		WORKSPACE,
 		{ set: ["review"], clear: [] },
-		2_000,
+		at(2_000),
 	);
 	store.setManualUnread(WORKSPACE);
-	store.setTerminalShellRunning("terminal-3", WORKSPACE, 1_000);
-	store.setTerminalBackgroundRunning("terminal-4", WORKSPACE, 1_000);
+	store.setTerminalShellRunning("terminal-3", WORKSPACE, at(1_000));
+	store.setTerminalBackgroundRunning("terminal-4", WORKSPACE, at(1_000));
 }
 
 describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 	beforeEach(() => {
 		seenCalls = [];
+		acceptSeen = true;
 		dismissCalls = [];
 		dismissTerminals = [];
 		dismissRejects = false;
 		errorToasts = [];
+		snapshotRows = [];
 		attentionClears = 0;
 		invalidations = 0;
 		installMocks();
 		resetV2NotificationStoreForTest();
+		resetUserReadsForTest();
 		registerWorkspaceHost(WORKSPACE, HOST);
 	});
 
@@ -191,7 +232,7 @@ describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 		expect(state.sources["terminal:terminal-2"]).toBeUndefined();
 		expect(state.manualUnread[WORKSPACE]).toBeUndefined();
 		expect(state.sources["terminal:terminal-1"]?.status).toBe("permission");
-		expect(state.sources["terminal:terminal-1"]?.axes.working).toBe(1_000);
+		expect(state.sources["terminal:terminal-1"]?.axes.working).toBe(at(1_000));
 		// No store purge at all: the blue maps are untouched too.
 		expect(state.shellRunningTerminals["terminal-3"]).toBeDefined();
 		expect(state.backgroundRunningTerminals["terminal-4"]).toBeDefined();
@@ -221,13 +262,16 @@ describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 		seedEveryDot();
 		// terminal-2's finish is still showing on the phone.
 		useV2NotificationStore.setState((state) => ({
-			outstandingReadyAt: { ...state.outstandingReadyAt, "terminal-2": 2_000 },
+			outstandingReadyAt: {
+				...state.outstandingReadyAt,
+				"terminal-2": at(2_000),
+			},
 		}));
 		dismissTerminals = [
-			terminal({ terminalId: "terminal-1", lastEventAt: 5_000 }),
+			terminal({ terminalId: "terminal-1", lastEventAt: at(5_000) }),
 			terminal({
 				terminalId: "terminal-2",
-				lastEventAt: 6_000,
+				lastEventAt: at(6_000),
 				markersRemoved: 0,
 				questionDismissed: false,
 			}),
@@ -248,15 +292,16 @@ describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 		expect(state.backgroundRunningTerminals["terminal-4"]).toBeUndefined();
 		// Durable across the next resync: the watermark is the HOST's instant, not
 		// this machine's clock.
-		expect(state.terminalSeenAt["terminal-1"]).toBe(5_000);
-		expect(state.terminalSeenAt["terminal-2"]).toBe(6_000);
-		// The outstanding record survived the purge, so the read could still be
-		// reported — and the host's ack retired it.
+		expect(state.terminalSeenAt["terminal-1"]).toBe(at(5_000));
+		expect(state.terminalSeenAt["terminal-2"]).toBe(at(6_000));
+		// The outstanding record survived the purge, so the card could still be
+		// retracted — and the host's ack retired it.
 		expect(seenCalls).toEqual([
 			{
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-2",
-				seenThroughAt: 2_000,
+				origin: "repair-seen",
+				seenThroughAt: at(2_000),
 			},
 		]);
 		expect(state.outstandingReadyAt["terminal-2"]).toBeUndefined();
@@ -283,15 +328,18 @@ describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 				{ type: "terminal", id: "terminal-2" },
 				WORKSPACE,
 				{ set: ["permission"], clear: [] },
-				6_000,
+				at(6_000),
 			);
 		useV2NotificationStore.setState((state) => ({
-			outstandingReadyAt: { ...state.outstandingReadyAt, "terminal-2": 2_000 },
+			outstandingReadyAt: {
+				...state.outstandingReadyAt,
+				"terminal-2": at(2_000),
+			},
 		}));
 		dismissTerminals = [
 			terminal({
 				terminalId: "terminal-2",
-				lastEventAt: 6_000,
+				lastEventAt: at(6_000),
 				pendingAfter: true,
 			}),
 		];
@@ -307,7 +355,7 @@ describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 		const state = useV2NotificationStore.getState();
 		const entry = state.sources["terminal:terminal-2"];
 		// The red survives the whole flow, at the HOST's instant.
-		expect(entry?.axes.permission).toBe(6_000);
+		expect(entry?.axes.permission).toBe(at(6_000));
 		expect(entry?.status).toBe("permission");
 		// ONLY the red comes back. The review this same terminal was carrying is
 		// gone, as is every other terminal's dot — the dismiss still did its job.
@@ -317,7 +365,7 @@ describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 		expect(state.backgroundRunningTerminals["terminal-4"]).toBeUndefined();
 		expect(state.terminalSeenAt["terminal-2"]).toBeUndefined();
 		expect(seenCalls).toHaveLength(0);
-		expect(state.outstandingReadyAt["terminal-2"]).toBe(2_000);
+		expect(state.outstandingReadyAt["terminal-2"]).toBe(at(2_000));
 		// The query still has to be refetched: the other bindings did move.
 		expect(invalidations).toBe(1);
 	});
@@ -381,5 +429,123 @@ describe("(MANUAL-DISMISS) runClearWorkspaceStatuses", () => {
 		expect(state.terminalSeenAt["terminal-5"]).toBeUndefined();
 		expect(seenCalls).toHaveLength(0);
 		expect(invalidations).toBe(1);
+	});
+
+	it("is not a read: nothing it reports can move the host's read mark", async () => {
+		useV2NotificationStore
+			.getState()
+			.applySourceAxes(
+				{ type: "terminal", id: "terminal-2" },
+				WORKSPACE,
+				{ set: ["review"], clear: [] },
+				at(2_000),
+			);
+		dismissTerminals = [
+			terminal({ terminalId: "terminal-1", lastEventAt: at(5_000) }),
+			terminal({ terminalId: "terminal-2", lastEventAt: at(6_000) }),
+		];
+
+		await runClearWorkspaceStatuses({
+			workspaceId: WORKSPACE,
+			workspaceHostUrl: HOST,
+			// What the hook passes: the same per-terminal helper the dismissal uses.
+			clearWorkspaceAttention: () => {
+				for (const terminalId of ["terminal-1", "terminal-2"]) {
+					markTerminalSeenAndRetract({
+						workspaceId: WORKSPACE,
+						terminalId,
+						seenAt: at(4_000),
+					});
+				}
+			},
+			invalidateBindings,
+		});
+		await settle();
+
+		expect(seenCalls.length).toBeGreaterThan(0);
+		expect(new Set(seenCalls.map((call) => call.origin))).toEqual(
+			new Set(["repair-seen"]),
+		);
+		expect(pendingUserReads(HOST)).toEqual([]);
+	});
+
+	/**
+	 * The way a Clear used to become a read: its report fails, so the seen mark
+	 * it wrote and the outstanding record it could not retire both survive; the
+	 * agent starts again; and the resync's repair of that record went out as a
+	 * read. Every resync repair is a retraction only.
+	 */
+	it("never turns a failed Clear into a read at the next resync", async () => {
+		useV2NotificationStore.setState((state) => ({
+			outstandingReadyAt: {
+				...state.outstandingReadyAt,
+				"terminal-2": at(2_000),
+			},
+		}));
+		dismissTerminals = [
+			terminal({ terminalId: "terminal-2", lastEventAt: at(6_000) }),
+		];
+		acceptSeen = false;
+
+		await runClearWorkspaceStatuses({
+			workspaceId: WORKSPACE,
+			workspaceHostUrl: HOST,
+			clearWorkspaceAttention,
+			invalidateBindings,
+		});
+		await settle();
+
+		expect(seenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: "terminal-2",
+				origin: "repair-seen",
+				seenThroughAt: at(2_000),
+			},
+		]);
+		const afterClear = useV2NotificationStore.getState();
+		expect(afterClear.terminalSeenAt["terminal-2"]).toBe(at(6_000));
+		expect(afterClear.outstandingReadyAt["terminal-2"]).toBe(at(2_000));
+
+		// The agent starts again, and the next resync finds the record standing.
+		snapshotRows = [
+			{
+				terminalId: "terminal-2",
+				originWorkspaceId: WORKSPACE,
+				lastEventType: "Start",
+				lastEventAt: at(7_000),
+				pendingPermission: false,
+			},
+		];
+		acceptSeen = true;
+		__resetColdStartForTest();
+		__resetRepairCooldownsForTest();
+		await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: new Map([
+				[
+					WORKSPACE,
+					{
+						workspaceId: WORKSPACE,
+						workspaceName: "W",
+						paneLayout: null,
+						rightPaneLayout: null,
+					},
+				],
+			]),
+		});
+		await settle();
+
+		expect(seenCalls).toHaveLength(2);
+		expect(seenCalls[1]).toEqual({
+			workspaceId: WORKSPACE,
+			terminalId: "terminal-2",
+			origin: "repair-seen",
+			seenThroughAt: at(2_000),
+		});
+		expect(
+			useV2NotificationStore.getState().outstandingReadyAt["terminal-2"],
+		).toBeUndefined();
+		expect(pendingUserReads(HOST)).toEqual([]);
 	});
 });

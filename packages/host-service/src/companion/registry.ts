@@ -24,7 +24,7 @@
 
 import { isCompanionBridgeEnabled, LOG_PREFIX } from "./config";
 import type { CompanionBridge } from "./index";
-import type { LifecycleSeenInput } from "./lifecycle-alerts";
+import type { LifecycleReadInput } from "./lifecycle-alerts";
 import type { PresenceBeaconInput, PresenceStore } from "./presence";
 import type {
 	AlertContextSnapshotInput,
@@ -255,8 +255,10 @@ export function publishCompanionMirrorChanged(
 function createSinkSlot<Input, Result>(options: {
 	/** Names the slot in the "already registered" error. */
 	what: string;
-	/** What a call answers when nothing is registered, or the sink threw. */
+	/** What a call answers when nothing is registered. */
 	whenAbsent: Result;
+	/** What a call answers when the sink threw. */
+	whenThrew: Result;
 	/** Logged when the sink throws. Says what the user loses, not a stack. */
 	onThrowMessage: string;
 }) {
@@ -274,6 +276,9 @@ function createSinkSlot<Input, Result>(options: {
 		clear(previous: (input: Input) => Result): void {
 			if (sink === previous) sink = null;
 		},
+		isRegistered(): boolean {
+			return sink !== null;
+		},
 		call(input: Input): Result {
 			const current = sink;
 			if (current === null) return options.whenAbsent;
@@ -281,7 +286,7 @@ function createSinkSlot<Input, Result>(options: {
 				return current(input);
 			} catch (error) {
 				console.error(`${LOG_PREFIX} ${options.onThrowMessage}`, error);
-				return options.whenAbsent;
+				return options.whenThrew;
 			}
 		},
 	};
@@ -293,6 +298,7 @@ const alertContextSlot = createSinkSlot<
 >({
 	what: "alert-context",
 	whenAbsent: null,
+	whenThrew: null,
 	onThrowMessage:
 		"the alert-context sink threw; companion alerts will name no tab until the next sync",
 });
@@ -313,15 +319,18 @@ export function recordCompanionAlertContexts(
 /**
  * (ALERT-RETIRE-ON-EXIT) What one "the user read this chat" report was worth.
  *
- * TWO FIELDS BECAUSE THERE ARE THREE ANSWERS, and a boolean could only carry
+ * TWO FIELDS BECAUSE THERE ARE FOUR ANSWERS, and a boolean could only carry
  * two of them. `accepted` says the read was APPLIED. `refusal` says the host
  * judged the report WRONG rather than merely being unable to act on it right
  * now, which is what tells the renderer whether re-sending the same report can
  * ever produce a different answer:
  *
  *  - `{ accepted: true,  refusal: null }` — applied; forget the record.
- *  - `{ accepted: false, refusal: null }` — no bridge, a bridge that threw, or
- *    a host.db read that failed. TRANSIENT: offer it again.
+ *  - `{ accepted: false, refusal: null }` — a bridge that threw, an enabled
+ *    bridge that is not up yet, or a host.db read that failed. TRANSIENT:
+ *    offer it again.
+ *  - `{ accepted: false, refusal: "bridge-off" }` — configuration disables the
+ *    bridge on this host. Nothing here can save a read.
  *  - `{ accepted: false, refusal: "workspace-mismatch" }` — host.db does not
  *    place that terminal in that workspace, and will not next time either.
  *    Re-sending the same pair is pure noise; the record still stands so the
@@ -329,27 +338,33 @@ export function recordCompanionAlertContexts(
  */
 export interface LifecycleSeenAck {
 	accepted: boolean;
-	refusal: "workspace-mismatch" | null;
+	refusal: "workspace-mismatch" | "bridge-off" | null;
 }
 
-const lifecycleSeenSlot = createSinkSlot<LifecycleSeenInput, LifecycleSeenAck>({
-	what: "lifecycle-seen",
+const lifecycleReadSlot = createSinkSlot<LifecycleReadInput, LifecycleSeenAck>({
+	what: "lifecycle-read",
 	whenAbsent: { accepted: false, refusal: null },
+	whenThrew: { accepted: false, refusal: null },
 	onThrowMessage:
-		"the lifecycle-seen sink threw; a phone notification may outlive the chat the user just read",
+		"the lifecycle-read sink threw; a phone notification may outlive the chat the user just read, and a read may be lost",
 });
 
-export const setCompanionLifecycleSeenSink = lifecycleSeenSlot.set;
-export const clearCompanionLifecycleSeenSink = lifecycleSeenSlot.clear;
+export const setCompanionLifecycleReadSink = lifecycleReadSlot.set;
+export const clearCompanionLifecycleReadSink = lifecycleReadSlot.clear;
 
 /**
- * The user read a chat on the desktop. See `LifecycleSeenAck` for the three
- * answers and which of them the renderer may retry.
+ * The user read a chat on the desktop, or the renderer retracts without a read.
+ * See `LifecycleSeenAck` for the four answers and which of them the renderer
+ * may retry.
  */
-export function recordCompanionLifecycleSeen(
-	input: LifecycleSeenInput,
+export function recordCompanionLifecycleRead(
+	input: LifecycleReadInput,
+	env: NodeJS.ProcessEnv = process.env,
 ): LifecycleSeenAck {
-	return lifecycleSeenSlot.call(input);
+	if (!lifecycleReadSlot.isRegistered() && !isCompanionBridgeEnabled(env)) {
+		return { accepted: false, refusal: "bridge-off" };
+	}
+	return lifecycleReadSlot.call(input);
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +384,7 @@ export function recordCompanionLifecycleSeen(
 const terminalGoneSlot = createSinkSlot<{ hostTerminalId: string }, boolean>({
 	what: "terminal-gone",
 	whenAbsent: false,
+	whenThrew: false,
 	onThrowMessage:
 		"the terminal-gone sink threw; a phone notification may outlive the terminal it points at",
 });
@@ -397,6 +413,7 @@ export function recordCompanionTerminalGone(input: {
 const relaunchBoundarySlot = createSinkSlot<{ boundaryMs: number }, boolean>({
 	what: "relaunch-boundary",
 	whenAbsent: false,
+	whenThrew: false,
 	onThrowMessage:
 		"the relaunch-boundary sink threw; ready notifications from before this launch may stay on the phone",
 });

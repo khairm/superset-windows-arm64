@@ -116,9 +116,10 @@ import {
 	createFreshCurationRead,
 	createLifecycleAlertManager,
 	createLifecycleCurationProbe,
-	type LifecycleSeenInput,
+	createLifecycleReadSink,
 	READY_SETTLE_MS,
 } from "./lifecycle-alerts";
+import { createLifecycleReads } from "./lifecycle-reads";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
 import { errorClassName } from "./log-privacy";
@@ -175,15 +176,14 @@ import {
 	type CompanionMirrorChange,
 	clearCompanionAlertContextSink,
 	clearCompanionBridge,
-	clearCompanionLifecycleSeenSink,
+	clearCompanionLifecycleReadSink,
 	clearCompanionMirrorChangeSink,
 	clearCompanionPresenceStore,
 	clearCompanionRelaunchBoundarySink,
 	clearCompanionTerminalGoneSink,
-	type LifecycleSeenAck,
 	setCompanionAlertContextSink,
 	setCompanionBridge,
-	setCompanionLifecycleSeenSink,
+	setCompanionLifecycleReadSink,
 	setCompanionMirrorChangeSink,
 	setCompanionPresenceStore,
 	setCompanionRelaunchBoundarySink,
@@ -894,6 +894,7 @@ export function createCompanionBridge(
 					lastEventAtMs: binding.lastEventAt,
 					lastEventType: binding.lastEventType,
 				})),
+			reads: createLifecycleReads({ db: companionDb }),
 			// (LIFECYCLE-CURATION-CACHE) The probe owns the cache, the throw-fires-
 			// anyway rule and the log-on-transition discipline that being asked once
 			// per two-second sweep for six hours requires.
@@ -920,76 +921,15 @@ export function createCompanionBridge(
 				lifecycleAlerts.stop();
 			},
 		});
-		/**
-		 * (ALERT-CONTEXT-NAMES) The desktop's "the user read this chat" signal.
-		 *
-		 * Registered separately from the lifecycle sink above, and it must stay
-		 * that way: that sink is the HOOK stream — one validated producer, its own
-		 * idempotency window — and threading a renderer-originated seen mark
-		 * through it would make a user's click indistinguishable from an agent
-		 * event in the one place that decides whether an alert is minted.
-		 *
-		 * THE RELATIONSHIP IS RE-DERIVED FROM host.db, exactly as the tab-context
-		 * registry does before it accepts a snapshot. The renderer is local and
-		 * authenticated, but "authenticated" is not "correct": a stale layout row
-		 * or a terminal re-parented since the mark would otherwise let one
-		 * workspace's read retract another workspace's notification, which is the
-		 * one thing a retraction must never do. A mismatch drops the signal with
-		 * an ID-ONLY log — the failure is diagnosable and no name goes near it.
-		 *
-		 * A DROP SAYS WHICH KIND IT IS, and the two are not interchangeable to the
-		 * renderer. `accepted: true` means THE READ WAS APPLIED, never merely that
-		 * a bridge was listening — a signal this bridge drops retired nothing, and
-		 * calling that `true` would have the renderer forget an outstanding finish
-		 * the phone is still showing, with nothing left to take that card down.
-		 *
-		 * A host.db read that FAILED is transient — the next report may
-		 * well land — so it answers `refusal: null` and the renderer keeps
-		 * offering it. A PLACEMENT MISMATCH is a judgement host.db will repeat for
-		 * that exact (terminal, workspace) pair, and the renderer's focus path
-		 * re-reports on every binding change: without a distinct answer it re-sent
-		 * the same refused report indefinitely. `workspace-mismatch` lets it stop
-		 * re-sending THAT pair while keeping the outstanding record, so the resync
-		 * — which reports the workspace host.db itself owns — can still repair it.
-		 */
-		const lifecycleSeen = (input: LifecycleSeenInput): LifecycleSeenAck => {
-			let placed = false;
-			try {
-				const row = hostDb.findTerminal(input.hostTerminalId);
-				placed =
-					row !== null && row.originWorkspaceId === input.hostWorkspaceId;
-			} catch (error) {
-				// Uncertain is NOT permission here, unlike the alert path's fail-open
-				// rules: the cost of dropping this is one notification staying up a
-				// little longer, while the cost of acting on it wrongly is retracting
-				// an alert about a chat the user has not read.
-				logger.error(
-					"could not revalidate a lifecycle seen signal against host.db; dropping it",
-					{
-						hostTerminalId: input.hostTerminalId,
-						hostWorkspaceId: input.hostWorkspaceId,
-						error,
-					},
-				);
-				return { accepted: false, refusal: null };
-			}
-			if (!placed) {
-				logger.info(
-					"dropping a lifecycle seen signal for a terminal host.db does not place in that workspace",
-					{
-						hostTerminalId: input.hostTerminalId,
-						hostWorkspaceId: input.hostWorkspaceId,
-					},
-				);
-				return { accepted: false, refusal: "workspace-mismatch" };
-			}
-			lifecycleAlerts.markLifecycleSeen(input);
-			return { accepted: true, refusal: null };
-		};
-		setCompanionLifecycleSeenSink(lifecycleSeen);
+		const lifecycleRead = createLifecycleReadSink({
+			db: hostDb,
+			manager: lifecycleAlerts,
+			logger,
+		});
+		setCompanionLifecycleReadSink(lifecycleRead);
 		unwind.push({
-			what: "lifecycle seen sink",
-			close: async () => clearCompanionLifecycleSeenSink(lifecycleSeen),
+			what: "lifecycle read sink",
+			close: async () => clearCompanionLifecycleReadSink(lifecycleRead),
 		});
 
 		/**
@@ -1154,6 +1094,8 @@ export function createCompanionBridge(
 			// (ANSWER-LEDGER) `hello` publishes the current epoch so a client's FIRST
 			// answer can be fenced; the read API never writes to the ledger.
 			ledger,
+			markReadFromCompanion: (input) =>
+				lifecycleAlerts.markReadFromCompanion(input),
 		});
 
 		const answerDeps = createAnswerDeps({

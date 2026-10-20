@@ -53,31 +53,60 @@ const CONTEXT: PushAlertContext = {
 	tabCount: 3,
 };
 
+/**
+ * FROZEN. The host now mints v4 for `g`, so the v3 ready map the phone's
+ * `alert()` fixture parses is kept as a literal.
+ */
+const V3_READY = {
+	v: "3",
+	k: "g",
+	i: EVENT_ID,
+	w: WORKSPACE_ID,
+	x: String(EXPIRY),
+	t: TERMINAL_ID,
+	gx: String(OUTCOME_AT_MS),
+	pn: PROJECT,
+	wn: WORKSPACE,
+	tn: TAB,
+	tc: "3",
+};
+
+/** Verbatim from `LifecyclePushTest.kt`'s `V4_READY`; change both or neither. */
+const READ_THROUGH_AT_MS = 1_799_998_800_000;
+
 describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
-	it("mints the alert map the phone's `alert()` fixture parses", () => {
-		expect(
-			buildLifecyclePushData({
-				alertId: EVENT_ID,
-				workspaceId: WORKSPACE_ID,
-				kind: "g",
-				terminalHandle: TERMINAL_ID,
-				outcomeAtMs: OUTCOME_AT_MS,
-				expiresAtMs: EXPIRY,
-				context: CONTEXT,
-			}),
-		).toEqual({
-			v: "3",
+	it("keeps the frozen v3 alert map valid at the FCM boundary", () => {
+		expect(() =>
+			buildEnvelope("token", V3_READY as unknown as PushData),
+		).not.toThrow();
+	});
+
+	it("mints the v4 alert map the phone's `V4_READY` fixture parses", () => {
+		const v4 = buildLifecyclePushData({
+			alertId: EVENT_ID,
+			workspaceId: WORKSPACE_ID,
+			kind: "g",
+			terminalHandle: TERMINAL_ID,
+			outcomeAtMs: OUTCOME_AT_MS,
+			readThroughAtMs: READ_THROUGH_AT_MS,
+			expiresAtMs: EXPIRY,
+			context: CONTEXT,
+		});
+		expect(v4).toEqual({
+			v: "4",
 			k: "g",
-			i: EVENT_ID,
-			w: WORKSPACE_ID,
-			x: String(EXPIRY),
-			t: TERMINAL_ID,
-			gx: String(OUTCOME_AT_MS),
-			pn: PROJECT,
-			wn: WORKSPACE,
-			tn: TAB,
+			i: "e1234567890123456789ab",
+			w: "w1234567890123456789ab",
+			x: "1800000000000",
+			gx: "1799999100000",
+			rg: "1799998800000",
+			t: "t1234567890123456789ab",
+			pn: "PX V1 apps",
+			wn: "super simplify",
+			tn: "Claude Resume",
 			tc: "3",
 		});
+		expect(Buffer.byteLength(JSON.stringify(v4), "utf8")).toBe(236);
 	});
 
 	it("mints the error alert with the same shape and a different `k`", () => {
@@ -88,6 +117,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				kind: "e",
 				terminalHandle: TERMINAL_ID,
 				outcomeAtMs: OUTCOME_AT_MS,
+				readThroughAtMs: null,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -162,6 +192,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			kind: "g",
 			terminalHandle: TERMINAL_ID,
 			outcomeAtMs: OUTCOME_AT_MS,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: null,
 		});
@@ -191,6 +222,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			kind: "g",
 			terminalHandle: TERMINAL_ID,
 			outcomeAtMs: OUTCOME_AT_MS,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: {
 				...CONTEXT,
@@ -215,6 +247,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			kind: "g",
 			terminalHandle: TERMINAL_ID,
 			outcomeAtMs: OUTCOME_AT_MS,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: {
 				...CONTEXT,
@@ -244,6 +277,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				kind: "g",
 				terminalHandle: TERMINAL_ID,
 				outcomeAtMs: OUTCOME_AT_MS,
+				readThroughAtMs: 0,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -253,6 +287,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				kind: "e",
 				terminalHandle: TERMINAL_ID,
 				outcomeAtMs: OUTCOME_AT_MS,
+				readThroughAtMs: null,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -286,6 +321,7 @@ describe("(ONE-BUZZ-UNTIL-READ) shared v3 refusal vectors", () => {
 			kind: "g",
 			terminalHandle: TERMINAL_ID,
 			outcomeAtMs: OUTCOME_AT_MS,
+			readThroughAtMs: 0,
 			expiresAtMs: EXPIRY,
 			context: CONTEXT,
 		}) as unknown as Record<string, string>;
@@ -312,6 +348,7 @@ describe("(ONE-BUZZ-UNTIL-READ) shared v3 refusal vectors", () => {
 			kind: "e",
 			terminalHandle: TERMINAL_ID,
 			outcomeAtMs: OUTCOME_AT_MS,
+			readThroughAtMs: null,
 			expiresAtMs: EXPIRY,
 			context: CONTEXT,
 		});
@@ -345,6 +382,7 @@ describe("(ONE-BUZZ-UNTIL-READ) shared v3 refusal vectors", () => {
 				kind: "g",
 				terminalHandle: "",
 				outcomeAtMs: OUTCOME_AT_MS,
+				readThroughAtMs: 0,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -356,6 +394,7 @@ describe("(ONE-BUZZ-UNTIL-READ) shared v3 refusal vectors", () => {
 				kind: "g",
 				terminalHandle: TERMINAL_ID,
 				outcomeAtMs: 0,
+				readThroughAtMs: 0,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),

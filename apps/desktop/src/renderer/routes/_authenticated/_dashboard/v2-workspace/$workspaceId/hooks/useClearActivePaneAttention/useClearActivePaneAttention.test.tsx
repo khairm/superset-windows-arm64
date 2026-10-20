@@ -42,8 +42,13 @@ if (!alreadyRegistered) GlobalRegistrator.register();
 interface SeenCall {
 	workspaceId: string;
 	terminalId: string;
-	seenThroughAt: number;
+	origin: string;
+	seenThroughAt: number | null;
 }
+
+/** Host-clock instants are 13-digit ms values; tests name them as offsets. */
+const T0 = 1_700_000_000_000;
+const at = (ms: number): number => T0 + ms;
 
 let seenCalls: SeenCall[] = [];
 
@@ -54,7 +59,7 @@ mock.module("renderer/lib/host-service-client", () => ({
 	hostServiceQueryRetryDelay: () => 0,
 	getHostServiceClientByUrl: () => ({
 		companion: {
-			markLifecycleSeen: {
+			reportLifecycleRead: {
 				mutate: async (input: SeenCall) => {
 					seenCalls.push(input);
 					return { accepted: true };
@@ -71,14 +76,16 @@ const TERMINAL = "terminal-1";
 const HOST = "http://host-a";
 
 /** What the mocked host-service hooks answer, per test. */
-let paneStatus: string | undefined = "review";
-let bindings = new Map<string, { lastEventAt: number }>();
+interface Binding {
+	lastEventAt: number;
+	lastEventType: string;
+}
+let bindings = new Map<string, Binding>();
+let bindingsLoaded = true;
 
 mock.module("renderer/hooks/host-service/useTerminalAgentBindings", () => ({
 	useTerminalAgentBindings: () => bindings,
-}));
-mock.module("renderer/hooks/host-service/useV2NotificationStatus", () => ({
-	useV2PaneNotificationStatus: () => paneStatus,
+	useTerminalAgentBindingsState: () => ({ bindings, loaded: bindingsLoaded }),
 }));
 mock.module(
 	"renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider",
@@ -94,7 +101,11 @@ const { useV2NotificationStore } = await import(
 const { resetV2NotificationStoreForTest } = await import(
 	"renderer/stores/v2-notifications/resetForTest"
 );
-const { registerWorkspaceHost, unregisterWorkspaceHost } = await import(
+const {
+	registerWorkspaceHost,
+	resetUserReadsForTest,
+	unregisterWorkspaceHost,
+} = await import(
 	"renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync"
 );
 const { useClearActivePaneAttention } = await import(
@@ -159,11 +170,14 @@ function returnToWindow(): void {
 
 beforeEach(() => {
 	seenCalls = [];
-	paneStatus = "review";
-	bindings = new Map([[TERMINAL, { lastEventAt: 5_000 }]]);
+	bindings = new Map([
+		[TERMINAL, { lastEventAt: at(5_000), lastEventType: "Stop" }],
+	]);
+	bindingsLoaded = true;
 	setPresent(true);
 	setScreenLocked(false);
 	resetV2NotificationStoreForTest();
+	resetUserReadsForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
 	// A finish the user has not read: the green dot and its instant.
 	useV2NotificationStore
@@ -172,7 +186,7 @@ beforeEach(() => {
 			{ type: "terminal", id: TERMINAL },
 			WORKSPACE,
 			{ set: ["review"], clear: [] },
-			5_000,
+			at(5_000),
 		);
 });
 
@@ -191,7 +205,12 @@ describe("(ALERT-RETIRE-ON-EXIT) useClearActivePaneAttention", () => {
 		render(React.createElement(Probe, { store: createStore() }));
 		await settle();
 		expect(seenCalls).toEqual([
-			{ workspaceId: WORKSPACE, terminalId: TERMINAL, seenThroughAt: 5_000 },
+			{
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				origin: "user",
+				seenThroughAt: at(5_000),
+			},
 		]);
 	});
 
@@ -222,16 +241,128 @@ describe("(ALERT-RETIRE-ON-EXIT) useClearActivePaneAttention", () => {
 		returnToWindow();
 		await settle();
 		expect(seenCalls).toEqual([
-			{ workspaceId: WORKSPACE, terminalId: TERMINAL, seenThroughAt: 5_000 },
+			{
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				origin: "user",
+				seenThroughAt: at(5_000),
+			},
 		]);
 	});
 
-	it("does not report a pane with nothing outstanding on it", async () => {
-		paneStatus = "idle";
+	it("reports a read for a pane with nothing outstanding on it", async () => {
 		resetV2NotificationStoreForTest();
 		registerWorkspaceHost(WORKSPACE, HOST);
 		render(React.createElement(Probe, { store: createStore() }));
 		await settle();
-		expect(seenCalls).toEqual([]);
+		// No card to retract, but looking at the chat is still the read.
+		expect(seenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				origin: "user",
+				seenThroughAt: at(5_000),
+			},
+		]);
+		expect(useV2NotificationStore.getState().terminalSeenAt[TERMINAL]).toBe(
+			at(5_000),
+		);
+	});
+
+	it("reads through a finish the binding has not caught up to", async () => {
+		resetV2NotificationStoreForTest();
+		registerWorkspaceHost(WORKSPACE, HOST);
+		useV2NotificationStore
+			.getState()
+			.applySourceAxes(
+				{ type: "terminal", id: TERMINAL },
+				WORKSPACE,
+				{ set: ["review"], clear: [] },
+				at(6_000),
+			);
+		render(React.createElement(Probe, { store: createStore() }));
+		await settle();
+		expect(seenCalls.map((call) => call.seenThroughAt)).toEqual([at(6_000)]);
+	});
+
+	it("reports a working agent once per focus episode, and every finish", async () => {
+		resetV2NotificationStoreForTest();
+		registerWorkspaceHost(WORKSPACE, HOST);
+		const store = createStore();
+		const bindTo = (lastEventAt: number, lastEventType: string) => {
+			bindings = new Map([[TERMINAL, { lastEventAt, lastEventType }]]);
+		};
+		bindTo(at(5_000), "Start");
+		const { rerender } = render(React.createElement(Probe, { store }));
+		await settle();
+		const step = async () => {
+			rerender(React.createElement(Probe, { store }));
+			await settle();
+		};
+
+		bindTo(at(6_000), "Start");
+		await step();
+		bindTo(at(7_000), "Stop");
+		await step();
+		bindTo(at(8_000), "Failed");
+		await step();
+		bindTo(at(9_000), "Start");
+		await step();
+		useV2NotificationStore.setState((state) => ({
+			outstandingReadyAt: {
+				...state.outstandingReadyAt,
+				[TERMINAL]: at(9_500),
+			},
+		}));
+		bindTo(at(10_000), "Start");
+		await step();
+
+		expect(seenCalls.map((call) => call.seenThroughAt)).toEqual([
+			at(5_000),
+			at(7_000),
+			at(8_000),
+			at(10_000),
+		]);
+	});
+
+	it("reports a read before the bindings load, once per focus episode", async () => {
+		bindings = new Map();
+		bindingsLoaded = false;
+		resetV2NotificationStoreForTest();
+		registerWorkspaceHost(WORKSPACE, HOST);
+		const store = createStore();
+		const { rerender } = render(React.createElement(Probe, { store }));
+		await settle();
+		bindings = new Map();
+		rerender(React.createElement(Probe, { store }));
+		await settle();
+		expect(seenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				origin: "user",
+				seenThroughAt: null,
+			},
+		]);
+	});
+
+	it("follows a read made before the bindings load with a stamped one", async () => {
+		bindings = new Map();
+		bindingsLoaded = false;
+		resetV2NotificationStoreForTest();
+		registerWorkspaceHost(WORKSPACE, HOST);
+		const store = createStore();
+		const { rerender } = render(React.createElement(Probe, { store }));
+		await settle();
+		bindings = new Map([
+			[TERMINAL, { lastEventAt: at(5_000), lastEventType: "Start" }],
+		]);
+		bindingsLoaded = true;
+		rerender(React.createElement(Probe, { store }));
+		await settle();
+		expect(seenCalls.map((call) => call.seenThroughAt)).toEqual([
+			null,
+			at(5_000),
+		]);
 	});
 });

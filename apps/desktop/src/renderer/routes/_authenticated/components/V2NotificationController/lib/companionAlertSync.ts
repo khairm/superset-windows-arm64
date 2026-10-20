@@ -19,6 +19,8 @@
  * less; the cost of a toast is a user learning to ignore toasts.
  */
 
+import type { AppRouter } from "@superset/host-service";
+import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import {
 	getV2NotificationSourceKey,
@@ -26,6 +28,17 @@ import {
 	useV2NotificationStore,
 } from "renderer/stores/v2-notifications";
 import { type AlertContextSnapshot, alertContextsHash } from "./alertContexts";
+
+/**
+ * A read as `reportLifecycleRead` takes it. Only `user` advances the host's
+ * durable read mark, and only `user` may come without an instant.
+ */
+type LifecycleReadReport =
+	inferRouterInputs<AppRouter>["companion"]["reportLifecycleRead"];
+
+/** What both read procedures answer. */
+type LifecycleSeenAnswer =
+	inferRouterOutputs<AppRouter>["companion"]["reportLifecycleRead"];
 
 /**
  * Debounce for tab-context syncs. Sized against what produces them: a live
@@ -307,20 +320,37 @@ export function releaseAlertContextSync(workspaceId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// the two reports, and the two rules they share
+// the instant guards, and the accepted-answer rule
 // ---------------------------------------------------------------------------
 
 /**
- * A host-clock instant this renderer may put on the wire.
+ * A host-clock instant the relaunch report may put on the wire.
  *
- * BOTH REPORTS CARRY ONE and both tRPC inputs are `.int().positive()`, so an
- * unfloored or absurd value would come back as a tRPC ERROR — a rejected
- * promise on two paths that must never produce one. Guarded here rather than
- * trusted, and `isSafeInteger` rather than `isInteger` because a value past
- * 2^53 has already lost the millisecond it is supposed to name.
+ * Its tRPC input refuses a non-integer or non-positive value, so an unfloored
+ * or absurd value would come back as a tRPC ERROR — a rejected promise on a
+ * path that must never produce one. Guarded here rather than trusted, and
+ * `isSafeInteger` rather than `isInteger` because a value past 2^53 has already
+ * lost the millisecond it is supposed to name.
  */
 function isReportableInstant(value: number): boolean {
 	return Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * The read report's instant: exactly 13 digits, no leading zero. The host's
+ * `READ_INSTANT_MIN_MS` / `READ_INSTANT_MAX_MS` in
+ * `packages/host-service/src/companion/limits.ts`; the renderer can import only
+ * types from that package.
+ */
+const READ_INSTANT_MIN_MS = 1_000_000_000_000;
+const READ_INSTANT_MAX_MS = 9_999_999_999_999;
+
+function isReadInstant(value: number): boolean {
+	return (
+		Number.isSafeInteger(value) &&
+		value >= READ_INSTANT_MIN_MS &&
+		value <= READ_INSTANT_MAX_MS
+	);
 }
 
 /**
@@ -375,93 +405,261 @@ export function unregisterWorkspaceHost(
 }
 
 /**
- * (ALERT-CONTEXT-NAMES) Mark a terminal seen AND, if that actually cleared a
- * green dot, tell its host so the phone drops the notification.
+ * (ALERT-CONTEXT-NAMES) The user read a chat at this PC: mark the terminal
+ * seen and report the read, so the phone drops the ready card and the next
+ * finish buzzes again.
  *
- * ONE HELPER FOR BOTH USER-INTENT SITES. The ritual is three steps that must
- * happen in this order and are wrong in a way nothing would catch if they
- * drift: read the review entry's `occurredAt` BEFORE `markTerminalSeen` deletes
- * it, mark seen with the BINDING's stamp (the monotonic seen mark), and report
- * only when a green was really removed. Written out at each call site it was
- * two copies of a sequence whose failure mode is a retraction naming an id no
- * phone holds.
- *
- * The two stamps are deliberately different and neither may be substituted for
- * the other:
- *
- *  - `lastEventAt` is the SEEN MARK. Monotonic, host clock, compared against
- *    the binding to derive `review`.
- *  - the review entry's `occurredAt` is the RETRACTION's subject: the instant
- *    of the event that turned the dot green, which is what the alert id was
- *    hashed from. A binding's `lastEventAt` advances for events that raise no
- *    alert at all (a `SessionStart` moves it while the hook leaves the
- *    lifecycle outcome null), so hashing that would name nothing.
- *
- * A CLEARED GREEN IS NOT THE ONLY EVIDENCE OF A READ. The dot is also cleared
- * by the agent starting work again, and a phone card can still be up for the
- * finish before that — the host retires it when the next status arrives, but
- * the report may already be in flight or the host may have restarted since. So
- * when the store has an OUTSTANDING ready record for this terminal, opening the
- * chat is a read even though there is no green left to clear, and the record's
- * instant (not the binding's) is what the retraction names.
+ * ONE HELPER FOR THE USER-INTENT SITES: pane focus, the sidebar mark-read and
+ * the visible-clear hop. The seen mark and the read's cutoff are the same
+ * host-clock stamp: the host retires every alert at or before it and raises its
+ * read mark to it, so the finish behind a green, or behind an outstanding record
+ * for an agent already running again, is covered without naming it.
  *
  * Returns whether a green dot was cleared, for callers that count.
  */
 export function markTerminalSeenAndReportRead({
 	workspaceId,
 	terminalId,
-	lastEventAt,
+	seenAt,
 }: {
 	workspaceId: string;
 	terminalId: string;
-	/** The binding's `lastEventAt` — host clock, never this machine's. */
-	lastEventAt: number;
+	/**
+	 * Host-clock stamp, never this machine's: the binding's `lastEventAt`, or
+	 * the outcome event's own instant.
+	 */
+	seenAt: number;
 }): boolean {
-	const store = useV2NotificationStore.getState();
-	const reviewEntry =
-		store.sources[
-			getV2NotificationSourceKey(getV2TerminalNotificationSource(terminalId))
-		];
-	const reviewAt =
-		reviewEntry?.status === "review" ? reviewEntry.occurredAt : null;
-	const outstandingAt = store.outstandingReadyAt[terminalId] ?? null;
-
-	const clearedReview = store.markTerminalSeen(terminalId, lastEventAt);
-	// The live green wins when there is one — it and the outstanding record name
-	// the same finish, and the entry is the fresher of the two by construction.
-	const seenThroughAt = reviewAt ?? outstandingAt;
-	if (seenThroughAt === null) return clearedReview;
-	if (!clearedReview && outstandingAt === null) return clearedReview;
-
-	void reportTerminalSeen({
-		workspaceId,
-		terminalId,
-		seenThroughAt,
-	}).then((accepted) => {
-		// Only a report a host actually consumed retires the record, and only the
-		// generation that was reported: a newer finish that landed while this was
-		// in flight keeps its own record. A dropped report leaves it standing so
-		// the resync sweep can try again.
-		if (accepted) {
-			useV2NotificationStore
-				.getState()
-				.clearOutstandingReady(terminalId, seenThroughAt);
-		}
-	});
+	const clearedReview = useV2NotificationStore
+		.getState()
+		.markTerminalSeen(terminalId, seenAt);
+	reportUserRead({ workspaceId, terminalId, seenThroughAt: seenAt });
 	return clearedReview;
 }
 
 /**
- * (ALERT-RETIRE-ON-EXIT) Reports a host REFUSED on its own evidence, keyed by
- * the exact claim it refused:
- * `${hostUrl}\0${workspaceId}\0${terminalId}\0${seenThroughAt}`.
+ * (MANUAL-DISMISS) Clear agent status: mark a terminal seen AND, if that
+ * actually cleared a green dot, take that finish's card off the phone. NOT A
+ * READ, so it reports with origin `repair-seen`, which never moves the host's
+ * read mark.
  *
- * WHY A LATCH AND NOT A RETRY. The focus path re-reports whenever the terminal
- * bindings change, which for a live agent is constantly, and it re-reports
- * while the store still holds an outstanding record for the terminal. A host
- * that answers `workspace-mismatch` is not busy or still starting up — host.db
- * does not place that terminal in that workspace and will answer the same way
- * every time — so without this the pair looped for as long as the record stood.
+ * The ritual is three steps that must happen in this order: read the review
+ * entry's `occurredAt` BEFORE `markTerminalSeen` deletes it, mark seen with the
+ * BINDING's stamp, and report only when a green was really removed (or an
+ * outstanding record names a finish still on a device).
+ *
+ * The two stamps are deliberately different and neither may be substituted for
+ * the other:
+ *
+ *  - `seenAt` is the SEEN MARK. Monotonic, host clock, compared against the
+ *    binding to derive `review`.
+ *  - the review entry's `occurredAt` is the RETRACTION's subject: the instant
+ *    of the event that turned the dot green, which is what the alert id was
+ *    hashed from. A binding's `lastEventAt` advances for events that raise no
+ *    alert at all (a `SessionStart` moves it while the hook leaves the
+ *    lifecycle outcome null), so hashing that would name nothing.
+ *
+ * Returns whether a green dot was cleared.
+ */
+export function markTerminalSeenAndRetract({
+	workspaceId,
+	terminalId,
+	seenAt,
+}: {
+	workspaceId: string;
+	terminalId: string;
+	/** The binding's `lastEventAt` — host clock, never this machine's. */
+	seenAt: number;
+}): boolean {
+	const seenThroughAt = knownFinishAt(terminalId);
+	const clearedReview = useV2NotificationStore
+		.getState()
+		.markTerminalSeen(terminalId, seenAt);
+	if (seenThroughAt !== null) {
+		void reportTerminalSeen({
+			workspaceId,
+			terminalId,
+			origin: "repair-seen",
+			seenThroughAt,
+		});
+	}
+	return clearedReview;
+}
+
+/**
+ * The finish this renderer holds for a terminal: its green, else its
+ * outstanding record. The live green wins: both name the same finish, and the
+ * entry is the fresher of the two by construction. Host clock.
+ */
+export function knownFinishAt(terminalId: string): number | null {
+	const store = useV2NotificationStore.getState();
+	const entry =
+		store.sources[
+			getV2NotificationSourceKey(getV2TerminalNotificationSource(terminalId))
+		];
+	if (entry?.status === "review") return entry.occurredAt;
+	return store.outstandingReadyAt[terminalId] ?? null;
+}
+
+/**
+ * PC reads per terminal: the newest one sent and whether its host took it. A
+ * read raises the host's durable read mark, which is what lets the next finish
+ * buzz the phone, so one the host did not take is kept `pending` for the resync
+ * to re-send under its repair cap and cooldown. A read the host can never take
+ * (no bridge, a placement mismatch, a host too old to keep a read mark) is
+ * dropped. Acknowledged entries stay as the throttle record. Past
+ * `MAX_USER_READS` the oldest acknowledged entries go first, then the oldest
+ * pending ones.
+ */
+interface UserRead {
+	workspaceId: string;
+	/** The read's cutoff, host clock; `null` when this renderer knew no instant. */
+	seenThroughAt: number | null;
+	/** When the read was made, on `performance.now()`. */
+	madeAtMonotonicMs: number;
+	state: "in-flight" | "pending" | "acknowledged";
+}
+
+const MAX_USER_READS = 512;
+const userReads = new Map<string, UserRead>();
+
+/** Test seam only: the map outlives an individual report by design. */
+export function resetUserReadsForTest(): void {
+	userReads.clear();
+}
+
+function evictUserReadsPastCap(): void {
+	for (const evictable of ["acknowledged", "pending"] as const) {
+		for (const [terminalId, entry] of userReads) {
+			if (userReads.size <= MAX_USER_READS) return;
+			if (entry.state !== evictable) continue;
+			userReads.delete(terminalId);
+			if (evictable === "pending") {
+				log({ event: "user_read_dropped", terminalId, reason: "evicted" });
+			}
+		}
+	}
+}
+
+/**
+ * The user read a chat at this PC. Sent with origin `user`, once per newer
+ * cutoff: a cutoff no newer than the last one sent for the terminal is
+ * dropped here, whatever became of that one. A `null` cutoff is always sent;
+ * its caller throttles those to once per focus episode.
+ */
+export function reportUserRead({
+	workspaceId,
+	terminalId,
+	seenThroughAt,
+}: {
+	workspaceId: string;
+	terminalId: string;
+	seenThroughAt: number | null;
+}): void {
+	const current = userReads.get(terminalId);
+	if (
+		seenThroughAt !== null &&
+		current !== undefined &&
+		current.workspaceId === workspaceId &&
+		current.seenThroughAt !== null &&
+		current.seenThroughAt >= seenThroughAt
+	) {
+		return;
+	}
+	const read: UserRead = {
+		workspaceId,
+		seenThroughAt,
+		madeAtMonotonicMs: performance.now(),
+		state: "in-flight",
+	};
+	userReads.delete(terminalId);
+	userReads.set(terminalId, read);
+	evictUserReadsPastCap();
+	void sendUserRead(terminalId, read);
+}
+
+function sendUserRead(terminalId: string, read: UserRead): Promise<boolean> {
+	read.state = "in-flight";
+	return sendReadReport({
+		workspaceId: read.workspaceId,
+		terminalId,
+		origin: "user",
+		seenThroughAt: read.seenThroughAt,
+	}).then((answer) => {
+		if (userReads.get(terminalId) === read) {
+			if (answer.kind === "applied") {
+				read.state = "acknowledged";
+			} else if (answer.kind === "unconsumed") {
+				read.state = "pending";
+			} else {
+				userReads.delete(terminalId);
+				log({ event: "user_read_dropped", terminalId, reason: answer.kind });
+			}
+			evictUserReadsPastCap();
+		}
+		return isAppliedAnswer(answer);
+	});
+}
+
+export interface PendingUserRead {
+	terminalId: string;
+	seenThroughAt: number | null;
+	madeAtMonotonicMs: number;
+}
+
+/** The unacknowledged PC reads whose workspace this host serves. */
+export function pendingUserReads(hostUrl: string): PendingUserRead[] {
+	const pending: PendingUserRead[] = [];
+	for (const [terminalId, read] of userReads) {
+		if (read.state !== "pending") continue;
+		if (hostUrlByWorkspaceId.get(read.workspaceId) !== hostUrl) continue;
+		pending.push({
+			terminalId,
+			seenThroughAt: read.seenThroughAt,
+			madeAtMonotonicMs: read.madeAtMonotonicMs,
+		});
+	}
+	return pending;
+}
+
+/**
+ * Re-send a pending read with `seenThroughAt`: its own cutoff, or for a read
+ * made with none, the instant the resync proved it covers. Resolves `false`
+ * when the read is no longer pending.
+ */
+export function resendUserRead(
+	terminalId: string,
+	seenThroughAt: number,
+): Promise<boolean> {
+	const read = userReads.get(terminalId);
+	if (read === undefined || read.state !== "pending") {
+		return Promise.resolve(false);
+	}
+	read.seenThroughAt = seenThroughAt;
+	return sendUserRead(terminalId, read);
+}
+
+/** Forget a pending read the resync proved can never land, once, loudly. */
+export function dropUserRead(
+	terminalId: string,
+	reason: "terminal-gone" | "no-binding" | "newer-event",
+): void {
+	const read = userReads.get(terminalId);
+	if (read === undefined || read.state !== "pending") return;
+	userReads.delete(terminalId);
+	log({ event: "user_read_dropped", terminalId, reason });
+}
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) Reports a host REFUSED on its own evidence, keyed by
+ * the claim it refused: `${hostUrl}\0${workspaceId}\0${terminalId}\0${claim}`.
+ *
+ * WHY A LATCH AND NOT A RETRY. The focus path reports on every finish, the
+ * mark-read on every click, and the resync re-offers an outstanding record
+ * every epoch. A host that answers `workspace-mismatch` is not busy or still
+ * starting up — host.db does not place that terminal in that workspace and
+ * will answer the same way every time — so without this the pair looped for as
+ * long as the record stood.
  *
  * IT LATCHES A CLAIM, NOT A TERMINAL, and every part of the key earns its
  * place. The HOST, because the verdict is that host's own reading of its own
@@ -470,12 +668,15 @@ export function markTerminalSeenAndReportRead({
  * address, is a fresh question and gets asked. The WORKSPACE, so the resync's
  * report — which names the workspace host.db itself owns — is a different claim
  * and still goes. The TERMINAL, so one bad pane cannot silence another. The
- * GENERATION, so the next finish is reported normally rather than inheriting
- * this one's verdict.
+ * CLAIM: for a repair, the GENERATION, so the next finish is reported normally
+ * rather than inheriting this one's verdict; for a `user` read, just `user`,
+ * because its cutoff moves with every event and a cutoff key would re-send the
+ * refused pair each time.
  *
- * ONLY A REFUSAL LATCHES. A transport failure, a bridge still registering and
- * an unreadable host.db all answer `accepted: false` with no refusal, and every
- * one of them is worth trying again.
+ * ONLY A REFUSAL LATCHES. A transport failure, a bridge that threw and an
+ * unreadable host.db all answer `accepted: false` with no refusal, and every
+ * one of them is worth trying again. `bridge-off` is not latched either: a
+ * bridge can be turned on.
  *
  * The record itself is NEVER cleared by this — a latched claim retired nothing,
  * so the phone card is still up and the resync is still the thing that can take
@@ -484,13 +685,9 @@ export function markTerminalSeenAndReportRead({
 const MAX_REFUSED_SEEN_REPORTS = 256;
 const refusedSeenReports = new Set<string>();
 
-function refusedSeenKey(input: {
-	hostUrl: string;
-	workspaceId: string;
-	terminalId: string;
-	seenThroughAt: number;
-}): string {
-	return `${input.hostUrl}\u0000${input.workspaceId}\u0000${input.terminalId}\u0000${input.seenThroughAt}`;
+function refusedSeenKey(hostUrl: string, report: LifecycleReadReport): string {
+	const claim = report.origin === "user" ? "user" : report.seenThroughAt;
+	return `${hostUrl}\u0000${report.workspaceId}\u0000${report.terminalId}\u0000${claim}`;
 }
 
 function latchRefusedSeenReport(key: string): void {
@@ -509,74 +706,141 @@ export function resetSeenRefusalLatchForTest(): void {
 }
 
 /**
- * The user read a chat. Tell its host so the phone and watch drop the
- * ready-for-review notification.
+ * What one read report came to.
  *
- * CALLED ONLY ON REAL EVIDENCE OF A READ — a `review` entry that was actually
- * removed, or an OUTSTANDING ready record for a terminal the user just opened.
- * That is the caller's responsibility. A seen mark that merely bumped a
- * timestamp is not evidence the user read anything, and the resync's cold-start
- * seeding does exactly that for every idle terminal on every desktop launch.
+ *  - `applied`: the host applied it.
+ *  - `unconsumed`: nothing applied it this time; worth offering again.
+ *  - `refused`: this host can never apply it (a placement mismatch, or no
+ *    bridge).
+ *  - `legacy-host`: the host has no `reportLifecycleRead`, so the released
+ *    desktop's `markLifecycleSeen` retraction went instead (never for a read
+ *    with no instant). `applied` is that retraction's answer. Such a host keeps
+ *    no read mark.
+ */
+type ReadAnswer =
+	| { kind: "applied" }
+	| { kind: "unconsumed" }
+	| { kind: "refused" }
+	| { kind: "legacy-host"; applied: boolean };
+
+const APPLIED: ReadAnswer = { kind: "applied" };
+const UNCONSUMED: ReadAnswer = { kind: "unconsumed" };
+const REFUSED: ReadAnswer = { kind: "refused" };
+
+function isAppliedAnswer(answer: ReadAnswer): boolean {
+	return (
+		answer.kind === "applied" ||
+		(answer.kind === "legacy-host" && answer.applied)
+	);
+}
+
+/** A host older than `reportLifecycleRead` answers a call to it NOT_FOUND. */
+function isMissingProcedure(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const data = (error as { data?: unknown }).data;
+	if (typeof data !== "object" || data === null) return false;
+	return (data as { code?: unknown }).code === "NOT_FOUND";
+}
+
+/**
+ * Report a read, or a retraction without one, to its host
+ * (`reportLifecycleRead`) so the phone and watch drop the ready-for-review
+ * notification.
  *
- * `seenThroughAt` is the HOST's clock (the review entry's `occurredAt`), never
- * this machine's: it is hashed into the alert id the retraction has to name.
+ * THE ORIGIN IS THE CALLER'S CLAIM, and only `user` is a read: pane focus, the
+ * sidebar mark-read and the visible-clear hop, through `reportUserRead`. Every
+ * other report is `repair-seen` and only retracts: Clear agent status, and
+ * every resync repair. A seen mark is not evidence the user read anything —
+ * the resync's cold-start seeding writes one for every idle terminal on every
+ * desktop launch, and a Clear agent status that failed to report leaves one
+ * behind — so no repair may count as a read.
+ *
+ * `seenThroughAt` is the HOST's clock, never this machine's. For a repair it is
+ * hashed into the alert id the retraction has to name; for `user` it is the
+ * read's cutoff.
+ *
+ * A REPORT THE HOST APPLIED RETIRES THE OUTSTANDING RECORD, and only up to
+ * `seenThroughAt`: a newer finish that landed while it was in flight keeps its
+ * own record. A dropped report leaves the record standing so the resync sweep
+ * can try again. A `user` read with no instant retires nothing here.
  *
  * RESOLVES WITH WHETHER THE HOST ACTUALLY APPLIED IT. Callers that keep a
  * cooldown, or an outstanding record, need to tell a delivered report from one
- * that fell on the floor. `accepted: false` covers both a bridge still
- * registering AND a host that refused the report on its own evidence (host.db
- * does not place that terminal in that workspace, or could not be read to
- * check) — in every one of them nothing was retired, so recording it as
- * "repaired" would strand the phone card for as long as the cooldown lasts.
- * Never rejects: the dot has already cleared locally and there is nothing a
- * caller could usefully do with a throw.
+ * that fell on the floor. `accepted: false` covers no bridge, a bridge that
+ * threw, AND a host that refused the report on its own evidence (host.db does
+ * not place that terminal in that workspace, or could not be read to check) —
+ * in every one of them nothing was retired, so recording it as "repaired"
+ * would strand the phone card for as long as the cooldown lasts. Never
+ * rejects: the dot has already cleared locally and there is nothing a caller
+ * could usefully do with a throw.
  *
  * A REFUSED CLAIM IS NOT PUT ON THE WIRE AGAIN — see `refusedSeenReports`.
  */
-export function reportTerminalSeen({
-	workspaceId,
-	terminalId,
-	seenThroughAt,
-}: {
-	workspaceId: string;
-	terminalId: string;
-	seenThroughAt: number;
-}): Promise<boolean> {
+export function reportTerminalSeen(
+	report: LifecycleReadReport,
+): Promise<boolean> {
+	return sendReadReport(report).then(isAppliedAnswer);
+}
+
+function sendReadReport(report: LifecycleReadReport): Promise<ReadAnswer> {
+	const { workspaceId, terminalId, seenThroughAt } = report;
 	const hostUrl = hostUrlByWorkspaceId.get(workspaceId);
-	if (hostUrl === undefined) return Promise.resolve(false);
-	if (!isReportableInstant(seenThroughAt)) return Promise.resolve(false);
-	const key = refusedSeenKey({
-		hostUrl,
-		workspaceId,
-		terminalId,
-		seenThroughAt,
-	});
-	if (refusedSeenReports.has(key)) return Promise.resolve(false);
+	if (hostUrl === undefined) return Promise.resolve(UNCONSUMED);
+	if (seenThroughAt !== null && !isReadInstant(seenThroughAt)) {
+		return Promise.resolve(UNCONSUMED);
+	}
+	const key = refusedSeenKey(hostUrl, report);
+	if (refusedSeenReports.has(key)) return Promise.resolve(REFUSED);
+	const companion = getHostServiceClientByUrl(hostUrl).companion;
+	const settle = (result: LifecycleSeenAnswer | undefined): ReadAnswer => {
+		if (result?.accepted === true) {
+			if (seenThroughAt !== null) {
+				useV2NotificationStore
+					.getState()
+					.clearOutstandingReady(terminalId, seenThroughAt);
+			}
+			return APPLIED;
+		}
+		if (result?.refusal === "workspace-mismatch") {
+			latchRefusedSeenReport(key);
+			log({ event: "seen_report_refused", hostUrl, terminalId });
+			return REFUSED;
+		}
+		if (result?.refusal === "bridge-off") {
+			log({ event: "seen_report_bridge_off", hostUrl, terminalId });
+			return REFUSED;
+		}
+		log({ event: "seen_report_unconsumed", hostUrl, terminalId });
+		return UNCONSUMED;
+	};
+	// A host that is down reads exactly like a bridge that threw: nothing was
+	// retired either way, and the ONE line that says so is this one.
+	const unconsumed = (): ReadAnswer => {
+		log({ event: "seen_report_unconsumed", hostUrl, terminalId });
+		return UNCONSUMED;
+	};
 	// Silent on failure: the dot has already cleared locally, the frame's own
 	// 24 h TTL and the phone's foreground sweep are the backstops, and there is
 	// nothing the user could do with this.
-	return getHostServiceClientByUrl(hostUrl)
-		.companion.markLifecycleSeen.mutate({
-			workspaceId,
-			terminalId,
-			seenThroughAt,
-		})
-		.then((result) => {
-			if (result?.accepted === true) return true;
-			if (result?.refusal === "workspace-mismatch") {
-				latchRefusedSeenReport(key);
-				log({ event: "seen_report_refused", hostUrl, terminalId });
-				return false;
+	return companion.reportLifecycleRead
+		.mutate(report)
+		.then(settle)
+		.catch((error: unknown): ReadAnswer | Promise<ReadAnswer> => {
+			if (!isMissingProcedure(error)) return unconsumed();
+			if (seenThroughAt === null) {
+				log({ event: "seen_report_legacy_host", hostUrl, terminalId });
+				return { kind: "legacy-host", applied: false };
 			}
-			log({ event: "seen_report_unconsumed", hostUrl, terminalId });
-			return false;
-		})
-		.catch(() => {
-			// A host that is down reads exactly like a bridge that is off: nothing
-			// was retired either way, and the ONE line that says so is this one.
-			// Returning false in silence left the commonest failure invisible.
-			log({ event: "seen_report_unconsumed", hostUrl, terminalId });
-			return false;
+			return companion.markLifecycleSeen
+				.mutate({ workspaceId, terminalId, seenThroughAt })
+				.then(settle)
+				.catch(unconsumed)
+				.then(
+					(answer): ReadAnswer => ({
+						kind: "legacy-host",
+						applied: answer.kind === "applied",
+					}),
+				);
 		});
 }
 
@@ -641,7 +905,7 @@ export function hasAcknowledgedRelaunchBoundary(hostUrl: string): boolean {
  * means "derive a new instant" belongs to the resync, which owns the per-host
  * boundary and the monotonic clock behind it.
  *
- * The instant guard is the shared one — see `isReportableInstant`.
+ * The instant guard is `isReportableInstant`.
  */
 export function reportRelaunchBoundary({
 	hostUrl,

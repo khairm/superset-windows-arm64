@@ -1650,6 +1650,13 @@ export interface PushDataV3Ready {
 	tc: string;
 }
 
+/** The v3 ready alert plus `rg`. Only `g` moved to v4; `e`, `c` and `q` stay v3. */
+export interface PushDataV4Ready extends Omit<PushDataV3Ready, "v"> {
+	v: "4";
+	/** Host read mark, 13 digits, or `""` when the chat was never read. */
+	rg: string;
+}
+
 /**
  * (ALERT-CONTEXT-NAMES) §13.5 — the named ERROR alert.
  *
@@ -1706,6 +1713,7 @@ export type PushData =
 	| PushDataV2
 	| PushDataV3Question
 	| PushDataV3Ready
+	| PushDataV4Ready
 	| PushDataV3Error
 	| PushDataV3LifecycleRetract;
 /** Data-only. `message.notification` MUST be absent (§13.1). */

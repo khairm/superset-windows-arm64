@@ -491,6 +491,15 @@ export interface ReadDeps {
 	resolveTabTitle:
 		| ((hostWorkspaceId: string, hostTerminalId: string) => string)
 		| null;
+	/**
+	 * The newest transcript page was served: the chat is on screen in the
+	 * companion app, which counts as a read. `lastEventAt` is the binding row
+	 * the transcript was resolved from. A throw fails the request.
+	 */
+	markReadFromCompanion(input: {
+		hostTerminalId: string;
+		lastEventAt: number;
+	}): void;
 }
 
 /** Convenience binder so a composition root can hand around one object. */
@@ -1453,6 +1462,7 @@ interface ResolvedTranscript {
 	transcriptPath: string;
 	/** Monotonic stamp; a CHANGE means the session was replaced (§7.3). */
 	sessionGeneration: number;
+	lastEventAt: number;
 }
 
 /**
@@ -1496,7 +1506,11 @@ async function resolveTranscript(
 	if (transcriptPath === null) {
 		throw badRequest("the agent transcript for this terminal is unreadable");
 	}
-	return { transcriptPath, sessionGeneration: binding.startedAt };
+	return {
+		transcriptPath,
+		sessionGeneration: binding.startedAt,
+		lastEventAt: binding.lastEventAt,
+	};
 }
 
 export async function handleTranscript(
@@ -1524,10 +1538,8 @@ export async function handleTranscript(
 	}
 
 	const hostTerminalId = resolveHostTerminalId(deps, terminalId);
-	const { transcriptPath, sessionGeneration } = await resolveTranscript(
-		deps,
-		hostTerminalId,
-	);
+	const { transcriptPath, sessionGeneration, lastEventAt } =
+		await resolveTranscript(deps, hostTerminalId);
 
 	// `fs/promises` throughout: a synchronous read on this process starves the
 	// renderer's `superset-app://` loader and the window stays blank for minutes.
@@ -1537,6 +1549,10 @@ export async function handleTranscript(
 		limit: request.limit,
 		beforeOffset,
 	});
+	// (LIFECYCLE-READ-THROUGH) Only the newest page, and only once it was read.
+	if (beforeOffset === null) {
+		deps.markReadFromCompanion({ hostTerminalId, lastEventAt });
+	}
 
 	return {
 		terminalId: terminalId as unknown as TerminalId,

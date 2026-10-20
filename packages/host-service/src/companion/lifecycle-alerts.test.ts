@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
 import { createHash } from "node:crypto";
 import {
 	ALERT_TTL_MS,
 	createLifecycleAlertManager,
 	createLifecycleCurationProbe,
+	createLifecycleReadSink,
 	type LifecycleAlertManager,
+	type LifecycleReadClaim,
 	MAX_STATE_ENTRIES,
 } from "./lifecycle-alerts";
 import type { PushAlertContext } from "./push-context";
@@ -64,8 +66,18 @@ function setup(
 		readySettleMs?: number;
 		/** Model a host.db read that fails at bridge start. */
 		epochThrows?: boolean;
+		/**
+		 * The durable read marks. Pass the same map to two managers to model a
+		 * host-service restart.
+		 */
+		reads?: Map<string, number>;
 	} = {},
 ) {
+	const reads = options.reads ?? new Map<string, number>();
+	let readsThrow = false;
+	let readCalls = 0;
+	/** Every read-mark resolver a send was handed: `null` for an `e`. */
+	const resolvers: Array<(() => number) | null> = [];
 	let now = options.startAtMs ?? 1_000;
 	let present = options.present ?? false;
 	/** Set to reject the next send; cleared by the test when it wants success. */
@@ -84,6 +96,7 @@ function setup(
 		alertId: string;
 		terminalHandle: string;
 		outcomeAtMs: number;
+		readThroughAtMs: number | null;
 	}> = [];
 	const retractions: Array<{
 		alertId: string;
@@ -115,12 +128,15 @@ function setup(
 		},
 		push: {
 			sendLifecycleAlert: async (input) => {
+				resolvers.push(input.resolveReadThroughAtMs);
+				const readThroughAtMs = input.resolveReadThroughAtMs?.() ?? null;
 				sent.push({ kind: input.kind, alertId: input.alertId });
 				sends.push({
 					kind: input.kind,
 					alertId: input.alertId,
 					terminalHandle: input.terminalHandle,
 					outcomeAtMs: input.outcomeAtMs,
+					readThroughAtMs,
 				});
 				if (gate !== null) await gate;
 				if (failSends) throw new Error("fcm refused every device");
@@ -137,6 +153,18 @@ function setup(
 		workspaceHandle: () => HANDLE,
 		terminalHandle: () => TERMINAL_HANDLE,
 		readySettleMs: options.readySettleMs ?? 0,
+		reads: {
+			readThroughAt: (hostTerminalId) => {
+				readCalls += 1;
+				if (readsThrow) throw new Error("host.db is locked");
+				return reads.get(hostTerminalId) ?? 0;
+			},
+			advance: (hostTerminalId, readThroughAt) => {
+				if (readThroughAt > (reads.get(hostTerminalId) ?? 0)) {
+					reads.set(hostTerminalId, readThroughAt);
+				}
+			},
+		},
 		resolveContext: (input) => {
 			contextCalls.push({ hostTerminalId: input.hostTerminalId });
 			return context;
@@ -192,7 +220,23 @@ function setup(
 			(curatedOff = value),
 		setCuratedOffProbe: (value: (hostWorkspaceId: string) => boolean) =>
 			(curatedOffProbe = value),
+		reads,
+		resolvers,
+		readCalls: () => readCalls,
+		setReadsThrow: (value: boolean) => (readsThrow = value),
 	};
+}
+
+/** The released desktop's seen report: a `repair-seen` read, which only retracts. */
+function markSeen(
+	manager: LifecycleAlertManager,
+	input: {
+		hostTerminalId: string;
+		hostWorkspaceId: string;
+		seenThroughAt: number;
+	},
+): void {
+	manager.markLifecycleRead({ ...input, origin: "repair-seen" });
 }
 
 /**
@@ -675,7 +719,7 @@ describe("ready alert settle window", () => {
 	it("retires a settling alert when the lifecycle is marked seen", async () => {
 		const state = setup({ readySettleMs: SETTLE_MS, proofEpochs: null });
 		for (const step of cycle(1_000)) state.manager.record(step);
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1120,7 +1164,7 @@ describe("a delivered ready card comes down exactly once", () => {
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
 
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1135,7 +1179,7 @@ describe("a delivered ready card comes down exactly once", () => {
 		]);
 
 		// And it is owed exactly one: reading again is silent.
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 4_000,
@@ -1236,17 +1280,18 @@ describe("a delivered ready card comes down exactly once", () => {
 				alertId: state.sent[0]?.alertId ?? "",
 				terminalHandle: TERMINAL_HANDLE,
 				outcomeAtMs: outcomeOf(1_000),
+				readThroughAtMs: 0,
 			},
 		]);
 	});
 });
 
-describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
+describe("(ALERT-CONTEXT-NAMES) the released desktop's seen report", () => {
 	it("retracts the ready alert the user just read", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1260,7 +1305,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
 		for (let i = 0; i < 5; i++) {
-			state.manager.markLifecycleSeen({
+			markSeen(state.manager, {
 				hostTerminalId: "terminal-1",
 				hostWorkspaceId: "workspace-1",
 				seenThroughAt: 2_000,
@@ -1277,7 +1322,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		// process CANNOT prove the alert never existed — a predecessor may well
 		// have minted it.
 		const state = setup();
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 500,
@@ -1285,7 +1330,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		await tick();
 		expect(state.retracted).toEqual([readyAlertIdFor(500)]);
 		// And a second read does not broadcast again.
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 500,
@@ -1307,7 +1352,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		// the read is "through" a LATER instant. Any alert for it would still be
 		// in the map, so an empty answer is proof rather than ignorance.
 		const state = setup();
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-never-alerted",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_000,
@@ -1324,7 +1369,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		await tick();
 		expect(state.sent).toHaveLength(1);
 
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_000,
@@ -1339,7 +1384,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		// tombstone row.
 		const state = setup();
 		for (let i = 0; i < 25; i++) {
-			state.manager.markLifecycleSeen({
+			markSeen(state.manager, {
 				hostTerminalId: `terminal-${i}`,
 				hostWorkspaceId: "workspace-1",
 				seenThroughAt: 5_000,
@@ -1375,7 +1420,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		// A terminal this process has no row for. Before the eviction this would
 		// have been answered with silence; now the blind broadcast is back.
 		state.retracted.length = 0;
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-never-seen",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_000,
@@ -1442,7 +1487,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		// FCM accepted it, so the alert is on the phone with no row anywhere. The
 		// eviction latch is what stops the map's silence being read as proof.
 		state.retracted.length = 0;
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 9_000,
@@ -1471,7 +1516,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		// the alert was minted from — the SessionStart that moved the binding on.
 		const laterStamp = 2_500;
 		expect(readyAlertIdFor(laterStamp)).not.toBe(delivered);
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: laterStamp,
@@ -1492,7 +1537,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		await tick();
 		expect(state.sent).toHaveLength(0);
 
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_500,
@@ -1510,7 +1555,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		await tick();
 		expect(state.sent).toHaveLength(2);
 
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-2",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 9_999,
@@ -1521,12 +1566,12 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 
 	it("refuses an unusable signal loudly instead of broadcasting nonsense", async () => {
 		const state = setup();
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
 		});
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 0,
@@ -1547,7 +1592,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		for (const e of failedCycle(1_000)) state.manager.record(e);
 		await tick();
 		expect(state.sent[0]?.kind).toBe("e");
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1569,7 +1614,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		const state = setup();
 		for (const e of failedCycle(1_000)) state.manager.record(e);
 		await tick();
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1584,7 +1629,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		const state = setup();
 		for (const step of cycle(1_000)) state.manager.record(step);
 		await tick();
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1599,7 +1644,7 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		// The blind restart path stays `g`-only: hashing an `e` id too would
 		// double every blind broadcast on the path that must stay rarest.
 		const state = setup({ proofEpochs: null });
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1633,7 +1678,7 @@ describe("a read is bounded by its own instant", () => {
 		expect(state.retracted).toEqual([alertA]);
 
 		// The delayed read of A arrives.
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 2_000,
@@ -1651,7 +1696,7 @@ describe("a read is bounded by its own instant", () => {
 		expect(state.retracted).not.toContain(alertB);
 
 		// And B is still retractable by a read that actually covers it.
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 4_000,
@@ -1670,7 +1715,7 @@ describe("a read is bounded by its own instant", () => {
 		await tick();
 		expect(state.sent).toHaveLength(1);
 
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 3_000,
@@ -1701,7 +1746,7 @@ describe("a read is bounded by its own instant", () => {
 		await tick();
 		expect(state.sent).toHaveLength(1);
 
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 4_000,
@@ -1758,7 +1803,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 			startAtMs: 4_000,
 			proofEpochs: [["terminal-1", 5_000]],
 		});
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_000,
@@ -1798,7 +1843,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 		await tick();
 		expect(state.sent).toHaveLength(0);
 
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_000,
@@ -1814,7 +1859,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 			startAtMs: 4_000,
 			proofEpochs: [["terminal-1", 5_000]],
 		});
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_001,
@@ -1831,7 +1876,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 			startAtMs: 4_000,
 			proofEpochs: [["terminal-busy", 9_000]],
 		});
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-busy",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 9_000,
@@ -1849,7 +1894,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 			startAtMs: 4_000,
 			proofEpochs: [["terminal-other", 5_000]],
 		});
-		behind.manager.markLifecycleSeen({
+		markSeen(behind.manager, {
 			hostTerminalId: "terminal-unknown",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 4_500,
@@ -1863,7 +1908,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 			startAtMs: 4_000,
 			proofEpochs: [["terminal-other", 3_000]],
 		});
-		ahead.manager.markLifecycleSeen({
+		markSeen(ahead.manager, {
 			hostTerminalId: "terminal-unknown",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 4_500,
@@ -1876,7 +1921,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 		// `null` is a composition root saying it cannot establish restart
 		// ordering. A blind `c` the phone drops is the safe failure.
 		const state = setup({ proofEpochs: null });
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-never-alerted",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_000,
@@ -1895,7 +1940,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 				line.message.includes("could not read the lifecycle restart evidence"),
 			),
 		).toBe(true);
-		state.manager.markLifecycleSeen({
+		markSeen(state.manager, {
 			hostTerminalId: "terminal-never-alerted",
 			hostWorkspaceId: "workspace-1",
 			seenThroughAt: 5_000,
@@ -2781,5 +2826,185 @@ describe("(ALERT-RETIRE-ON-EXIT) a ready card inherited across a restart", () =>
 			await tick();
 			expect(state.retracted).toEqual([readyAlertIdFor(STOP_AT + 5_000)]);
 		});
+	});
+});
+
+describe("the durable read mark", () => {
+	/** A host-clock instant the sink accepts: 13 digits. */
+	const LAST_EVENT_AT = 1_700_000_004_000;
+
+	function read(
+		state: ReturnType<typeof setup>,
+		origin: "user" | "repair-seen",
+		seenThroughAt: number,
+	): void {
+		state.manager.markLifecycleRead({
+			hostTerminalId: "terminal-1",
+			hostWorkspaceId: "workspace-1",
+			origin,
+			seenThroughAt,
+		});
+	}
+
+	function sinkFor(state: ReturnType<typeof setup>, lastEventAt: number) {
+		const sink = createLifecycleReadSink({
+			db: {
+				findTerminal: () =>
+					({ id: "terminal-1", originWorkspaceId: "workspace-1" }) as never,
+				findBinding: () => ({ lastEventAt }) as never,
+			},
+			manager: state.manager,
+			logger: {
+				info: () => {},
+				warn: () => {},
+				error: (message, fields) => state.errors.push({ message, fields }),
+			},
+		});
+		return (claim: LifecycleReadClaim) =>
+			sink({
+				hostTerminalId: "terminal-1",
+				hostWorkspaceId: "workspace-1",
+				...claim,
+			});
+	}
+
+	const flushMicrotasks = async () => {
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+	};
+
+	it("never asks the read store for an `e`, so a broken store cannot hold one", async () => {
+		const state = setup();
+		state.setReadsThrow(true);
+		for (const e of failedCycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent.map((send) => send.kind)).toEqual(["e"]);
+		expect(state.resolvers).toEqual([null]);
+		expect(state.readCalls()).toBe(0);
+		expect(
+			state.errors.some((line) =>
+				line.message.includes("could not send lifecycle alert"),
+			),
+		).toBe(false);
+	});
+
+	it("advances on `user` to its cutoff, never on `repair-seen`", () => {
+		const state = setup();
+		read(state, "repair-seen", 2_000);
+		expect(state.reads.get("terminal-1")).toBeUndefined();
+		read(state, "user", 2_500);
+		expect(state.reads.get("terminal-1")).toBe(2_500);
+	});
+
+	it("reads a `user` report with no instant through the binding's last event", () => {
+		const state = setup();
+		expect(
+			sinkFor(state, LAST_EVENT_AT)({ origin: "user", seenThroughAt: null }),
+		).toEqual({ accepted: true, refusal: null });
+		expect(state.reads.get("terminal-1")).toBe(LAST_EVENT_AT);
+	});
+
+	it("answers not accepted when the binding's last event is no read instant", () => {
+		const state = setup();
+		expect(sinkFor(state, 0)({ origin: "user", seenThroughAt: null })).toEqual({
+			accepted: false,
+			refusal: null,
+		});
+		expect(state.reads.get("terminal-1")).toBeUndefined();
+	});
+
+	it("retires what a `user` read's cutoff covers and never sends a blind `c`", async () => {
+		const state = setup({ proofEpochs: null });
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		const alertId = state.sent[0]?.alertId ?? "";
+
+		read(state, "user", 1_500);
+		await tick();
+		expect(state.retracted).toEqual([]);
+
+		read(state, "user", 2_000);
+		await tick();
+		expect(state.retracted).toEqual([alertId]);
+	});
+
+	it("refuses a read instant above the binding's last event", () => {
+		const state = setup();
+		const report = (seenThroughAt: number) =>
+			sinkFor(state, LAST_EVENT_AT)({ origin: "user", seenThroughAt });
+		expect(report(LAST_EVENT_AT + 1)).toEqual({
+			accepted: false,
+			refusal: null,
+		});
+		expect(state.reads.get("terminal-1")).toBeUndefined();
+		expect(report(LAST_EVENT_AT)).toEqual({ accepted: true, refusal: null });
+		expect(state.reads.get("terminal-1")).toBe(LAST_EVENT_AT);
+	});
+
+	it("never moves the mark for a `repair-seen` report, the released desktop's included", () => {
+		const state = setup();
+		expect(
+			sinkFor(state, 3_000)({ origin: "repair-seen", seenThroughAt: 3_000 }),
+		).toEqual({ accepted: true, refusal: null });
+		expect(state.reads.get("terminal-1")).toBeUndefined();
+	});
+
+	it("holds a `g` whose read store throws, and retries it", async () => {
+		jest.useFakeTimers();
+		const state = setup();
+		try {
+			state.setReadsThrow(true);
+			for (const e of cycle(1_000)) state.manager.record(e);
+			await flushMicrotasks();
+			expect(state.sent).toHaveLength(0);
+			expect(
+				state.errors.some((line) =>
+					line.message.includes("could not send lifecycle alert"),
+				),
+			).toBe(true);
+
+			state.setReadsThrow(false);
+			state.setNow(1_000 + 60_000);
+			jest.advanceTimersByTime(2_000);
+			await flushMicrotasks();
+			expect(state.sends.map((send) => send.readThroughAtMs)).toEqual([0]);
+		} finally {
+			state.manager.stop();
+			jest.useRealTimers();
+		}
+	});
+
+	it("leaves the mark alone on new-cycle, session-end, terminal-gone, desktop-relaunch and curated-off", async () => {
+		const state = setup();
+		state.reads.set("terminal-1", 1_500);
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		state.manager.record(event({ occurredAtMs: 3_000 }));
+		state.manager.observeStatus("terminal-1", "Start");
+		for (const e of cycle(4_000)) state.manager.record(e);
+		await tick();
+		state.manager.record(
+			event({ outcome: "session-end", occurredAtMs: 6_000 }),
+		);
+		for (const e of cycle(7_000)) state.manager.record(e);
+		await tick();
+		state.setCuratedOff(() => true);
+		state.manager.retireCuratedOffAlerts();
+		relaunchAt(state, 10_000);
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retracted.length).toBeGreaterThan(0);
+		expect([...state.reads]).toEqual([["terminal-1", 1_500]]);
+	});
+
+	it("puts the durable mark on the first `g` after a restart", async () => {
+		const reads = new Map<string, number>();
+		const before = setup({ reads });
+		read(before, "user", 2_000);
+		before.manager.stop();
+
+		const after = setup({ reads, startAtMs: 3_000 });
+		for (const e of cycle(4_000)) after.manager.record(e);
+		await tick();
+		expect(after.sends.map((send) => send.readThroughAtMs)).toEqual([2_000]);
 	});
 });

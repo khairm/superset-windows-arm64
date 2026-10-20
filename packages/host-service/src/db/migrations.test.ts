@@ -258,4 +258,79 @@ describe("host.db migrations", () => {
 			},
 		]);
 	});
+
+	test("the fork's companion lifecycle reads land on fresh and existing databases", () => {
+		const expectReads = (sqlite: Database) => {
+			expect(tables(sqlite)).toContain("companion_lifecycle_reads");
+			expect(
+				sqlite
+					.prepare("PRAGMA foreign_key_list(companion_lifecycle_reads)")
+					.all(),
+			).toMatchObject([
+				{
+					table: "terminal_sessions",
+					from: "terminal_id",
+					to: "id",
+					on_delete: "CASCADE",
+				},
+			]);
+		};
+
+		const fresh = open();
+		runMigrations(drizzle(fresh), MIGRATIONS_FOLDER);
+		expectReads(fresh);
+
+		const existing = open();
+		runMigrations(
+			drizzle(existing),
+			folderWithout({
+				omit: [],
+				through: "0036_fork_claude_account_controls",
+			}),
+		);
+		expect(tables(existing)).not.toContain("companion_lifecycle_reads");
+		existing.exec(
+			"INSERT INTO terminal_sessions (id, status, created_at) VALUES ('t1', 'active', 1)",
+		);
+		runMigrations(drizzle(existing), MIGRATIONS_FOLDER);
+		expectReads(existing);
+		existing.exec(
+			"INSERT INTO companion_lifecycle_reads (terminal_id, read_through_at) VALUES ('t1', 1790000000000)",
+		);
+		expect(
+			existing.prepare("SELECT * FROM companion_lifecycle_reads").all(),
+		).toEqual([{ terminal_id: "t1", read_through_at: 1790000000000 }]);
+	});
+
+	test("later migrations preserve the fork's companion lifecycle reads", () => {
+		const journal = readJournal(MIGRATIONS_FOLDER);
+		const cutoff = journal.entries.find(
+			(entry) => entry.tag === "0037_project_soft_delete",
+		);
+		if (!cutoff)
+			throw new Error("0037_project_soft_delete is not in the journal");
+		const sqlite = open();
+		runMigrations(
+			drizzle(sqlite),
+			folderOf(
+				journal.entries.filter(
+					(entry) =>
+						entry.when <= cutoff.when ||
+						entry.tag === "0038_fork_companion_lifecycle_reads",
+				),
+			),
+		);
+		sqlite.exec(
+			"INSERT INTO terminal_sessions (id, status, created_at) VALUES ('t1', 'active', 1)",
+		);
+		sqlite.exec(
+			"INSERT INTO companion_lifecycle_reads (terminal_id, read_through_at) VALUES ('t1', 1790000000000)",
+		);
+
+		runMigrations(drizzle(sqlite), MIGRATIONS_FOLDER);
+
+		expect(
+			sqlite.prepare("SELECT * FROM companion_lifecycle_reads").all(),
+		).toEqual([{ terminal_id: "t1", read_through_at: 1790000000000 }]);
+	});
 });

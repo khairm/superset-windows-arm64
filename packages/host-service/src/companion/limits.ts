@@ -149,3 +149,33 @@ export const MAX_OPTION_DESCRIPTION_CHARS = 4_096;
 export const MAX_OPTIONS_PER_QUESTION = 32;
 /** Questions in one captured prompt. Also bounds a legal `question.index`. */
 export const MAX_QUESTIONS_PER_PROMPT = 32;
+
+// ---------------------------------------------------------------------------
+// the durable read mark behind one buzz per chat
+// ---------------------------------------------------------------------------
+
+/**
+ * A read mark is a host-clock ms instant of exactly 13 digits, no leading zero:
+ * the `rg` wire rule. The tRPC read input, the read store and the push builder
+ * all hold it to this range.
+ */
+export const READ_INSTANT_MIN_MS = 1_000_000_000_000;
+export const READ_INSTANT_MAX_MS = 9_999_999_999_999;
+
+export function isReadInstant(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= READ_INSTANT_MIN_MS &&
+		value <= READ_INSTANT_MAX_MS
+	);
+}
+
+/**
+ * Who reports a read. Only `user` raises the read mark; `repair-seen` (every
+ * resync repair, Clear agent status, the released desktop) only retracts.
+ * Shared by the tRPC input and the manager.
+ */
+export const LIFECYCLE_READ_ORIGINS = ["user", "repair-seen"] as const;
+
+export type LifecycleReadOrigin = (typeof LIFECYCLE_READ_ORIGINS)[number];

@@ -20,7 +20,7 @@ import {
 	type V2NotificationState,
 } from "renderer/stores/v2-notifications/store";
 import { applyRememberedV2PaneSelection } from "renderer/stores/v2-pane-selection";
-import { reportTerminalSeen } from "./companionAlertSync";
+import { markTerminalSeenAndReportRead } from "./companionAlertSync";
 import { getV2NativeNotificationContent } from "./notificationContent";
 import {
 	isV2NotificationTargetVisible,
@@ -299,23 +299,13 @@ function updatePaneStatus({
 	// that same finish stood until its six-hour TTL. Watching the agent finish
 	// on screen is the strongest evidence of a read there is.
 	//
-	// `payload.occurredAt` IS THE ALERT'S SUBJECT. The host hashes its alert id
-	// from the outcome event's own instant (notifications.ts computes it once
-	// and every frame about the alert carries it), so this is the one value that
-	// names the finish being cancelled. The binding's `lastEventAt` would not:
-	// it advances for events that raise no alert at all.
-	//
 	// MARKED SEEN LOCALLY TOO, not only reported. Without the local mark the
 	// next resync compares the binding against an absent seen record and
 	// re-raises the very green this cleared.
 	//
-	// NOT `markTerminalSeenAndReportRead`. Its guard refuses exactly this case —
-	// no review entry was ever created, so it has nothing it recognises as
-	// evidence and returns before reporting.
-	//
-	// NO DEBOUNCE. Idempotence is structural: the host keeps a retracted row per
-	// alert id until the TTL and a repeat is inert, and the local seen mark is
-	// monotonic.
+	// A USER READ with the event's own instant as its cutoff: the host retires
+	// through it and raises its read mark to it, an unacknowledged read is
+	// re-sent by the resync, and a repeat of the same instant is not sent again.
 	//
 	// STOP AND FAILED ONLY. Those are the two outcomes that mint an alert;
 	// BackgroundRunning shares their transition but mints nothing, so reporting
@@ -323,13 +313,10 @@ function updatePaneStatus({
 	//
 	// LIVE EVENTS ONLY. The bus-resync never reaches here — it replays through
 	// `replayV2AgentLifecycleState`, which has no hop — because a replay is not
-	// a read: (a) `lastEventAt` advances for events that mint no alert, so the
-	// hop would broadcast a retraction naming an instant no alert id was ever
-	// hashed from — a blind claim that can evict a real one from the phone's
-	// fixed-size window; and (b) a relaunch replays `lastEventType: "Failed"` on
-	// every open agent tab, and error cards are meant to SURVIVE a relaunch until
-	// the user looks. The repair path in `resyncAgentStatus` is where a replay may
-	// report a read, off durable seen marks and never off the mere fact that the
+	// a read: a relaunch replays `lastEventType: "Failed"` on every open agent
+	// tab, and error cards are meant to SURVIVE a relaunch until the user looks.
+	// The repair path in `resyncAgentStatus` only re-sends retractions off
+	// durable seen marks, never a read, and never off the mere fact that the
 	// pane is on screen.
 	//
 	// PRESENCE IS ALREADY IN `targetVisible` for a live event — see where it is
@@ -341,11 +328,10 @@ function updatePaneStatus({
 		target.terminalId.length > 0 &&
 		targetVisible
 	) {
-		store.markTerminalSeen(target.terminalId, payload.occurredAt);
-		void reportTerminalSeen({
+		markTerminalSeenAndReportRead({
 			workspaceId,
 			terminalId: target.terminalId,
-			seenThroughAt: payload.occurredAt,
+			seenAt: payload.occurredAt,
 		});
 	}
 }

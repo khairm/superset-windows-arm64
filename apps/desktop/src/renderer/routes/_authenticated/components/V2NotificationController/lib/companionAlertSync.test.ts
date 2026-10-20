@@ -27,7 +27,8 @@ interface SyncCall {
 interface SeenCall {
 	workspaceId: string;
 	terminalId: string;
-	seenThroughAt: number;
+	origin: string;
+	seenThroughAt: number | null;
 	resolve: (accepted: boolean) => void;
 	/** (ALERT-RETIRE-ON-EXIT) The host judged the claim wrong, not unusable. */
 	refuse: () => void;
@@ -40,8 +41,17 @@ interface RelaunchCall {
 	reject: (error: Error) => void;
 }
 
+/** Host-clock instants are 13-digit ms values; tests name them as offsets. */
+const T0 = 1_700_000_000_000;
+const at = (ms: number): number => T0 + ms;
+
 let syncCalls: SyncCall[] = [];
 let seenCalls: SeenCall[] = [];
+let legacySeenCalls: Array<{
+	workspaceId: string;
+	terminalId: string;
+	seenThroughAt: number;
+}> = [];
 let relaunchCalls: RelaunchCall[] = [];
 /** When set, sync calls settle immediately with this acceptance. */
 let autoAcceptSync: boolean | null = true;
@@ -53,8 +63,17 @@ let autoAcceptRelaunch: boolean | null = true;
  * than the transient "nothing consumed it".
  */
 let refuseSeen = false;
+/** When set, the host has no bridge registered. */
+let bridgeOff = false;
+/** When set, the host predates `reportLifecycleRead`. */
+let legacyHost = false;
 /** When set, the relaunch mutation rejects instead of resolving. */
 let relaunchThrows = false;
+
+type SeenAck = {
+	accepted: boolean;
+	refusal: "workspace-mismatch" | "bridge-off" | null;
+};
 
 function makeClient() {
 	return {
@@ -75,16 +94,22 @@ function makeClient() {
 						if (autoAcceptSync !== null) call.resolve(autoAcceptSync);
 					}),
 			},
-			markLifecycleSeen: {
+			reportLifecycleRead: {
 				mutate: (input: {
 					workspaceId: string;
 					terminalId: string;
-					seenThroughAt: number;
+					origin: string;
+					seenThroughAt: number | null;
 				}) =>
-					new Promise<{
-						accepted: boolean;
-						refusal: "workspace-mismatch" | null;
-					}>((resolve, reject) => {
+					new Promise<SeenAck>((resolve, reject) => {
+						if (legacyHost) {
+							reject(
+								Object.assign(new Error("No procedure found"), {
+									data: { code: "NOT_FOUND" },
+								}),
+							);
+							return;
+						}
 						const call: SeenCall = {
 							...input,
 							resolve: (accepted) => resolve({ accepted, refusal: null }),
@@ -93,12 +118,26 @@ function makeClient() {
 							reject,
 						};
 						seenCalls.push(call);
+						if (bridgeOff) {
+							resolve({ accepted: false, refusal: "bridge-off" });
+							return;
+						}
 						if (refuseSeen) {
 							call.refuse();
 							return;
 						}
 						if (autoAcceptSeen !== null) call.resolve(autoAcceptSeen);
 					}),
+			},
+			markLifecycleSeen: {
+				mutate: async (input: {
+					workspaceId: string;
+					terminalId: string;
+					seenThroughAt: number;
+				}): Promise<SeenAck> => {
+					legacySeenCalls.push(input);
+					return { accepted: true, refusal: null };
+				},
 			},
 			retireStaleReadyAlerts: {
 				mutate: (input: { boundaryMs: number }) =>
@@ -135,13 +174,16 @@ mock.module("renderer/lib/host-service-client", () => ({
 const {
 	forgetAlertContextSyncsForHost,
 	markTerminalSeenAndReportRead,
+	pendingUserReads,
 	queueAlertContextSync,
 	registerWorkspaceHost,
 	releaseAlertContextSync,
 	reportRelaunchBoundary,
 	reportTerminalSeen,
+	reportUserRead,
 	resetRelaunchBoundaryLatchForTest,
 	resetSeenRefusalLatchForTest,
+	resetUserReadsForTest,
 	unregisterWorkspaceHost,
 } = await import("./companionAlertSync");
 const { useV2NotificationStore } = await import(
@@ -182,20 +224,25 @@ async function flush(): Promise<void> {
 beforeEach(() => {
 	syncCalls = [];
 	seenCalls = [];
+	legacySeenCalls = [];
 	relaunchCalls = [];
 	autoAcceptSync = true;
 	autoAcceptSeen = true;
 	autoAcceptRelaunch = true;
 	refuseSeen = false;
+	bridgeOff = false;
+	legacyHost = false;
 	relaunchThrows = false;
 	resetRelaunchBoundaryLatchForTest();
 	resetSeenRefusalLatchForTest();
+	resetUserReadsForTest();
 	releaseAlertContextSync(WORKSPACE);
 });
 
 afterEach(() => {
 	releaseAlertContextSync(WORKSPACE);
 	unregisterWorkspaceHost(WORKSPACE, HOST);
+	resetUserReadsForTest();
 });
 
 // --- the hash guard ---------------------------------------------------------
@@ -465,13 +512,14 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 			reportTerminalSeen({
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-1",
-				seenThroughAt: 1_000,
+				origin: "user",
+				seenThroughAt: at(1_000),
 			}),
 		).resolves.toBe(true);
 		expect(seenCalls).toHaveLength(1);
 		expect(seenCalls[0]).toMatchObject({
 			terminalId: "terminal-1",
-			seenThroughAt: 1_000,
+			seenThroughAt: at(1_000),
 		});
 	});
 
@@ -482,7 +530,8 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 			reportTerminalSeen({
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-1",
-				seenThroughAt: 1_000,
+				origin: "user",
+				seenThroughAt: at(1_000),
 			}),
 		).resolves.toBe(false);
 	});
@@ -493,7 +542,8 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 		const pending = reportTerminalSeen({
 			workspaceId: WORKSPACE,
 			terminalId: "terminal-1",
-			seenThroughAt: 1_000,
+			origin: "user",
+			seenThroughAt: at(1_000),
 		});
 		seenCalls[0]?.reject(new Error("host gone"));
 		await expect(pending).resolves.toBe(false);
@@ -505,7 +555,8 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 			reportTerminalSeen({
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-1",
-				seenThroughAt: 1_000,
+				origin: "user",
+				seenThroughAt: at(1_000),
 			}),
 		).resolves.toBe(false);
 		expect(seenCalls).toHaveLength(0);
@@ -513,11 +564,19 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 
 	it("refuses a non-epoch stamp rather than hashing nonsense into an alert id", async () => {
 		registerWorkspaceHost(WORKSPACE, HOST);
-		for (const seenThroughAt of [0, -1, 1.5, Number.NaN]) {
+		for (const seenThroughAt of [
+			0,
+			-1,
+			1.5,
+			Number.NaN,
+			999_999_999_999,
+			10_000_000_000_000,
+		]) {
 			await expect(
 				reportTerminalSeen({
 					workspaceId: WORKSPACE,
 					terminalId: "terminal-1",
+					origin: "user",
 					seenThroughAt,
 				}),
 			).resolves.toBe(false);
@@ -534,7 +593,8 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 			reportTerminalSeen({
 				workspaceId: WORKSPACE,
 				terminalId: "terminal-1",
-				seenThroughAt: 1_000,
+				origin: "user",
+				seenThroughAt: at(1_000),
 			}),
 		).resolves.toBe(true);
 	});
@@ -573,29 +633,54 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 				reportTerminalSeen({
 					workspaceId: WORKSPACE,
 					terminalId: TERMINAL,
-					seenThroughAt: 1_000,
+					origin: "user",
+					seenThroughAt: at(1_000),
 				}),
 			).resolves.toBe(false);
 		}
 		expect(seenCalls).toHaveLength(1);
 	});
 
-	it("still reports the NEXT finish on the same terminal", async () => {
+	it("still reports the NEXT finish's retraction on the same terminal", async () => {
 		refuseSeen = true;
 		await reportTerminalSeen({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			seenThroughAt: 1_000,
+			origin: "repair-seen",
+			seenThroughAt: at(1_000),
 		});
 		refuseSeen = false;
 		await expect(
 			reportTerminalSeen({
 				workspaceId: WORKSPACE,
 				terminalId: TERMINAL,
-				seenThroughAt: 2_000,
+				origin: "repair-seen",
+				seenThroughAt: at(2_000),
 			}),
 		).resolves.toBe(true);
 		expect(seenCalls).toHaveLength(2);
+	});
+
+	it("latches a refused user read for the terminal, whatever its cutoff", async () => {
+		refuseSeen = true;
+		await reportTerminalSeen({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			origin: "user",
+			seenThroughAt: at(1_000),
+		});
+		refuseSeen = false;
+		for (const seenThroughAt of [at(2_000), null]) {
+			await expect(
+				reportTerminalSeen({
+					workspaceId: WORKSPACE,
+					terminalId: TERMINAL,
+					origin: "user",
+					seenThroughAt,
+				}),
+			).resolves.toBe(false);
+		}
+		expect(seenCalls).toHaveLength(1);
 	});
 
 	it("still reports the SAME finish against the workspace host.db owns", async () => {
@@ -603,7 +688,8 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 		await reportTerminalSeen({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			seenThroughAt: 1_000,
+			origin: "user",
+			seenThroughAt: at(1_000),
 		});
 		registerWorkspaceHost(DB_OWNED, HOST);
 		refuseSeen = false;
@@ -611,7 +697,8 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 			reportTerminalSeen({
 				workspaceId: DB_OWNED,
 				terminalId: TERMINAL,
-				seenThroughAt: 1_000,
+				origin: "user",
+				seenThroughAt: at(1_000),
 			}),
 		).resolves.toBe(true);
 		expect(seenCalls).toHaveLength(2);
@@ -626,7 +713,8 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 		await reportTerminalSeen({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			seenThroughAt: 1_000,
+			origin: "user",
+			seenThroughAt: at(1_000),
 		});
 		registerWorkspaceHost(WORKSPACE, "http://host-b");
 		refuseSeen = false;
@@ -634,7 +722,8 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 			reportTerminalSeen({
 				workspaceId: WORKSPACE,
 				terminalId: TERMINAL,
-				seenThroughAt: 1_000,
+				origin: "user",
+				seenThroughAt: at(1_000),
 			}),
 		).resolves.toBe(true);
 		expect(seenCalls).toHaveLength(2);
@@ -650,7 +739,8 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 				reportTerminalSeen({
 					workspaceId: WORKSPACE,
 					terminalId: TERMINAL,
-					seenThroughAt: 1_000,
+					origin: "user",
+					seenThroughAt: at(1_000),
 				}),
 			).resolves.toBe(false);
 		}
@@ -662,7 +752,8 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 		const pending = reportTerminalSeen({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			seenThroughAt: 1_000,
+			origin: "user",
+			seenThroughAt: at(1_000),
 		});
 		seenCalls[0]?.reject(new Error("host gone"));
 		await expect(pending).resolves.toBe(false);
@@ -672,7 +763,8 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 			reportTerminalSeen({
 				workspaceId: WORKSPACE,
 				terminalId: TERMINAL,
-				seenThroughAt: 1_000,
+				origin: "user",
+				seenThroughAt: at(1_000),
 			}),
 		).resolves.toBe(true);
 		expect(seenCalls).toHaveLength(2);
@@ -680,17 +772,132 @@ describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
 
 	it("leaves the outstanding record standing — a refusal retired nothing", async () => {
 		useV2NotificationStore.setState({
-			outstandingReadyAt: { [TERMINAL]: 1_000 },
+			outstandingReadyAt: { [TERMINAL]: at(1_000) },
 		});
 		refuseSeen = true;
 		await reportTerminalSeen({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			seenThroughAt: 1_000,
+			origin: "user",
+			seenThroughAt: at(1_000),
 		});
 		expect(useV2NotificationStore.getState().outstandingReadyAt[TERMINAL]).toBe(
-			1_000,
+			at(1_000),
 		);
+	});
+});
+
+/**
+ * A PC read the host did not take is kept for the resync only while some host
+ * could still take it.
+ */
+describe("a pending PC read", () => {
+	const TERMINAL = "terminal-1";
+	const read = (seenThroughAt: number | null, terminalId = TERMINAL) =>
+		reportUserRead({ workspaceId: WORKSPACE, terminalId, seenThroughAt });
+	const drain = async () => {
+		for (let i = 0; i < 4; i++) await settle();
+	};
+
+	beforeEach(() => {
+		useV2NotificationStore.setState({ outstandingReadyAt: {} });
+		registerWorkspaceHost(WORKSPACE, HOST);
+	});
+
+	it("is kept when nothing consumed it", async () => {
+		autoAcceptSeen = false;
+		read(at(1_000));
+		await drain();
+		expect(pendingUserReads(HOST).map((entry) => entry.terminalId)).toEqual([
+			TERMINAL,
+		]);
+	});
+
+	it("is dropped when the host has no bridge", async () => {
+		bridgeOff = true;
+		read(at(1_000));
+		await drain();
+		expect(seenCalls).toHaveLength(1);
+		expect(pendingUserReads(HOST)).toEqual([]);
+	});
+
+	it("is dropped when host.db places the terminal elsewhere", async () => {
+		refuseSeen = true;
+		read(at(1_000));
+		await drain();
+		expect(pendingUserReads(HOST)).toEqual([]);
+	});
+
+	it("on a host older than reportLifecycleRead, retracts the legacy way once and is dropped", async () => {
+		legacyHost = true;
+		useV2NotificationStore.setState({
+			outstandingReadyAt: { [TERMINAL]: at(1_000) },
+		});
+		read(at(1_000));
+		await drain();
+		expect(legacySeenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				seenThroughAt: at(1_000),
+			},
+		]);
+		expect(pendingUserReads(HOST)).toEqual([]);
+		expect(
+			useV2NotificationStore.getState().outstandingReadyAt[TERMINAL],
+		).toBeUndefined();
+	});
+
+	it("on a host older than reportLifecycleRead, with no instant, sends nothing more", async () => {
+		legacyHost = true;
+		read(null);
+		await drain();
+		expect(legacySeenCalls).toEqual([]);
+		expect(pendingUserReads(HOST)).toEqual([]);
+	});
+
+	it("evicts the oldest pending read past the cap", async () => {
+		autoAcceptSeen = false;
+		for (let i = 0; i < 512; i++) read(at(1_000), `terminal-${i}`);
+		await drain();
+		read(at(1_000), "terminal-512");
+		await drain();
+		const pending = pendingUserReads(HOST).map((entry) => entry.terminalId);
+		expect(pending).toHaveLength(512);
+		expect(pending).not.toContain("terminal-0");
+		expect(pending).toContain("terminal-512");
+	});
+
+	it("evicts past the cap once reads still in flight at report time settle", async () => {
+		autoAcceptSeen = false;
+		for (let i = 0; i <= 512; i++) read(at(1_000), `terminal-${i}`);
+		await drain();
+		const pending = pendingUserReads(HOST).map((entry) => entry.terminalId);
+		expect(pending).toHaveLength(512);
+		expect(pending).not.toContain("terminal-0");
+		expect(pending).toContain("terminal-512");
+	});
+});
+
+describe("a retraction on a host older than reportLifecycleRead", () => {
+	it("goes through markLifecycleSeen and answers with its result", async () => {
+		registerWorkspaceHost(WORKSPACE, HOST);
+		legacyHost = true;
+		await expect(
+			reportTerminalSeen({
+				workspaceId: WORKSPACE,
+				terminalId: "terminal-1",
+				origin: "repair-seen",
+				seenThroughAt: at(1_000),
+			}),
+		).resolves.toBe(true);
+		expect(legacySeenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: "terminal-1",
+				seenThroughAt: at(1_000),
+			},
+		]);
 	});
 });
 
@@ -720,26 +927,31 @@ describe("(ONE-BUZZ-UNTIL-READ) markTerminalSeenAndReportRead", () => {
 		registerWorkspaceHost(WORKSPACE, HOST);
 	});
 
-	function finish(at: number): void {
+	function finish(instant: number): void {
 		useV2NotificationStore
 			.getState()
-			.applySourceAxes(source, WORKSPACE, { set: ["review"], clear: [] }, at);
+			.applySourceAxes(
+				source,
+				WORKSPACE,
+				{ set: ["review"], clear: [] },
+				instant,
+			);
 	}
 
-	function startsWorking(at: number): void {
+	function startsWorking(instant: number): void {
 		useV2NotificationStore
 			.getState()
 			.applySourceAxes(
 				source,
 				WORKSPACE,
 				{ set: ["working"], clear: ["permission", "review"] },
-				at,
+				instant,
 			);
 	}
 
-	it("reports the OUTSTANDING finish when the chat is already running again", async () => {
-		finish(5_000);
-		startsWorking(6_000);
+	it("covers the OUTSTANDING finish when the chat is already running again", async () => {
+		finish(at(5_000));
+		startsWorking(at(6_000));
 		expect(
 			useV2NotificationStore.getState().sources["terminal:terminal-1"]?.status,
 		).toBe("working");
@@ -747,16 +959,17 @@ describe("(ONE-BUZZ-UNTIL-READ) markTerminalSeenAndReportRead", () => {
 		markTerminalSeenAndReportRead({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			lastEventAt: 6_000,
+			seenAt: at(6_000),
 		});
 		await settle();
 
-		// The subject is the FINISH's instant — the one the alert id hashed — not
-		// the binding's `lastEventAt`, which has moved on to the `Start`.
+		// The read's cutoff is the binding's stamp, past the `Start`, so the host
+		// retires the finish behind it without the finish being named.
 		expect(seenCalls).toHaveLength(1);
 		expect(seenCalls[0]).toMatchObject({
 			terminalId: TERMINAL,
-			seenThroughAt: 5_000,
+			origin: "user",
+			seenThroughAt: at(6_000),
 		});
 		// Consumed, so the record is retired and a second focus is silent.
 		expect(
@@ -765,70 +978,48 @@ describe("(ONE-BUZZ-UNTIL-READ) markTerminalSeenAndReportRead", () => {
 		markTerminalSeenAndReportRead({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			lastEventAt: 6_000,
+			seenAt: at(6_000),
 		});
 		await settle();
 		expect(seenCalls).toHaveLength(1);
 	});
 
-	it("prefers the LIVE green over the record when the dot is still up", async () => {
-		finish(5_000);
-		markTerminalSeenAndReportRead({
-			workspaceId: WORKSPACE,
-			terminalId: TERMINAL,
-			lastEventAt: 7_000,
-		});
-		await settle();
-		expect(seenCalls[0]).toMatchObject({ seenThroughAt: 5_000 });
-	});
-
 	it("keeps the record when no host consumed the report", async () => {
 		autoAcceptSeen = false;
-		finish(5_000);
-		startsWorking(6_000);
+		finish(at(5_000));
+		startsWorking(at(6_000));
 		markTerminalSeenAndReportRead({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			lastEventAt: 6_000,
+			seenAt: at(6_000),
 		});
 		await settle();
 		expect(seenCalls).toHaveLength(1);
 		// Still outstanding: the resync sweep is what retries it.
 		expect(useV2NotificationStore.getState().outstandingReadyAt[TERMINAL]).toBe(
-			5_000,
+			at(5_000),
 		);
 	});
 
-	it("reports NOTHING for a terminal with no green and no record", async () => {
+	it("reports a read for a terminal with no green and no record", async () => {
 		markTerminalSeenAndReportRead({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			lastEventAt: 6_000,
+			seenAt: at(6_000),
 		});
 		await settle();
-		expect(seenCalls).toHaveLength(0);
-		// It still recorded the seen mark — the report is what is gated.
+		// No finish to retract, but still a read.
+		expect(seenCalls).toEqual([
+			expect.objectContaining({
+				terminalId: TERMINAL,
+				origin: "user",
+				seenThroughAt: at(6_000),
+			}),
+		]);
+		// It still recorded the seen mark.
 		expect(useV2NotificationStore.getState().terminalSeenAt[TERMINAL]).toBe(
-			6_000,
+			at(6_000),
 		);
-	});
-
-	it("reports nothing for a red — a permission is not a finish", async () => {
-		useV2NotificationStore
-			.getState()
-			.applySourceAxes(
-				source,
-				WORKSPACE,
-				{ set: ["permission"], clear: [] },
-				5_000,
-			);
-		markTerminalSeenAndReportRead({
-			workspaceId: WORKSPACE,
-			terminalId: TERMINAL,
-			lastEventAt: 6_000,
-		});
-		await settle();
-		expect(seenCalls).toHaveLength(0);
 	});
 
 	/**
@@ -840,36 +1031,36 @@ describe("(ONE-BUZZ-UNTIL-READ) markTerminalSeenAndReportRead", () => {
 	 */
 	it("keeps a finish that lands while an older report is in flight", async () => {
 		autoAcceptSeen = null; // hold the mutation open
-		finish(5_000);
-		startsWorking(6_000);
+		finish(at(5_000));
+		startsWorking(at(6_000));
 		markTerminalSeenAndReportRead({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			lastEventAt: 6_000,
+			seenAt: at(6_000),
 		});
 		await settle();
 		expect(seenCalls).toHaveLength(1);
 
 		// B finishes while A's report is still open.
-		finish(7_000);
+		finish(at(7_000));
 		seenCalls[0]?.resolve(true);
 		await settle();
 
 		expect(useV2NotificationStore.getState().outstandingReadyAt[TERMINAL]).toBe(
-			7_000,
+			at(7_000),
 		);
 
-		// And B is still reportable: opening the chat again names B, not A.
+		// And B is still reportable: opening the chat again covers B.
 		autoAcceptSeen = true;
-		startsWorking(8_000);
+		startsWorking(at(8_000));
 		markTerminalSeenAndReportRead({
 			workspaceId: WORKSPACE,
 			terminalId: TERMINAL,
-			lastEventAt: 8_000,
+			seenAt: at(8_000),
 		});
 		await settle();
 		expect(seenCalls).toHaveLength(2);
-		expect(seenCalls[1]).toMatchObject({ seenThroughAt: 7_000 });
+		expect(seenCalls[1]).toMatchObject({ seenThroughAt: at(8_000) });
 		expect(
 			useV2NotificationStore.getState().outstandingReadyAt[TERMINAL],
 		).toBeUndefined();

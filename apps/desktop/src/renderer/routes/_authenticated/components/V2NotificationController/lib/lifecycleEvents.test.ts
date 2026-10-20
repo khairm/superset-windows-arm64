@@ -20,8 +20,13 @@ import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v
 interface SeenCall {
 	workspaceId: string;
 	terminalId: string;
-	seenThroughAt: number;
+	origin: string;
+	seenThroughAt: number | null;
 }
+
+/** Host-clock instants are 13-digit ms values; tests name them as offsets. */
+const T0 = 1_700_000_000_000;
+const at = (ms: number): number => T0 + ms;
 
 let seenCalls: SeenCall[] = [];
 
@@ -32,7 +37,7 @@ mock.module("renderer/lib/host-service-client", () => ({
 	hostServiceQueryRetryDelay: () => 0,
 	getHostServiceClientByUrl: () => ({
 		companion: {
-			markLifecycleSeen: {
+			reportLifecycleRead: {
 				mutate: async (input: SeenCall) => {
 					seenCalls.push(input);
 					return { accepted: true };
@@ -51,9 +56,11 @@ mock.module("renderer/lib/host-service-client", () => ({
 // is the status half, which never rings.
 
 const { markV2AgentLifecycleTargetSeen } = await import("./lifecycleEvents");
-const { registerWorkspaceHost, unregisterWorkspaceHost } = await import(
-	"./companionAlertSync"
-);
+const {
+	registerWorkspaceHost,
+	resetUserReadsForTest,
+	unregisterWorkspaceHost,
+} = await import("./companionAlertSync");
 const {
 	getV2NotificationSourceKey,
 	getV2TerminalNotificationSource,
@@ -108,7 +115,7 @@ function payload(
 	return {
 		eventType: "Stop",
 		terminalId: TERMINAL,
-		occurredAt: 5_000,
+		occurredAt: at(5_000),
 		...overrides,
 	};
 }
@@ -142,6 +149,7 @@ beforeEach(() => {
 	presence.hasFocus = () => true;
 	setScreenLocked(false);
 	resetV2NotificationStoreForTest();
+	resetUserReadsForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
 	// `getCurrentWorkspaceId` reads the route out of the hash, and the test
 	// harness aliases `window` to `globalThis` with no `location` on it.
@@ -154,43 +162,43 @@ afterEach(() => setScreenLocked(null));
 
 describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	it("reports a visible Stop with the OUTCOME instant", async () => {
-		fire({ eventType: "Stop", occurredAt: 5_000 });
+		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		expect(seenCalls).toEqual([
 			{
 				workspaceId: WORKSPACE,
 				terminalId: TERMINAL,
-				// `payload.occurredAt`, which is what the alert id was hashed from —
-				// never the binding's `lastEventAt`.
-				seenThroughAt: 5_000,
+				origin: "user",
+				seenThroughAt: at(5_000),
 			},
 		]);
 	});
 
 	it("reports a visible Failed too", async () => {
-		fire({ eventType: "Failed", occurredAt: 6_000 });
+		fire({ eventType: "Failed", occurredAt: at(6_000) });
 		await settle();
 		expect(seenCalls).toEqual([
 			{
 				workspaceId: WORKSPACE,
 				terminalId: TERMINAL,
-				seenThroughAt: 6_000,
+				origin: "user",
+				seenThroughAt: at(6_000),
 			},
 		]);
 	});
 
 	it("marks the terminal seen LOCALLY as well as reporting", async () => {
-		fire({ eventType: "Stop", occurredAt: 5_000 });
+		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		// Without the local mark the next resync compares the binding against an
 		// absent seen record and re-raises the very green this cleared.
 		expect(useV2NotificationStore.getState().terminalSeenAt[TERMINAL]).toBe(
-			5_000,
+			at(5_000),
 		);
 	});
 
 	it("does NOT report BackgroundRunning — it mints no alert", async () => {
-		fire({ eventType: "BackgroundRunning", occurredAt: 5_000 });
+		fire({ eventType: "BackgroundRunning", occurredAt: at(5_000) });
 		await settle();
 		expect(seenCalls).toEqual([]);
 	});
@@ -198,7 +206,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	it("does NOT report a turn end on a pane the user cannot see", async () => {
 		markV2AgentLifecycleTargetSeen({
 			workspaceId: WORKSPACE,
-			payload: payload({ terminalId: "terminal-2", occurredAt: 5_000 }),
+			payload: payload({ terminalId: "terminal-2", occurredAt: at(5_000) }),
 			paneLayout: layout,
 		});
 		await settle();
@@ -214,14 +222,14 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	 */
 	it("does NOT report while the window is hidden", async () => {
 		presence.hidden = true;
-		fire({ eventType: "Stop", occurredAt: 5_000 });
+		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		expect(seenCalls).toEqual([]);
 	});
 
 	it("does NOT report while the window is unfocused", async () => {
 		presence.hasFocus = () => false;
-		fire({ eventType: "Stop", occurredAt: 5_000 });
+		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		expect(seenCalls).toEqual([]);
 	});
@@ -239,12 +247,12 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 		let state = useV2NotificationStore.getState();
 		state = replayV2AgentLifecycleState(state, {
 			workspaceId: WORKSPACE,
-			payload: payload({ eventType: "Stop", occurredAt: 5_000 }),
+			payload: payload({ eventType: "Stop", occurredAt: at(5_000) }),
 			paneLayout: layout,
 		});
 		state = replayV2AgentLifecycleState(state, {
 			workspaceId: WORKSPACE,
-			payload: payload({ eventType: "Failed", occurredAt: 6_000 }),
+			payload: payload({ eventType: "Failed", occurredAt: at(6_000) }),
 			paneLayout: layout,
 		});
 		await settle();
@@ -271,7 +279,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	 */
 	it("raises a review dot for a turn that ends while the user is away", async () => {
 		presence.hidden = true;
-		fire({ eventType: "Stop", occurredAt: 5_000 });
+		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		const key = getV2NotificationSourceKey(
 			getV2TerminalNotificationSource(TERMINAL),
@@ -283,7 +291,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	});
 
 	it("raises NO review dot when the user watched it finish", async () => {
-		fire({ eventType: "Stop", occurredAt: 5_000 });
+		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		const key = getV2NotificationSourceKey(
 			getV2TerminalNotificationSource(TERMINAL),
@@ -303,7 +311,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 			useV2NotificationStore.getState(),
 			{
 				workspaceId: WORKSPACE,
-				payload: payload({ eventType: "Stop", occurredAt: 5_000 }),
+				payload: payload({ eventType: "Stop", occurredAt: at(5_000) }),
 				paneLayout: layout,
 			},
 		);
@@ -322,11 +330,11 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 				{ type: "terminal", id: "terminal-2" },
 				WORKSPACE,
 				{ set: ["permission"], clear: [] },
-				4_000,
+				at(4_000),
 			);
 		markV2AgentLifecycleTargetSeen({
 			workspaceId: WORKSPACE,
-			payload: payload({ terminalId: "terminal-2", occurredAt: 5_000 }),
+			payload: payload({ terminalId: "terminal-2", occurredAt: at(5_000) }),
 			paneLayout: layout,
 		});
 		await settle();
@@ -339,7 +347,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 			"PermissionRequest",
 			"Attached",
 		] as const) {
-			fire({ eventType, occurredAt: 5_000 });
+			fire({ eventType, occurredAt: at(5_000) });
 		}
 		await settle();
 		expect(seenCalls).toEqual([]);
@@ -347,12 +355,12 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 
 	it("is silent when the workspace has no known host", async () => {
 		unregisterWorkspaceHost(WORKSPACE, HOST);
-		fire({ eventType: "Stop", occurredAt: 5_000 });
+		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		expect(seenCalls).toEqual([]);
 		// The LOCAL mark still lands: it is what stops the resync re-raising.
 		expect(useV2NotificationStore.getState().terminalSeenAt[TERMINAL]).toBe(
-			5_000,
+			at(5_000),
 		);
 	});
 });
@@ -386,7 +394,7 @@ describe("shared lifecycle state transform", () => {
 			);
 			expect(
 				useV2NotificationStore.getState().outstandingReadyAt[TERMINAL],
-			).toBe(5_000);
+			).toBe(at(5_000));
 		} finally {
 			unsubscribe();
 		}

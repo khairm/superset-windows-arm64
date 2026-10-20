@@ -52,7 +52,12 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import type { CompanionBridge } from "../../../companion";
-import { PANIC_REASON_MAX_CHARS } from "../../../companion/limits";
+import {
+	LIFECYCLE_READ_ORIGINS,
+	PANIC_REASON_MAX_CHARS,
+	READ_INSTANT_MAX_MS,
+	READ_INSTANT_MIN_MS,
+} from "../../../companion/limits";
 import type {
 	PairingKind,
 	PairingWindowHandleBase,
@@ -73,7 +78,7 @@ import {
 	type LifecycleSeenAck,
 	readCompanionBridgeStatus,
 	recordCompanionAlertContexts,
-	recordCompanionLifecycleSeen,
+	recordCompanionLifecycleRead,
 	recordCompanionPresenceBeacon,
 	recordCompanionRelaunchBoundary,
 } from "../../../companion/registry";
@@ -281,6 +286,28 @@ const lifecycleSeenInput = z.object({
 });
 
 /**
+ * A read with its origin, for `reportLifecycleRead`. `seenThroughAt` is a host
+ * clock ms instant held to the `rg` wire rule (13 digits), and `null` only for
+ * a `user` read whose renderer knew no instant.
+ */
+const readInstant = z
+	.number()
+	.int()
+	.min(READ_INSTANT_MIN_MS)
+	.max(READ_INSTANT_MAX_MS);
+const lifecycleReadTarget = lifecycleSeenInput.omit({ seenThroughAt: true });
+const lifecycleReadInput = z.discriminatedUnion("origin", [
+	lifecycleReadTarget.extend({
+		origin: z.literal("user"),
+		seenThroughAt: readInstant.nullable(),
+	}),
+	lifecycleReadTarget.extend({
+		origin: z.enum(LIFECYCLE_READ_ORIGINS).exclude(["user"]),
+		seenThroughAt: readInstant,
+	}),
+]);
+
+/**
  * (ALERT-RETIRE-ON-EXIT) The instant this desktop launch came up, on the HOST's
  * clock.
  *
@@ -401,12 +428,15 @@ export const companionRouter = router({
 	/**
 	 * (ALERT-CONTEXT-NAMES) The user opened the chat on the desktop, so the
 	 * ready-for-review notification on their phone and watch is stale.
+	 * Released desktops still call this, and a new desktop calls it only when
+	 * its host has no `reportLifecycleRead`. It is a `repair-seen` read: it
+	 * retracts and never moves the read mark.
 	 *
-	 * Fired ONLY from the two user-intent sites in the renderer (focus-clear and
-	 * the sidebar mark-read), never from the store's resync seeding — a cold
-	 * start that seeded seen marks for every idle terminal would otherwise
-	 * mass-retract on every desktop launch. The renderer owns that rule; this is
-	 * the boundary that validates the shape.
+	 * Released desktops fire it ONLY from the two user-intent sites in the
+	 * renderer (focus-clear and the sidebar mark-read), never from the store's
+	 * resync seeding — a cold start that seeded seen marks for every idle
+	 * terminal would otherwise mass-retract on every desktop launch. The
+	 * renderer owns that rule; this is the boundary that validates the shape.
 	 *
 	 * Also never throws for the off states, and for the same reason: the dot has
 	 * already cleared locally by the time this runs, and a failed retraction must
@@ -427,10 +457,29 @@ export const companionRouter = router({
 	markLifecycleSeen: protectedProcedure
 		.input(lifecycleSeenInput)
 		.mutation(({ input }): LifecycleSeenAck => {
-			return recordCompanionLifecycleSeen({
+			return recordCompanionLifecycleRead({
 				hostTerminalId: input.terminalId,
 				hostWorkspaceId: input.workspaceId,
+				origin: "repair-seen",
 				seenThroughAt: input.seenThroughAt,
+			});
+		}),
+
+	/**
+	 * The user read a chat (`user`, which raises the durable read mark), or the
+	 * renderer retracts without a read (`repair-seen`: every resync repair and
+	 * Clear agent status, which never moves the mark). Retracts like
+	 * `markLifecycleSeen`, which released desktops still call and which never
+	 * moves the mark. Same answers and the same never-throws rule.
+	 */
+	reportLifecycleRead: protectedProcedure
+		.input(lifecycleReadInput)
+		.mutation(({ input }): LifecycleSeenAck => {
+			const { terminalId, workspaceId, ...read } = input;
+			return recordCompanionLifecycleRead({
+				hostTerminalId: terminalId,
+				hostWorkspaceId: workspaceId,
+				...read,
 			});
 		}),
 

@@ -224,6 +224,7 @@ export function treeDeps(
 		// `null` is the composition root that has none, and it pins that its
 		// absence costs a read nothing.
 		resolveTabTitle: null,
+		markReadFromCompanion: () => {},
 		...overrides,
 	};
 }

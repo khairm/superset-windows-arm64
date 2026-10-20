@@ -10,9 +10,12 @@ import {
 import { notificationStateTransforms } from "renderer/stores/v2-notifications/store";
 import type { HostNotificationWorkspaceState } from "../components/HostNotificationSubscriber";
 import {
+	dropUserRead,
 	hasAcknowledgedRelaunchBoundary,
+	pendingUserReads,
 	reportRelaunchBoundary,
 	reportTerminalSeen,
+	resendUserRead,
 } from "./companionAlertSync";
 import { replayV2AgentLifecycleState } from "./lifecycleEvents";
 import { resolveV2AgentStatusTransition } from "./statusTransitions";
@@ -388,8 +391,14 @@ export async function resyncAgentStatusFromHost({
 	// minted — rows are deleted only when a workspace is destroyed — and ships
 	// that unbounded list on every reconnect. The sweep only ever asks "is THIS
 	// terminal known", so the intersection answers the same question at a
-	// bounded size.
-	const candidateTerminalIds = collectCandidateTerminalIds(before);
+	// bounded size. A pending PC read's terminal is asked about too: the answer
+	// is what tells a terminal that is gone from one that is only idle.
+	const candidateTerminalIds = [
+		...new Set([
+			...collectCandidateTerminalIds(before),
+			...pendingUserReads(hostUrl).map((read) => read.terminalId),
+		]),
+	];
 
 	let rows: AgentStatusSnapshotRow[];
 	let knownTerminalIds: string[];
@@ -463,6 +472,72 @@ export async function resyncAgentStatusFromHost({
 	// about the microseconds between rows. Monotonic, like every other elapsed
 	// measurement in this file.
 	const nowMonotonicMs = nowMonotonic();
+	/**
+	 * Send one repair under the epoch's cap and cooldown. Fire-and-forget on the
+	 * resync's own timeline, but the cooldown is only written once the answer
+	 * is known.
+	 */
+	const spendRepairBudget = (
+		repairKey: string,
+		send: () => Promise<boolean>,
+	): void => {
+		if (isInRepairCooldown(repairKey, nowMonotonicMs)) {
+			result.seenRepairsSkipped++;
+		} else if (result.seenRepairsSent < MAX_SEEN_REPAIRS_PER_RESYNC) {
+			result.seenRepairsSent++;
+			acknowledgements.push(() => {
+				void send().then((accepted) => {
+					recordRepairAttempt(repairKey, nowMonotonicMs, accepted);
+				});
+			});
+		} else {
+			result.seenRepairsDeferred++;
+		}
+	};
+	const knownIds = new Set(knownTerminalIds);
+	// `knownTerminalIds` is the host's answer INTERSECTED with what we asked
+	// about, so an id we never asked about is absent from it by construction, not
+	// by the host's judgement. Terminals that entered the store while the
+	// snapshot was in flight are exactly that case.
+	const askedAboutIds = new Set(candidateTerminalIds);
+
+	// PC READS THE HOST HAS NOT TAKEN, re-sent first so they get the epoch's
+	// repair budget before the repairs below, under the same cap and cooldown.
+	// A read made with no instant would let the host read through whatever it
+	// has now, so it goes again only when this snapshot proves nothing newer
+	// happened: its row's last event predates the read (in this host's clock),
+	// and that event becomes the cutoff. Anything else drops it.
+	let rowLastEventAt: Map<string, number> | undefined;
+	for (const read of pendingUserReads(hostUrl)) {
+		if (!askedAboutIds.has(read.terminalId)) continue;
+		let seenThroughAt = read.seenThroughAt;
+		if (seenThroughAt === null) {
+			rowLastEventAt ??= new Map(
+				rows.map((row) => [row.terminalId, row.lastEventAt]),
+			);
+			const lastEventAt = rowLastEventAt.get(read.terminalId);
+			if (lastEventAt === undefined) {
+				dropUserRead(read.terminalId, "no-binding");
+				continue;
+			}
+			const madeAtHostMs =
+				typeof hostNow === "number"
+					? hostNow - (nowMonotonicMs - read.madeAtMonotonicMs)
+					: Number.NEGATIVE_INFINITY;
+			if (lastEventAt > madeAtHostMs) {
+				dropUserRead(read.terminalId, "newer-event");
+				continue;
+			}
+			seenThroughAt = lastEventAt;
+		} else if (!knownIds.has(read.terminalId)) {
+			dropUserRead(read.terminalId, "terminal-gone");
+			continue;
+		}
+		const cutoff = seenThroughAt;
+		spendRepairBudget(`${hostUrl}:${read.terminalId}:user:${cutoff}`, () =>
+			resendUserRead(read.terminalId, cutoff),
+		);
+	}
 
 	for (const row of rows) {
 		liveTerminalIds.add(row.terminalId);
@@ -606,8 +681,8 @@ export async function resyncAgentStatusFromHost({
 			result.skippedAlreadySeen++;
 		}
 
-		// (ALERT-CONTEXT-NAMES) THE RESTART REPAIR PATH, and the ONLY place other
-		// than the two user-intent sites that may report a chat as read.
+		// (ALERT-CONTEXT-NAMES) THE RESTART REPAIR PATH. It re-sends the
+		// retraction a lost report owed, and it never reports a read.
 		//
 		// The user reads a chat, the phone's notification is retracted, and then
 		// the host-service restarts — which drops every alert row while the
@@ -615,8 +690,8 @@ export async function resyncAgentStatusFromHost({
 		// happens: the desktop was closed or the bus was dead when the alert went
 		// out, the user opened the chat, and the mutation never reached a host
 		// that was not there to hear it. The persisted seen mark is the durable
-		// record of that read, so a resync that finds a green the user has already
-		// read re-sends it.
+		// record that the dot was cleared, so a resync that finds a green the
+		// user has already cleared re-sends the retraction.
 		//
 		// ELIGIBILITY IS THE DURABLE PAIR, not the post-replay store entry: a row
 		// whose last event WOULD raise a green, plus a seen mark that covers it.
@@ -646,8 +721,9 @@ export async function resyncAgentStatusFromHost({
 		// can be outstanding on the phone while this row's last event is a `Start`
 		// — the agent went back to work, which clears the green here and changes
 		// nothing on the handset. `wouldRaiseReview` is false for that row, so the
-		// repair above would never look at it, yet the durable evidence of a read
-		// is just as good: an outstanding record the seen mark already covers.
+		// repair above would never look at it, yet the durable evidence of a
+		// cleared dot is just as good: an outstanding record the seen mark
+		// already covers.
 		// The record's own instant is the subject, never `row.lastEventAt` — that
 		// has since moved on to an event no alert was ever minted for.
 		const outstandingAt = snapshotState.outstandingReadyAt[row.terminalId];
@@ -660,35 +736,21 @@ export async function resyncAgentStatusFromHost({
 				? outstandingAt
 				: null;
 		if (repairSeenThroughAt !== null) {
-			const repairKey = `${hostUrl}:${row.terminalId}:${repairSeenThroughAt}`;
-			if (isInRepairCooldown(repairKey, nowMonotonicMs)) {
-				result.seenRepairsSkipped++;
-			} else if (result.seenRepairsSent < MAX_SEEN_REPAIRS_PER_RESYNC) {
-				result.seenRepairsSent++;
-				// Fire-and-forget on the resync's own timeline — the reconciliation
-				// below must not wait on a network round trip — but the cooldown is
-				// only written once the answer is known.
-				acknowledgements.push(() => {
-					void reportTerminalSeen({
+			// (LIFECYCLE-READ-THROUGH) Every repair here is `repair-seen` and never
+			// advances the host's read mark: a seen mark may be a cold-start seed
+			// or a Clear agent status whose report failed, so neither a desktop
+			// relaunch nor a Clear may count as a read. Lost PC reads retry
+			// through `pendingUserReads` above.
+			spendRepairBudget(
+				`${hostUrl}:${row.terminalId}:${repairSeenThroughAt}`,
+				() =>
+					reportTerminalSeen({
 						workspaceId: row.originWorkspaceId,
 						terminalId: row.terminalId,
+						origin: "repair-seen",
 						seenThroughAt: repairSeenThroughAt,
-					}).then((accepted) => {
-						recordRepairAttempt(repairKey, nowMonotonicMs, accepted);
-						// Only a consumed report retires the record, and only up to the
-						// generation that was acknowledged — a finish that landed while
-						// this repair was in flight keeps its own. A dropped one stays
-						// standing for the next epoch, under the shorter retry cooldown.
-						if (accepted) {
-							useV2NotificationStore
-								.getState()
-								.clearOutstandingReady(row.terminalId, repairSeenThroughAt);
-						}
-					});
-				});
-			} else {
-				result.seenRepairsDeferred++;
-			}
+					}),
+			);
 		}
 
 		if (row.pendingPermission === null) {
@@ -828,12 +890,6 @@ export async function resyncAgentStatusFromHost({
 	// clearing event was destroyed. Terminals the host has never heard of are a
 	// different animal entirely and are skipped below.
 	const preSweep = snapshotState;
-	const knownIds = new Set(knownTerminalIds);
-	// `knownTerminalIds` is the host's answer INTERSECTED with what we asked
-	// about, so an id we never asked about is absent from it by construction, not
-	// by the host's judgement. Terminals that entered the store while the
-	// snapshot was in flight are exactly that case.
-	const askedAboutIds = new Set(candidateTerminalIds);
 	const ghostTerminalIds: string[] = [];
 	const ownedTerminals = new Map<string, string>();
 	for (const entry of Object.values(preSweep.sources)) {

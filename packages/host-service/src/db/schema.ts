@@ -811,6 +811,21 @@ export const companionPushFence = sqliteTable("companion_push_fence", {
 });
 
 /**
+ * Fork table, hand-written migration `0038_fork_companion_lifecycle_reads`;
+ * never `drizzle-kit generate`. `read_through_at` is host-clock ms and only
+ * ever rises.
+ */
+export const companionLifecycleReads = sqliteTable(
+	"companion_lifecycle_reads",
+	{
+		terminalId: text("terminal_id")
+			.primaryKey()
+			.references(() => terminalSessions.id, { onDelete: "cascade" }),
+		readThroughAt: integer("read_through_at").notNull(),
+	},
+);
+
+/**
  * (SIDEBAR-MIRROR) The desktop sidebar's CURATION, projected into host.db.
  *
  * WHY IT EXISTS. `host.db` is a lifecycle-free append store: every project,

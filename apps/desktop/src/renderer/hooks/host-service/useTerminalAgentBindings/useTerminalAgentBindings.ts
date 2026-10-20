@@ -158,6 +158,17 @@ export function useTerminalAgentBindings(
 	workspaceId: string,
 	options?: { enabled?: boolean },
 ): Map<string, TerminalAgentBinding> {
+	return useTerminalAgentBindingsState(workspaceId, options).bindings;
+}
+
+/**
+ * The bindings plus whether the host has answered yet: before it has, an
+ * absent binding means "not known yet", not "no agent".
+ */
+export function useTerminalAgentBindingsState(
+	workspaceId: string,
+	options?: { enabled?: boolean },
+): { bindings: Map<string, TerminalAgentBinding>; loaded: boolean } {
 	const hostUrl = useWorkspaceHostUrl(workspaceId);
 	const queryClient = useQueryClient();
 	const queryKey = useMemo(
@@ -198,13 +209,14 @@ export function useTerminalAgentBindings(
 		);
 	}, [enabled, hostUrl, queryClient, workspaceId]);
 
-	return useMemo(() => {
+	const bindings = useMemo(() => {
 		const map = new Map<string, TerminalAgentBinding>();
 		for (const binding of data ?? []) {
 			map.set(binding.terminalId, binding);
 		}
 		return map;
 	}, [data]);
+	return { bindings, loaded: data !== undefined };
 }
 
 export function useTerminalAgentBinding(

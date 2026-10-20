@@ -122,6 +122,7 @@ In brief:
   `superset-notify.py` POSTs with self-healing markers and persistence across
   renderer reloads; companion phone/watch alerts cover blocked questions,
   ready-for-review, and terminal-agent failures.
+- **One buzz per chat**: ready alerts carry Superset's saved read mark (`companion_lifecycle_reads`). Phone and watch buzz once per chat until it's read (PC pane open, sidebar mark-read, chat on screen on the phone). Stale cards still go away. Errors buzz every time. A desktop restart or resync repair never counts as a read (`(LIFECYCLE-READ-THROUGH)`).
 - **Hooks reach the app over HTTP** — `superset-notify.py` runs once as a
   supervised daemon on `127.0.0.1:46817` instead of one Python process per hook
   event; eleven of the twelve entries Superset writes into `settings.json` are

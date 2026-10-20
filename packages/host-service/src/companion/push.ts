@@ -152,7 +152,7 @@ import {
 import { base64UrlEncode, sleep } from "./crypto";
 import type { DeviceStore } from "./device-store";
 import { findUnpairedSurrogate } from "./keystrokes";
-import { MAX_APP_VERSION_CHARS } from "./limits";
+import { isReadInstant, MAX_APP_VERSION_CHARS } from "./limits";
 import type { PresenceStore, PresenceVerdict } from "./presence";
 import type { PushAlertContext } from "./push-context";
 import type { PushFence, PushFenceRecord } from "./push-fence";
@@ -343,6 +343,9 @@ const PUSH_DATA_KEYS_BY_VERSION_KIND: Readonly<
 		e: ["v", "k", "i", "w", "x", "t", "pn", "wn", "tn", "tc"],
 		c: ["v", "k", "i", "w", "x", "gx", "t"],
 	},
+	"4": {
+		g: ["v", "k", "i", "w", "x", "gx", "rg", "t", "pn", "wn", "tn", "tc"],
+	},
 };
 
 /**
@@ -372,6 +375,7 @@ type PushValueRule =
 	| "opaque-or-empty"
 	| "digits"
 	| "digits-or-empty"
+	| "instant13-or-empty"
 	| "name";
 
 const PUSH_VALUE_RULES: Readonly<Record<string, PushValueRule>> = {
@@ -383,6 +387,8 @@ const PUSH_VALUE_RULES: Readonly<Record<string, PushValueRule>> = {
 	x: "opaque",
 	t: "opaque-or-empty",
 	gx: "digits",
+	// (LIFECYCLE-READ-THROUGH)
+	rg: "instant13-or-empty",
 	pn: "name",
 	wn: "name",
 	tn: "name",
@@ -423,9 +429,12 @@ const PUSH_DATA_CAP_BY_VERSION: Readonly<Record<string, number>> = {
 	"1": PUSH_DATA_HARD_CAP_BYTES,
 	"2": PUSH_DATA_HARD_CAP_BYTES,
 	"3": PUSH_DATA_HARD_CAP_BYTES_V3,
+	"4": PUSH_DATA_HARD_CAP_BYTES_V3,
 };
 
 const DIGITS_PATTERN = /^[0-9]+$/;
+/** Same range as the phone's `Instants.wireInstantOrNull`: no leading zero. */
+const INSTANT13_PATTERN = /^[1-9][0-9]{12}$/;
 /**
  * C0 (incl. every newline), DEL + C1, and the two Unicode line/paragraph
  * separators. Android renders U+2028 as a line break inside a notification
@@ -543,6 +552,8 @@ function valueSatisfiesRule(value: string, rule: PushValueRule): boolean {
 			return DIGITS_PATTERN.test(value);
 		case "digits-or-empty":
 			return value.length === 0 || DIGITS_PATTERN.test(value);
+		case "instant13-or-empty":
+			return value.length === 0 || INSTANT13_PATTERN.test(value);
 		case "name":
 			return (
 				!FORBIDDEN_NAME_CHARS.test(value) &&
@@ -901,6 +912,11 @@ export function buildLifecyclePushData(input: {
 	 * id hashes. Required for `g`, ignored for `e`.
 	 */
 	outcomeAtMs: number;
+	/**
+	 * The host read mark for this terminal, sent as `rg`. Required for `g`
+	 * (`0` = never read); must be `null` for `e`.
+	 */
+	readThroughAtMs: number | null;
 	/** `null` when nothing could be resolved. Never a reason to fail the send. */
 	context: PushAlertContext | null;
 }): PushData {
@@ -917,6 +933,11 @@ export function buildLifecyclePushData(input: {
 	const handle = sanitizeTerminalHandle(input.terminalHandle);
 
 	if (input.kind === "e") {
+		if (input.readThroughAtMs !== null) {
+			throw new PushConfigError(
+				"an error lifecycle alert carries no read mark (rg is ready-only)",
+			);
+		}
 		return {
 			v: "3",
 			k: "e",
@@ -942,15 +963,27 @@ export function buildLifecyclePushData(input: {
 		);
 	}
 	return {
-		v: "3",
+		v: "4",
 		k: "g",
 		i: input.alertId,
 		w: input.workspaceId,
 		x: String(input.expiresAtMs),
 		gx: String(input.outcomeAtMs),
+		rg: readMarkValue(input.readThroughAtMs),
 		t: handle,
 		...names,
 	};
+}
+
+/** `0` = never read = `""`; else a 13-digit ms instant. */
+function readMarkValue(readThroughAtMs: number | null): string {
+	if (readThroughAtMs === 0) return "";
+	if (!isReadInstant(readThroughAtMs)) {
+		throw new PushConfigError(
+			"a ready lifecycle alert requires a read mark (rg) that is 0 or a 13-digit ms instant",
+		);
+	}
+	return String(readThroughAtMs);
 }
 
 /**
@@ -1626,6 +1659,13 @@ export interface PushSender {
 		/** The outcome instant the alert id was hashed from. */
 		outcomeAtMs: number;
 		/**
+		 * Required for `g`, `null` for `e`. Called at the call and before every
+		 * delivery attempt, FCM retries included, so a read accepted during a
+		 * backoff reaches the next attempt's `rg`. A throw at the call fails the
+		 * send; a throw before an attempt fails that device.
+		 */
+		resolveReadThroughAtMs: (() => number) | null;
+		/**
 		 * (ALERT-CONTEXT-NAMES) Resolved by the CALLER, immediately before this
 		 * call, and never cached in the held alert. A retry a quarter of an hour
 		 * later re-resolves, so a workspace renamed in the meantime buzzes with
@@ -2033,14 +2073,18 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		);
 	}
 
+	/**
+	 * `payload` is built again before every attempt, so a value it reads (the
+	 * ready alert's read mark) is current on each one. `i` and the collapse key
+	 * do not change between attempts.
+	 */
 	async function deliver(
 		device: DeviceRecord,
-		data: PushData,
+		payload: () => PushData,
 		cancel: SendToken | null,
 	): Promise<DeliveryResult> {
 		const token = device.fcmToken;
 		if (token === null) return "failed";
-		const envelope = buildEnvelope(token, data);
 
 		for (let attempt = 1; attempt <= FCM_SEND_MAX_ATTEMPTS; attempt++) {
 			if (stopped) return "cancelled";
@@ -2051,7 +2095,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// bounded backoffs while the notification sits on the handset.
 			if (cancel?.cancelled === true) {
 				console.log(
-					`${LOG} abandoning in-flight send for questionId=${data.i} — a retraction is queued behind it`,
+					`${LOG} abandoning in-flight send for questionId=${payload().i} — a retraction is queued behind it`,
 				);
 				return "cancelled";
 			}
@@ -2083,6 +2127,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				continue;
 			}
 
+			const envelope = buildEnvelope(token, payload());
 			const outcome = await sendOnce(envelope, accessToken, abort.signal);
 
 			if (outcome.kind === "delivered") {
@@ -2129,23 +2174,40 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		return "failed";
 	}
 
+	/**
+	 * A device whose delivery THREW counts as `failed` for that device, so a
+	 * copy another device took is still `delivered`. Only when no device took
+	 * it does the first error reach the caller.
+	 */
 	async function broadcast(
-		data: PushData,
+		payload: () => PushData,
 		cancel: SendToken | null,
 	): Promise<BroadcastResult> {
 		const devices = await targets();
 		if (devices.length === 0) {
 			console.log(
-				`${LOG} no registered device with a live token — skipping push kind ${data.k}`,
+				`${LOG} no registered device with a live token — skipping push kind ${payload().k}`,
 			);
 			return "no-devices";
 		}
-		const results = await Promise.all(
-			devices.map((device) => deliver(device, data, cancel)),
+		const settled = await Promise.allSettled(
+			devices.map((device) => deliver(device, payload, cancel)),
 		);
+		const results = settled.map((outcome, index) => {
+			if (outcome.status === "fulfilled") return outcome.value;
+			console.error(
+				`${LOG} push delivery threw deviceId=${devices[index]?.deviceId}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
+			);
+			return "failed";
+		});
 		// One handset that took it is a delivered notification. Only a broadcast
 		// where NOBODY took it is a failure the caller could act on.
 		if (results.includes("delivered")) return "delivered";
+		const thrown = settled.find(
+			(outcome): outcome is PromiseRejectedResult =>
+				outcome.status === "rejected",
+		);
+		if (thrown !== undefined) throw thrown.reason;
 		if (results.every((result) => result === "cancelled")) return "cancelled";
 		return "failed";
 	}
@@ -2454,7 +2516,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			sendTokens.set(entry.questionId, token);
 			void enqueue(entry.questionId, "push broadcast", async () => {
 				try {
-					await broadcast(data, token);
+					await broadcast(() => data, token);
 				} finally {
 					if (sendTokens.get(entry.questionId) === token) {
 						sendTokens.delete(entry.questionId);
@@ -2495,16 +2557,14 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		return enqueue(questionId, "retraction", async () => {
 			// The retraction's own outcome is not acted on: there is no held state to
 			// return it to, and the client sweeps on foreground anyway.
-			await broadcast(
-				buildRetractPushData({
-					questionId,
-					// The workspaceId we actually pushed with, so the client matches
-					// the notification it is holding.
-					workspaceId: record.workspaceId,
-					nowMs: now(),
-				}),
-				null,
-			);
+			const data = buildRetractPushData({
+				questionId,
+				// The workspaceId we actually pushed with, so the client matches
+				// the notification it is holding.
+				workspaceId: record.workspaceId,
+				nowMs: now(),
+			});
+			await broadcast(() => data, null);
 		});
 	}
 
@@ -2800,8 +2860,15 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			}
 			// Built (and therefore validated) HERE, at the call that introduced the
 			// values, so a bad expiry or an id that could carry text throws to the
-			// caller instead of surfacing later from inside a broadcast.
-			const data = buildLifecyclePushData(input);
+			// caller instead of surfacing later from inside a broadcast. Built again
+			// before every delivery attempt, so `rg` carries the read mark of that
+			// moment.
+			const build = (): PushData =>
+				buildLifecyclePushData({
+					...input,
+					readThroughAtMs: input.resolveReadThroughAtMs?.() ?? null,
+				});
+			build();
 			console.log(
 				`${LOG} sending lifecycle alert id=${input.alertId} kind=${input.kind}`,
 			);
@@ -2817,7 +2884,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// from now is inside the alert's six-hour life, so "nobody to send to"
 			// is a reason to keep holding, not a reason to call it done.
 			return enqueueOrdered(input.alertId, async () => {
-				const result = await broadcast(data, null);
+				const result = await broadcast(build, null);
 				if (result === "failed") {
 					throw new Error(
 						`FCM refused the lifecycle alert on every registered device (id=${input.alertId} kind=${input.kind})`,
@@ -2849,7 +2916,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// interface. Same chain key as the alert, so the retraction cannot
 			// overtake the send it cancels.
 			return enqueue(input.alertId, "lifecycle retraction", async () => {
-				await broadcast(data, null);
+				await broadcast(() => data, null);
 			});
 		},
 
