@@ -84,6 +84,17 @@ const cases: Array<[string, (worktree: string) => void, DiskHead]> = [
 		{ kind: "unknown" },
 	],
 	[
+		"branch name with a space",
+		(worktree) =>
+			writeGitDir(join(worktree, ".git"), "ref: refs/heads/has space\n"),
+		{ kind: "unknown" },
+	],
+	[
+		"branch name with ..",
+		(worktree) => writeGitDir(join(worktree, ".git"), "ref: refs/heads/a..b\n"),
+		{ kind: "unknown" },
+	],
+	[
 		"malformed .git pointer",
 		(worktree) => writeFileSync(join(worktree, ".git"), "not a pointer\n"),
 		{ kind: "unknown" },

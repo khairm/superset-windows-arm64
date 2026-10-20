@@ -13,10 +13,11 @@
  *
  * Two assertions did NOT survive, because the UI they named never existed on
  * this screen: the modal's workspace-name / branch-name inputs and its
- * "Runs in <label>" row. Master mode is asserted here through the three
- * branch-shaped controls the screen does own — the naming-instructions gear,
- * the "Link pull request" trigger and the compare-base-branch picker — all of
- * which disappear in master mode and are all present in branch mode.
+ * "Runs in <label>" row. Master mode is asserted here through the two
+ * branch-shaped controls the screen does own — the naming-instructions gear
+ * and the compare-base-branch picker — both of which disappear in master mode
+ * and are present in branch mode. The "Link pull request" trigger is hidden in
+ * every mode while `FORK_PULL_REQUESTS_DISABLED` is true.
  *
  * `resolveMasterMode.test.ts` owns WHICH mode a project resolves to. This file
  * owns what the surface does once it is in one: what disappears, what stays,
@@ -659,7 +660,7 @@ describe("NewWorkspaceScreen master mode rendering", () => {
 		isGitRepo = true;
 		const view = renderForm();
 		expect(view.getByLabelText("Update naming instructions")).toBeTruthy();
-		expect(view.getByLabelText("Link pull request")).toBeTruthy();
+		expect(view.queryByLabelText("Link pull request")).toBeNull();
 		expect(view.getByTestId("compare-base-branch-picker")).toBeTruthy();
 	});
 });
@@ -879,7 +880,7 @@ describe("NewWorkspaceScreen master submit", () => {
 		useNewWorkspaceDraftStore.setState({ hostId: "host-2" });
 		const view = renderForm();
 		expect(view.getByTestId("compare-base-branch-picker")).toBeTruthy();
-		expect(view.getByLabelText("Link pull request")).toBeTruthy();
+		expect(view.queryByLabelText("Link pull request")).toBeNull();
 	});
 
 	test("a rejected agents.run toasts, after the navigation has happened", async () => {

@@ -3626,6 +3626,18 @@ describe("(FORK-PRS-OFF) a disabled runtime only follows the checked-out branch"
 		return { manager, calls };
 	}
 
+	function syncInFlight(
+		manager: PullRequestRuntimeManager,
+		workspaceId: string,
+	): Promise<void> {
+		const { workspaceSyncState } = manager as unknown as {
+			workspaceSyncState: Map<string, { running: Promise<void> }>;
+		};
+		const running = workspaceSyncState.get(workspaceId)?.running;
+		if (!running) throw new Error(`no sync in flight for ${workspaceId}`);
+		return running;
+	}
+
 	test("start and a watcher event write the disk branch; an archived row is never written", async () => {
 		const db = createRealDb();
 		seedProject(db);
@@ -3648,11 +3660,15 @@ describe("(FORK-PRS-OFF) a disabled runtime only follows the checked-out branch"
 		});
 		try {
 			manager.start();
-			await waitFor(() => getWorkspace(db, "ws")?.branch === "feat/disk");
+			await syncInFlight(manager, "ws");
+			expect(getWorkspace(db, "ws")?.branch).toBe("feat/disk");
 			diskBranch = "feat/switched";
 			emit({ workspaceId: "ws" });
 			emit({ workspaceId: "ws-archived" });
-			await waitFor(() => getWorkspace(db, "ws")?.branch === "feat/switched");
+			await Promise.all([
+				syncInFlight(manager, "ws"),
+				syncInFlight(manager, "ws-archived"),
+			]);
 		} finally {
 			manager.stop();
 		}

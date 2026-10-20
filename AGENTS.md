@@ -116,12 +116,11 @@ In brief:
 - **Terminal full-speed helper** — the deliberate exception to "never change
   pty-daemon code" above (`(WIN-TERMINAL-HIGHQOS)`): ptyd runs a hidden PS 5.1
   `Add-Type` helper that tags ptyd's tree HighQoS once a second; Eco asked for
-  by a program is respected;
-  faults cost speed only. The 0.4.0 -> 0.4.1 bump costs one Force update
-  (closes every terminal once); a rollback keeps 0.4.1 running until Settings >
-  Terminal restart. When an upstream merge brings pty-daemon to 0.4.1, bump
-  again (`package.json` + `bun.lock`, pattern `edb57b7ebd`): equal versions
-  merge silently.
+  by a program is respected; faults cost speed only. The 0.4.0 -> 0.4.1 bump
+  costs one Force update (closes every terminal once); a rollback keeps 0.4.1
+  running until Settings > Terminal restart. When an upstream merge brings
+  pty-daemon to 0.4.1, bump again (`package.json` + `bun.lock`, pattern
+  `edb57b7ebd`): equal versions merge silently.
 - **Agent status dots (Claude + Codex)** — per-terminal + workspace-rollup dot:
   red = needs input, yellow = working (incl. subagents/teammates/compaction/
   codex-companion holds), green = ready for review, blue = shell/background/
@@ -183,7 +182,8 @@ In brief:
 - **Host git launch budget** — 5-minute PR/branch sweeps and the watcher
   trailing sync skip exited cards and hidden projects via the sidebar mirror
   (last known list up to 24 h, then one in-memory full pass per sweep per
-  day). Watcher PR sync runs at most every
+  day). PR sweeps are off (`(FORK-PRS-OFF)`); watcher events only feed branch
+  following (disk HEAD read). Watcher PR sync runs at most every
   5 s for .git, 30 s file-only; is-git-repo caches yes 5 min/no 5 s, origin/HEAD
   10 min. Each host-main-thread git/gh launch blocks terminal I/O on Windows
   ARM64; keep launches rare (`(PR-SWEEP-SKIPS-EXITED)`, `(GIT-LAUNCH-BUDGET)`).
