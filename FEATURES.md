@@ -608,6 +608,7 @@ setAccessibilitySupportEnabled	apps/desktop/src/main/windows/main.ts
 (FORK-PRS-OFF)	packages/host-service/src/trpc/router/workspace-creation/procedures/search-pull-requests.ts
 (FORK-PRS-OFF)	packages/host-service/src/trpc/router/workspaces/workspaces.ts
 (FORK-PRS-OFF)	apps/desktop/src/renderer/lib/cloud-severed-routes.ts
+(FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx
 (FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx
 (FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/usePaneRegistry.tsx
 (FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacesHeader/V2WorkspacesHeader.tsx

@@ -6,6 +6,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useLingui } from "@lingui/react/macro";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { OverflowFadeContainer } from "@superset/ui/overflow-fade-container";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
@@ -773,9 +774,12 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 													</DashboardSidebarBulkActions>
 												</div>
 											)}
-											{!isCollapsed && !workspacesListCollapsed && (
-												<DashboardSidebarGithubNotice status={githubStatus} />
-											)}
+											{/* (FORK-PRS-OFF) */}
+											{!FORK_PULL_REQUESTS_DISABLED &&
+												!isCollapsed &&
+												!workspacesListCollapsed && (
+													<DashboardSidebarGithubNotice status={githubStatus} />
+												)}
 											{(isCollapsed || !workspacesListCollapsed) && (
 												<SortableContext
 													items={displayIds}
