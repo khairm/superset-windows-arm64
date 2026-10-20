@@ -55,11 +55,11 @@ interface SnapshotRow {
 	pendingPermission: boolean | null;
 }
 
+const realHostServiceClient = {
+	...(await import("renderer/lib/host-service-client")),
+};
 mock.module("renderer/lib/host-service-client", () => ({
-	// The module is replaced whole. Without the query-policy helpers other
-	// importers in this graph pull from it, running this file ON ITS OWN dies
-	// with "Export named 'hostServiceQueryRetryDelay' not found" before a single
-	// test executes.
+	...realHostServiceClient,
 	getHostServiceClient: () => ({}),
 	isHostServiceConnectionError: () => false,
 	hostServiceQueryRetry: () => false,

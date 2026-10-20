@@ -49,6 +49,9 @@ let snapshotRows: Array<{
  * host-service-client module, and whichever file loads last owns it for the
  * whole process.
  */
+const realHostServiceClient = {
+	...(await import("renderer/lib/host-service-client")),
+};
 function installMocks(): void {
 	mock.module("@superset/ui/sonner", () => ({
 		toast: {
@@ -65,8 +68,7 @@ function installMocks(): void {
 	}));
 
 	mock.module("renderer/lib/host-service-client", () => ({
-		// The module is replaced whole, so the query-policy helpers other
-		// importers in this graph pull from it have to be here too.
+		...realHostServiceClient,
 		getHostServiceClient: () => ({}),
 		isHostServiceConnectionError: () => false,
 		hostServiceQueryRetry: () => false,

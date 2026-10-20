@@ -60,8 +60,24 @@ let pendingResyncs: ((value: unknown) => void)[] = [];
  */
 const realHostEventBus = await import("renderer/lib/host-event-bus");
 const realHostServiceAuth = await import("renderer/lib/host-service-auth");
-const realResyncAgentStatus = await import("../../lib/resyncAgentStatus");
-const realCompanionAlertSync = await import("../../lib/companionAlertSync");
+const realResyncAgentStatus = {
+	...(await import("../../lib/resyncAgentStatus")),
+};
+const realCompanionAlertSync = {
+	...(await import("../../lib/companionAlertSync")),
+};
+
+// Later files inherit these mocks; after this file they get the real code.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: () => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake() : real(...args));
+}
 
 function installMocks(): void {
 	mock.module("renderer/lib/electron-trpc", () => ({
@@ -102,12 +118,12 @@ function installMocks(): void {
 
 	mock.module("../../lib/resyncAgentStatus", () => ({
 		...realResyncAgentStatus,
-		resyncAgentStatusFromHost: () => {
+		resyncAgentStatusFromHost: whileFaking(() => {
 			resyncCalls++;
 			return new Promise((resolve) => {
 				pendingResyncs.push(resolve);
 			});
-		},
+		}, realResyncAgentStatus.resyncAgentStatusFromHost),
 	}));
 
 	// ONLY the sender is stubbed. The rest of this module is local bookkeeping
@@ -115,7 +131,10 @@ function installMocks(): void {
 	// sidebar suite, whose companion report then had no host to go to.
 	mock.module("../../lib/companionAlertSync", () => ({
 		...realCompanionAlertSync,
-		queueAlertContextSync: () => {},
+		queueAlertContextSync: whileFaking(
+			() => {},
+			realCompanionAlertSync.queueAlertContextSync,
+		),
 	}));
 }
 
