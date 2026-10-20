@@ -30,7 +30,11 @@ const at = (ms: number): number => T0 + ms;
 
 let seenCalls: SeenCall[] = [];
 
+const realHostServiceClient = {
+	...(await import("renderer/lib/host-service-client")),
+};
 mock.module("renderer/lib/host-service-client", () => ({
+	...realHostServiceClient,
 	getHostServiceClient: () => ({}),
 	isHostServiceConnectionError: () => false,
 	hostServiceQueryRetry: () => false,
@@ -128,16 +132,27 @@ function fire(overrides: Partial<AgentLifecyclePayload> = {}): void {
 	});
 }
 
-/**
- * The presence half of the hop's gate. `test-setup.ts` installs a plain-object
- * `document` with neither field on it, so both are supplied here — and reset
- * before every test, because a test that hides the window must not hide it for
- * the next one.
- */
-const presence = globalThis.document as unknown as {
-	hidden: boolean;
-	hasFocus: () => boolean;
-};
+/** The presence half of the hop's gate, on the preload's shared document. */
+const PRESENCE_FIELDS = ["hidden", "hasFocus"] as const;
+const originalPresence = PRESENCE_FIELDS.map((field) => ({
+	field,
+	descriptor: Object.getOwnPropertyDescriptor(document, field),
+}));
+const originalHref = window.location.href;
+
+function setPageHidden(hidden: boolean): void {
+	Object.defineProperty(document, "hidden", {
+		configurable: true,
+		get: () => hidden,
+	});
+}
+
+function setPageFocused(focused: boolean): void {
+	Object.defineProperty(document, "hasFocus", {
+		configurable: true,
+		value: () => focused,
+	});
+}
 
 const settle = async () => {
 	for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -145,20 +160,23 @@ const settle = async () => {
 
 beforeEach(() => {
 	seenCalls = [];
-	presence.hidden = false;
-	presence.hasFocus = () => true;
+	setPageHidden(false);
+	setPageFocused(true);
 	setScreenLocked(false);
 	resetV2NotificationStoreForTest();
 	resetUserReadsForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
-	// `getCurrentWorkspaceId` reads the route out of the hash, and the test
-	// harness aliases `window` to `globalThis` with no `location` on it.
-	(globalThis as { location?: { hash: string } }).location = {
-		hash: `#/v2-workspace/${WORKSPACE}`,
-	};
+	window.history.replaceState(null, "", `#/v2-workspace/${WORKSPACE}`);
 });
 
-afterEach(() => setScreenLocked(null));
+afterEach(() => {
+	setScreenLocked(null);
+	for (const { field, descriptor } of originalPresence) {
+		if (descriptor) Object.defineProperty(document, field, descriptor);
+		else Reflect.deleteProperty(document, field);
+	}
+	window.history.replaceState(null, "", originalHref);
+});
 
 describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	it("reports a visible Stop with the OUTCOME instant", async () => {
@@ -221,14 +239,14 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	 * the pane sits. Retracting there is both wrong and irreversible.
 	 */
 	it("does NOT report while the window is hidden", async () => {
-		presence.hidden = true;
+		setPageHidden(true);
 		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		expect(seenCalls).toEqual([]);
 	});
 
 	it("does NOT report while the window is unfocused", async () => {
-		presence.hasFocus = () => false;
+		setPageFocused(false);
 		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		expect(seenCalls).toEqual([]);
@@ -278,7 +296,7 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	 * events, so an away user gets the dot.
 	 */
 	it("raises a review dot for a turn that ends while the user is away", async () => {
-		presence.hidden = true;
+		setPageHidden(true);
 		fire({ eventType: "Stop", occurredAt: at(5_000) });
 		await settle();
 		const key = getV2NotificationSourceKey(

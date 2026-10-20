@@ -26,15 +26,7 @@ import {
 	it,
 	mock,
 } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
-// happy-dom over the preloaded plain-object document — this renders a real
-// component tree AND needs real `document.hidden` / focus events. Bun runs test
-// files sequentially in one process and happy-dom's globals are process-wide,
-// so we MUST unregister in afterAll or unrelated renderer suites inherit
-// readonly DOM globals.
-const alreadyRegistered = GlobalRegistrator.isRegistered;
-if (!alreadyRegistered) GlobalRegistrator.register();
 (
 	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -52,7 +44,11 @@ const at = (ms: number): number => T0 + ms;
 
 let seenCalls: SeenCall[] = [];
 
+const realHostServiceClient = {
+	...(await import("renderer/lib/host-service-client")),
+};
 mock.module("renderer/lib/host-service-client", () => ({
+	...realHostServiceClient,
 	getHostServiceClient: () => ({}),
 	isHostServiceConnectionError: () => false,
 	hostServiceQueryRetry: () => false,
@@ -83,13 +79,47 @@ interface Binding {
 let bindings = new Map<string, Binding>();
 let bindingsLoaded = true;
 
+// `mock.module` is process-wide: once this file is done, every later file gets
+// the real hooks back.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: () => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake() : real(...args));
+}
+
+const realBindings = {
+	...(await import("renderer/hooks/host-service/useTerminalAgentBindings")),
+};
 mock.module("renderer/hooks/host-service/useTerminalAgentBindings", () => ({
-	useTerminalAgentBindings: () => bindings,
-	useTerminalAgentBindingsState: () => ({ bindings, loaded: bindingsLoaded }),
+	...realBindings,
+	useTerminalAgentBindings: whileFaking(
+		() => bindings,
+		realBindings.useTerminalAgentBindings,
+	),
+	useTerminalAgentBindingsState: whileFaking(
+		() => ({ bindings, loaded: bindingsLoaded }),
+		realBindings.useTerminalAgentBindingsState,
+	),
 }));
+const realWorkspaceProvider = {
+	...(await import(
+		"renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider"
+	)),
+};
 mock.module(
 	"renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider",
-	() => ({ useWorkspace: () => ({ workspace: { id: WORKSPACE } }) }),
+	() => ({
+		...realWorkspaceProvider,
+		useWorkspace: whileFaking(
+			() => ({ workspace: { id: WORKSPACE } }),
+			realWorkspaceProvider.useWorkspace,
+		),
+	}),
 );
 
 const { act, cleanup, render } = await import("@testing-library/react");
@@ -150,14 +180,25 @@ const settle = async () => {
 };
 
 /** happy-dom's document, with the two fields the presence predicate reads. */
-const dom = globalThis.document as Document & { hasFocus: () => boolean };
+const PRESENCE_FIELDS = ["hidden", "hasFocus"] as const;
+const originalPresence = PRESENCE_FIELDS.map((field) => ({
+	field,
+	descriptor: Object.getOwnPropertyDescriptor(document, field),
+}));
+
+function setFocused(focused: boolean): void {
+	Object.defineProperty(document, "hasFocus", {
+		configurable: true,
+		value: () => focused,
+	});
+}
 
 function setPresent(present: boolean): void {
-	Object.defineProperty(dom, "hidden", {
-		value: !present,
+	Object.defineProperty(document, "hidden", {
 		configurable: true,
+		get: () => !present,
 	});
-	dom.hasFocus = () => present;
+	setFocused(present);
 }
 
 /** The user comes back to the window, exactly as the OS reports it. */
@@ -194,10 +235,10 @@ afterEach(() => {
 	cleanup();
 	unregisterWorkspaceHost(WORKSPACE, HOST);
 	setScreenLocked(null);
-});
-
-afterAll(() => {
-	if (!alreadyRegistered) GlobalRegistrator.unregister();
+	for (const { field, descriptor } of originalPresence) {
+		if (descriptor) Object.defineProperty(document, field, descriptor);
+		else Reflect.deleteProperty(document, field);
+	}
 });
 
 describe("(ALERT-RETIRE-ON-EXIT) useClearActivePaneAttention", () => {
@@ -226,7 +267,7 @@ describe("(ALERT-RETIRE-ON-EXIT) useClearActivePaneAttention", () => {
 	});
 
 	it("reports NOTHING while the window is merely unfocused", async () => {
-		dom.hasFocus = () => false;
+		setFocused(false);
 		render(React.createElement(Probe, { store: createStore() }));
 		await settle();
 		expect(seenCalls).toEqual([]);
