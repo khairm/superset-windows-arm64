@@ -3665,10 +3665,7 @@ describe("(FORK-PRS-OFF) a disabled runtime only follows the checked-out branch"
 			diskBranch = "feat/switched";
 			emit({ workspaceId: "ws" });
 			emit({ workspaceId: "ws-archived" });
-			await Promise.all([
-				syncInFlight(manager, "ws"),
-				syncInFlight(manager, "ws-archived"),
-			]);
+			await syncInFlight(manager, "ws");
 		} finally {
 			manager.stop();
 		}

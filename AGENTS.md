@@ -183,7 +183,7 @@ In brief:
   trailing sync skip exited cards and hidden projects via the sidebar mirror
   (last known list up to 24 h, then one in-memory full pass per sweep per
   day). PR sweeps are off (`(FORK-PRS-OFF)`); watcher events only feed branch
-  following (disk HEAD read). Watcher PR sync runs at most every
+  following (disk HEAD read). Watcher branch-follow runs at most every
   5 s for .git, 30 s file-only; is-git-repo caches yes 5 min/no 5 s, origin/HEAD
   10 min. Each host-main-thread git/gh launch blocks terminal I/O on Windows
   ARM64; keep launches rare (`(PR-SWEEP-SKIPS-EXITED)`, `(GIT-LAUNCH-BUDGET)`).

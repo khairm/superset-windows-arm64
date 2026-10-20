@@ -13,15 +13,13 @@ export type DiskHead =
 	| { kind: "unknown" };
 
 const BRANCH_REF_PREFIX = "ref: refs/heads/";
-// git >= 2.45 writes this placeholder into HEAD when refs live in a reftable.
-const REFTABLE_HEAD_STUB = ".invalid";
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const BAD_REF_PATTERN =
 	/[~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.$|(?:^|\/)\.|\.lock(?:\/|$)/;
 
 // git check-ref-format rules, so a name git would refuse is never followed.
 function isValidBranchName(name: string): boolean {
-	if (name === "" || name === "@") return false;
+	if (name === "") return false;
 	for (const char of name) {
 		const code = char.charCodeAt(0);
 		if (code <= 0x20 || code === 0x7f) return false;
@@ -42,7 +40,7 @@ export function parseHeadFile(text: string): DiskHead {
 	const head = text.trim();
 	if (head.startsWith(BRANCH_REF_PREFIX)) {
 		const name = head.slice(BRANCH_REF_PREFIX.length);
-		return name !== REFTABLE_HEAD_STUB && isValidBranchName(name)
+		return isValidBranchName(name)
 			? { kind: "branch", name }
 			: { kind: "unknown" };
 	}

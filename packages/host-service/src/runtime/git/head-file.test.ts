@@ -73,6 +73,23 @@ const cases: Array<[string, (worktree: string) => void, DiskHead]> = [
 		{ kind: "branch", name: "packed" },
 	],
 	[
+		"branch named @",
+		(worktree) => writeGitDir(join(worktree, ".git"), "ref: refs/heads/@\n"),
+		{ kind: "branch", name: "@" },
+	],
+	[
+		"branch name with dots and a dash",
+		(worktree) =>
+			writeGitDir(join(worktree, ".git"), "ref: refs/heads/release/v1.2-rc\n"),
+		{ kind: "branch", name: "release/v1.2-rc" },
+	],
+	[
+		"non-ASCII branch name",
+		(worktree) =>
+			writeGitDir(join(worktree, ".git"), "ref: refs/heads/feat/über-x.y\n"),
+		{ kind: "branch", name: "feat/über-x.y" },
+	],
+	[
 		"detached sha",
 		(worktree) => writeGitDir(join(worktree, ".git"), `${SHA}\n`),
 		{ kind: "detached" },

@@ -638,11 +638,11 @@ afterAll(async () => {
 describe("NewWorkspaceScreen master mode rendering", () => {
 	test("hides everything branch-shaped", () => {
 		// The screen has no name/branch inputs and no "Runs in <label>" row to
-		// assert on — these three are every branch-shaped control it owns.
+		// assert on. These two are its only branch-shaped controls.
 		const view = renderForm();
 		expect(view.queryByLabelText("Update naming instructions")).toBeNull();
-		expect(view.queryByLabelText("Link pull request")).toBeNull();
 		expect(view.queryByTestId("compare-base-branch-picker")).toBeNull();
+		expect(view.queryByLabelText("Link pull request")).toBeNull();
 	});
 
 	test("keeps the prompt, the agent pickers and the context controls", () => {
@@ -656,7 +656,7 @@ describe("NewWorkspaceScreen master mode rendering", () => {
 		expect(view.getByLabelText("Link task")).toBeTruthy();
 	});
 
-	test("branch mode is untouched: every branch control is still there", () => {
+	test("branch mode shows the branch controls but no PR trigger", () => {
 		isGitRepo = true;
 		const view = renderForm();
 		expect(view.getByLabelText("Update naming instructions")).toBeTruthy();
