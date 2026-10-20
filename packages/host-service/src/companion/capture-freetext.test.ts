@@ -17,7 +17,13 @@ import { validateCapture } from "./question-store";
 // that carries the slot the way the producer emits it.
 // ---------------------------------------------------------------------------
 
-function sinkShapedCapture(freeTextOption: unknown) {
+function sinkShapedCapture(
+	freeTextOption: unknown,
+	shape: { multiSelect: boolean; questionCount: number } = {
+		multiSelect: false,
+		questionCount: 1,
+	},
+) {
 	return {
 		hostTerminalId: "term-live",
 		workspaceId: "w-1",
@@ -29,27 +35,25 @@ function sinkShapedCapture(freeTextOption: unknown) {
 		agentId: null,
 		agentType: null,
 		askedAtMs: Date.now(),
-		questions: [
-			{
-				index: 0,
-				header: "Dedupe fix",
-				question: "How should alert-once be enforced?",
-				multiSelect: false,
-				options: [
-					{
-						index: 0,
-						label: "DB timestamp",
-						description: "Persist a timestamp on the row.",
-					},
-					{
-						index: 1,
-						label: "Stateless age-band",
-						description: "No storage anywhere; alert inside a window.",
-					},
-				],
-				freeTextOption,
-			},
-		],
+		questions: Array.from({ length: shape.questionCount }, (_, index) => ({
+			index,
+			header: "Dedupe fix",
+			question: "How should alert-once be enforced?",
+			multiSelect: shape.multiSelect,
+			options: [
+				{
+					index: 0,
+					label: "DB timestamp",
+					description: "Persist a timestamp on the row.",
+				},
+				{
+					index: 1,
+					label: "Stateless age-band",
+					description: "No storage anywhere; alert inside a window.",
+				},
+			],
+			freeTextOption,
+		})),
 	};
 }
 
@@ -80,5 +84,33 @@ describe("(PICKER-CONTRACT-VERSIONED) producer/validator agreement", () => {
 
 	it("accepts a capture that omits the slot entirely", () => {
 		expect(() => validateCapture(sinkShapedCapture(undefined))).not.toThrow();
+	});
+
+	it("derives a multi-select slot labelled without a full stop, at N = 1 and N > 1", () => {
+		for (const questionCount of [1, 2]) {
+			const capture = validateCapture(
+				sinkShapedCapture(
+					{ index: 2, label: "Type something" },
+					{ multiSelect: true, questionCount },
+				),
+			);
+			for (const item of capture.questions) {
+				expect(item.freeTextOption).toEqual({
+					index: 2,
+					label: "Type something",
+				});
+			}
+		}
+	});
+
+	it("rejects a multi-select slot carrying the single-select label", () => {
+		expect(() =>
+			validateCapture(
+				sinkShapedCapture(
+					{ index: 2, label: "Type something." },
+					{ multiSelect: true, questionCount: 1 },
+				),
+			),
+		).toThrow();
 	});
 });

@@ -98,6 +98,31 @@ describe("AttemptLedger question fence", () => {
 		expect(fenced?.requestId).toBe("request-1");
 	});
 
+	it("keeps an unconfirmed desk_input row after reopening", () => {
+		const opened = openLedger();
+		claim(opened.ledger, "request-desk");
+		opened.ledger.beginWrite("request-desk", "lease-desk");
+		opened.ledger.recordOutcome({
+			requestId: "request-desk",
+			status: "unconfirmed",
+			resolvedAtMs: null,
+			failureCode: "desk_input",
+			guardsPassed: [],
+			leaseId: "lease-desk",
+		});
+		opened.db.$client.close();
+		openDbs.delete(opened.db);
+
+		const reopenedDb = createDb(opened.dbPath, migrations);
+		reopenedDb.$client.pragma("synchronous = FULL");
+		openDbs.add(reopenedDb);
+		const reopened = createAttemptLedger({ db: reopenedDb, log: () => {} });
+		expect(reopened.get("request-desk")).toMatchObject({
+			status: "unconfirmed",
+			failureCode: "desk_input",
+		});
+	});
+
 	it("failed rows do not fence a fresh request", () => {
 		const { ledger } = openLedger();
 		claim(ledger, "request-failed");

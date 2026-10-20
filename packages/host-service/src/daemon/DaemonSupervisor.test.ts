@@ -187,7 +187,7 @@ describe("probeDaemonVersion", () => {
 			await client.connect();
 			expect(client.protocol).toBe(2);
 			await expect(
-				client.inputAcknowledged("terminal", Buffer.from("1")),
+				client.inputAcknowledged("terminal", Buffer.from("1"), 5_000),
 			).rejects.toMatchObject({ writeOutcome: "unknown" });
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			expect(messages.map((message) => message.type)).toEqual([

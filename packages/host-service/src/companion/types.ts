@@ -197,6 +197,12 @@ export type SealedErrorCode =
 	| "write_disabled"
 	| "access_denied"
 	| "bad_request"
+	/**
+	 * (ANSWER-DESK-TOUCH-FENCE) Input reached the question's terminal at or after
+	 * `askedAtMs`, so the answer was refused before its first write (412). Also
+	 * the `failureCode` of an `unconfirmed` answer stopped between frames.
+	 */
+	| "desk_input"
 	| "internal";
 
 export type ErrorCode = CleartextErrorCode | SealedErrorCode;
@@ -1148,7 +1154,17 @@ export interface PanicResponse {
 export type AnswerItem =
 	| { questionIndex: number; kind: "select"; optionIndex: number }
 	| { questionIndex: number; kind: "multiselect"; optionIndexes: number[] }
-	| { questionIndex: number; kind: "freetext"; text: string };
+	| { questionIndex: number; kind: "freetext"; text: string }
+	/**
+	 * Ticks plus text typed into a multi-select item's free-text row.
+	 * `optionIndexes` may be empty: the text alone is an answer.
+	 */
+	| {
+			questionIndex: number;
+			kind: "multiselect_freetext";
+			optionIndexes: number[];
+			text: string;
+	  };
 
 export type AnswerItemKind = AnswerItem["kind"];
 
@@ -1194,6 +1210,8 @@ export interface AnswerResponse {
 	 * had no evidence for.
 	 */
 	guardsAbstained: AnswerGuardName[] | null;
+	/** On `unconfirmed` only, when the bridge knows why (`desk_input`). Absent otherwise. */
+	failureCode?: AttemptFailureCode;
 }
 
 export interface AnswerStatusRequest {
@@ -1290,7 +1308,7 @@ export interface AnswerLease {
 }
 
 /**
- * The failure codes an attempt record may carry, as a TYPE.
+ * The failure codes an attempt record may carry.
  *
  * WIDENED FROM TWO CODES TO THE SEALED SET, and the reason is the fence. When the
  * durable claim moved to the top of `handleAnswer` (ANSWER-LEDGER), a request became
@@ -1306,22 +1324,24 @@ export interface AnswerLease {
  * ROW BY ROW, so an unrecognised code now costs exactly the one requestId that
  * carries it — which is what makes widening safe rather than merely convenient.
  *
- * `LEDGER_FAILURE_CODES` in `attempt-ledger.ts` is the runtime half and must be
- * widened with this union; `satisfies readonly SealedErrorCode[]` ties both to §10.
+ * `attempt-ledger.ts` enforces this same list at its read boundary;
+ * `satisfies readonly SealedErrorCode[]` ties it to §10.
  */
-export type AttemptFailureCode = Extract<
-	ErrorCode,
-	| "stale_question"
-	| "already_resolved"
-	| "request_closed"
-	| "lease_held"
-	| "guard_failed"
-	| "picker_open"
-	| "capability_unsupported"
-	| "write_disabled"
-	| "bad_request"
-	| "internal"
->;
+export const ATTEMPT_FAILURE_CODES = [
+	"stale_question",
+	"already_resolved",
+	"request_closed",
+	"lease_held",
+	"guard_failed",
+	"picker_open",
+	"capability_unsupported",
+	"write_disabled",
+	"bad_request",
+	"desk_input",
+	"internal",
+] as const satisfies readonly SealedErrorCode[];
+
+export type AttemptFailureCode = (typeof ATTEMPT_FAILURE_CODES)[number];
 
 /** §11.5 — the 24 h idempotency + outcome record keyed by `requestId`. */
 export interface AnswerAttemptRecord {

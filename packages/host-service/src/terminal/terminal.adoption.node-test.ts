@@ -411,7 +411,7 @@ describe("createTerminalSessionInternal — host-service restart adoption", () =
 		if ("error" in first) return;
 		const originalPid = first.pty.pid;
 
-		first.pty.write("echo before-host-restart\n");
+		first.pty.write("echo before-host-restart\n", "tool");
 		await waitForOutput(first.pty, "before-host-restart", 3000);
 
 		// Simulate host-service crash + restart.
@@ -438,7 +438,7 @@ describe("createTerminalSessionInternal — host-service restart adoption", () =
 		const disposer = second.pty.onData((d) => {
 			buf += d;
 		});
-		second.pty.write("echo after-host-restart\n");
+		second.pty.write("echo after-host-restart\n", "tool");
 		await waitFor(() => buf.includes("after-host-restart"), 3000);
 		disposer.dispose();
 
@@ -754,6 +754,7 @@ describe("createTerminalSessionInternal — host-service restart adoption", () =
 		const SENTINEL = `tracker-sentinel-${randomUUID().slice(0, 6)}`;
 		first.pty.write(
 			`printf '\\033[?2004h\\033[?1004h\\033[?25l'; echo ${SENTINEL}\n`,
+			"tool",
 		);
 		await waitForOutput(first.pty, SENTINEL, 3000);
 		await waitFor(() => first.modeTracker.isBracketedPasteActive(), 3000);
@@ -808,7 +809,7 @@ describe("createTerminalSessionInternal — host-service restart adoption", () =
 
 		// Sanity check: live output still flows post-reattach.
 		const LIVE_SENTINEL = `live-after-reattach-${randomUUID().slice(0, 6)}`;
-		second.pty.write(`echo ${LIVE_SENTINEL}\n`);
+		second.pty.write(`echo ${LIVE_SENTINEL}\n`, "tool");
 		await waitFor(() => {
 			const text = Buffer.concat(
 				second.buffer.map((b) => Buffer.from(b)),
@@ -868,6 +869,7 @@ describe("createTerminalSessionInternal — host-service restart adoption", () =
 		const marker = `heavy-done-${randomUUID().slice(0, 6)}`;
 		result.pty.write(
 			`i=0; while [ "$i" -lt 48000 ]; do printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'; i=$((i + 1)); done; echo ${marker}\n`,
+			"tool",
 		);
 
 		await waitFor(() => sessionBufferText(result).includes(marker), 15_000);
@@ -902,6 +904,7 @@ describe("createTerminalSessionInternal — host-service restart adoption", () =
 		const marker = `slow-done-${randomUUID().slice(0, 6)}`;
 		result.pty.write(
 			`i=0; while [ "$i" -lt 6000 ]; do printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'; i=$((i + 1)); done; echo ${marker}\n`,
+			"tool",
 		);
 
 		// The stuck socket is closed and removed on the next broadcast, and the

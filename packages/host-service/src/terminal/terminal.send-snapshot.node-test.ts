@@ -592,7 +592,9 @@ describe("writeFramedInputToSession / snapshotSession", () => {
 			throw new Error("daemon socket disconnected");
 		});
 		try {
-			assert.doesNotThrow(() => session.pty.write("websocket input"));
+			assert.doesNotThrow(() =>
+				session.pty.write("websocket input", "renderer"),
+			);
 			const result = await sendAgentMessage({
 				terminalId,
 				workspaceId,

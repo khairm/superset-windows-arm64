@@ -264,9 +264,13 @@ test("acknowledged input resolves after write and rejects a missing session", as
 		cols: 80,
 		rows: 24,
 	});
-	await c.inputAcknowledged(id, Buffer.from("echo acknowledged-input\n"));
+	await c.inputAcknowledged(
+		id,
+		Buffer.from("echo acknowledged-input\n"),
+		5_000,
+	);
 	await assert.rejects(
-		c.inputAcknowledged("missing-input-session", Buffer.from("x")),
+		c.inputAcknowledged("missing-input-session", Buffer.from("x"), 5_000),
 		/ENOENT/,
 	);
 

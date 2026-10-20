@@ -259,7 +259,8 @@ export function warnDroppedCompanionCapture(
  * `companion/keystrokes.provenFreeTextOption`; this is a one-line delegation.
  * That file's `PICKER_CONTRACTS` records which shapes were driven in a pty and
  * which were not — currently a single-select question is offered a slot whether
- * the prompt has one question or many, and a multi-select question never is.
+ * the prompt has one question or many, and a multi-select question is offered
+ * one inside the proof range (at most 4 questions, 2..4 options).
  *
  * (GUARD5-ANCHOR) The BRIDGE is the authority on this: `validateCapture` in
  * `companion/question-store.ts` re-derives the slot by calling the SAME function

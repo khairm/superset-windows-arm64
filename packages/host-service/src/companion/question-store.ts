@@ -552,6 +552,11 @@ export interface PendingQuestion {
 	fingerprint: Fingerprint;
 	state: QuestionState;
 	askedAtMs: number;
+	/**
+	 * The host's clock when the capture arrived, before any await. Never sent to a
+	 * client. The answer path settles from it and checks `askedAtMs` against it.
+	 */
+	capturedAtMs: number;
 	resolvedAtMs: number | null;
 	resolvedBy: ResolvedBy | null;
 	/**
@@ -1733,6 +1738,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 
 	const store: QuestionStore = {
 		async capture(input) {
+			const capturedAtMs = Date.now();
 			if (input.questions.length === 0) {
 				throw new CaptureRejectedError("questions", "must not be empty");
 			}
@@ -1845,6 +1851,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 				}),
 				state: "pending",
 				askedAtMs: input.askedAtMs,
+				capturedAtMs,
 				resolvedAtMs: null,
 				resolvedBy: null,
 				remoteAnswer: null,

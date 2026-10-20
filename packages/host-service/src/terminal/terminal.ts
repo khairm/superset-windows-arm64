@@ -45,6 +45,12 @@ import { HTTPException } from "hono/http-exception";
 import type { ClaudeAccountsService } from "../claude-accounts";
 import { getManagedClaudeAccountsForLaunch } from "../claude-accounts-runtime";
 import { stampHumanInput } from "../companion/human-input.ts";
+import {
+	forgetTerminal,
+	isExemptRendererFrame,
+	logFenceStamp,
+	stampInput,
+} from "../companion/terminal-input-fence.ts";
 import { getSupervisor } from "../daemon/index.ts";
 import { isProcessAlive, readPtyDaemonManifest } from "../daemon/manifest.ts";
 import type { HostDb } from "../db/index.ts";
@@ -127,12 +133,32 @@ interface PtyDataDisposer {
 	dispose(): void;
 }
 
+/**
+ * Who produced a write. "protocol" is a host-generated reply (CPR, focus);
+ * "renderer" is a terminal WebSocket frame, with the renderer's human tag
+ * beside it; "tool" is every programmatic sender.
+ */
+type InputProvenance = "renderer" | "protocol" | "tool";
+
+/** The renderer's tag on a "renderer" frame: a person produced these bytes. */
+interface RendererInput {
+	human: boolean;
+}
+
 interface DaemonPty {
 	pid: number;
 	acknowledgedInputSupported: boolean;
-	writeOrThrow(data: string): void;
-	write(data: string): void;
-	writeAcknowledged(data: string): Promise<void>;
+	writeOrThrow(
+		data: string,
+		provenance: InputProvenance,
+		renderer?: RendererInput,
+	): void;
+	write(
+		data: string,
+		provenance: InputProvenance,
+		renderer?: RendererInput,
+	): void;
+	writeAcknowledged(data: string, ackTimeoutMs: number): Promise<void>;
 	resize(cols: number, rows: number): void;
 	setColors(colors: TerminalColors, resetOverrides?: boolean): void;
 	kill(signal?: NodeJS.Signals): Promise<void>;
@@ -142,27 +168,72 @@ interface DaemonPty {
 	): PtyDataDisposer;
 }
 
+const MISSING_PROVENANCE_WARN_INTERVAL_MS = 60_000;
+let missingProvenanceWarnedAtMs: number | null = null;
+
+function warnMissingProvenance(nowMs: number): void {
+	if (
+		missingProvenanceWarnedAtMs !== null &&
+		nowMs - missingProvenanceWarnedAtMs < MISSING_PROVENANCE_WARN_INTERVAL_MS
+	) {
+		return;
+	}
+	missingProvenanceWarnedAtMs = nowMs;
+	console.warn("[terminal] pty write without provenance; counted as desk input");
+}
+
+/**
+ * (ANSWER-DESK-TOUCH-FENCE) Counted input refuses a companion answer to a
+ * question asked before it. A call site an upstream merge adds without a
+ * provenance counts, like "tool". `writeAcknowledged` (the companion's own
+ * answer writer) never counts. A counted renderer frame the human tag did not
+ * mark is logged for the smoke.
+ */
+function stampDeskInput(
+	hostTerminalId: string,
+	data: string,
+	provenance: InputProvenance | undefined,
+	renderer: RendererInput | undefined,
+): void {
+	if (provenance === "protocol") return;
+	const nowMs = Date.now();
+	if (provenance === "renderer") {
+		const human = renderer?.human === true;
+		if (isExemptRendererFrame(data, human)) return;
+		if (!human) logFenceStamp(hostTerminalId, data, nowMs);
+	} else if (provenance === undefined) {
+		warnMissingProvenance(nowMs);
+	}
+	stampInput(hostTerminalId, nowMs);
+}
+
 function makeDaemonPty(
 	daemon: DaemonClient,
 	sessionId: string,
 	pid: number,
 ): DaemonPty {
-	const writeOrThrow = (data: string) =>
-		daemon.input(sessionId, Buffer.from(data, "utf8"));
 	return {
 		pid,
 		acknowledgedInputSupported: daemon.protocol === CURRENT_PROTOCOL_VERSION,
-		writeOrThrow,
-		write(data) {
+		writeOrThrow(data, provenance: InputProvenance | undefined, renderer) {
+			stampDeskInput(sessionId, data, provenance, renderer);
+			daemon.input(sessionId, Buffer.from(data, "utf8"));
+		},
+		write(data, provenance: InputProvenance | undefined, renderer) {
+			stampDeskInput(sessionId, data, provenance, renderer);
 			try {
-				writeOrThrow(data);
+				daemon.input(sessionId, Buffer.from(data, "utf8"));
 			} catch {
 				// Daemon socket died before the disconnect sweep ran; a throw
 				// here would escape the WS input handler uncaught.
 			}
 		},
-		writeAcknowledged(data) {
-			return daemon.inputAcknowledged(sessionId, Buffer.from(data, "utf8"));
+		writeAcknowledged(data, ackTimeoutMs) {
+			return daemon.inputAcknowledged(
+				sessionId,
+				Buffer.from(data, "utf8"),
+				ackTimeoutMs,
+			);
 		},
 		setColors(colors, resetOverrides) {
 			try {
@@ -212,6 +283,9 @@ function makeDaemonPty(
 		},
 	};
 }
+
+/** Test-only: the pty adapter against a stand-in daemon. */
+export const __makeDaemonPtyForTesting = makeDaemonPty;
 
 interface RegisterWorkspaceTerminalRouteOptions {
 	app: Hono;
@@ -1361,7 +1435,7 @@ export function writeInputToSession({
 	const session = writableSession(terminalId, workspaceId);
 	if ("error" in session) return session;
 
-	session.pty.write(data);
+	session.pty.write(data, "tool");
 	return { success: true };
 }
 
@@ -1413,10 +1487,12 @@ export async function writeAcknowledgedInputToSession({
 	terminalId,
 	workspaceId,
 	data,
+	ackTimeoutMs,
 }: {
 	terminalId: string;
 	workspaceId: string;
 	data: string;
+	ackTimeoutMs: number;
 }): Promise<
 	| { success: true }
 	| { error: string; writeOutcome: AcknowledgedInputFailureKind }
@@ -1431,7 +1507,7 @@ export async function writeAcknowledgedInputToSession({
 	}
 
 	try {
-		await session.pty.writeAcknowledged(data);
+		await session.pty.writeAcknowledged(data, ackTimeoutMs);
 		return { success: true };
 	} catch (error) {
 		return {
@@ -1478,7 +1554,7 @@ export function writeInputIfIdleSession({
 	}
 	if (session.exited) return { sent: false, reason: "exited" };
 
-	session.pty.write(`${data}${TERMINAL_COMMAND_EOL}`);
+	session.pty.write(`${data}${TERMINAL_COMMAND_EOL}`, "tool");
 	return { sent: true };
 }
 
@@ -1721,7 +1797,9 @@ async function writeSessionMessage(
 					? `\x1b[200~${message}\x1b[201~`
 					: message;
 			const write = (data: string) =>
-				agent ? session.pty.writeOrThrow(data) : session.pty.write(data);
+				agent
+					? session.pty.writeOrThrow(data, "tool")
+					: session.pty.write(data, "tool");
 			let inputStaged: true | undefined;
 			try {
 				if (!submit) {
@@ -2082,7 +2160,7 @@ function answerDsrCursorQueries(session: TerminalSession, count: number) {
 	if (pruneAndCountOpenSockets(session) > 0) return;
 	const { x, y } = session.modeTracker.cursorPosition();
 	for (let i = 0; i < count; i++) {
-		session.pty.write(`\x1b[${y + 1};${x + 1}R`);
+		session.pty.write(`\x1b[${y + 1};${x + 1}R`, "protocol");
 	}
 }
 
@@ -2181,7 +2259,7 @@ function syncPtyFocus(session: TerminalSession) {
 	if (session.exited) return;
 	if (!session.modeTracker.isFocusReportingActive()) return;
 	const aggregate = session.focusedSockets.size > 0;
-	session.pty.write(aggregate ? "\x1b[I" : "\x1b[O");
+	session.pty.write(aggregate ? "\x1b[I" : "\x1b[O", "protocol");
 }
 
 /**
@@ -2851,7 +2929,7 @@ function waitForOutputQuiescence(
  */
 function tryTypeToPty(session: TerminalSession, data: string): boolean {
 	try {
-		session.pty.write(data);
+		session.pty.write(data, "tool");
 		return true;
 	} catch {
 		return false;
@@ -3438,6 +3516,9 @@ async function runDisposeSession(
 	} else {
 		closePromise = closeDaemonSessionById(terminalId, "SIGHUP");
 	}
+	// (ANSWER-DESK-TOUCH-FENCE) Only now is the terminal unwritable; a dispose
+	// that threw before here leaves it live, so its stamp stays.
+	forgetTerminal(terminalId);
 
 	if (!chatPortTerminalIds.has(terminalId))
 		portManager.unregisterSession(terminalId);
@@ -5255,14 +5336,23 @@ export function registerWorkspaceTerminalRoute({
 						// agent.
 						//
 						// `writeInputToSession` / `writeFramedInputToSession` MUST NOT
-						// stamp, and the reason is not stylistic: they are the pty
+						// stamp presence, and the reason is not stylistic: they are the pty
 						// writers the COMPANION'S OWN answer path uses, plus every
 						// programmatic sender (auto-resume, `terminal.send`). Stamping
 						// there would make an answer typed from the phone read as the
 						// user being at their desk, and the next question would be held
 						// back from the very device that just answered one.
-						if (message.human === true) stampHumanInput();
-						session.pty.write(message.data);
+						const data: unknown = message.data;
+						if (typeof data !== "string") {
+							sendMessage(ws, {
+								type: "error",
+								message: "Invalid terminal message payload",
+							});
+							return;
+						}
+						const human = message.human === true;
+						if (human) stampHumanInput();
+						session.pty.write(data, "renderer", { human });
 						return;
 					}
 

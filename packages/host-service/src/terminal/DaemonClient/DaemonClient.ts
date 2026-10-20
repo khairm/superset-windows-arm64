@@ -97,7 +97,6 @@ export interface DaemonClientOptions {
  */
 const OPEN_TIMEOUT_MS = 15_000;
 const CLOSE_TIMEOUT_MS = 5_000;
-const INPUT_ACK_TIMEOUT_MS = 5_000;
 const LIST_TIMEOUT_MS = 5_000;
 // Daemon-side handoff has to write a snapshot, spawn a child Node process,
 // await successor adopt-ack, then reply. The Server uses 5s for the ack
@@ -257,7 +256,11 @@ export class DaemonClient {
 	 * its legacy input frame, followed by an `unknown` outcome because it cannot
 	 * acknowledge them. Ordinary interactive input remains on `input()` above.
 	 */
-	async inputAcknowledged(id: string, data: Buffer): Promise<void> {
+	async inputAcknowledged(
+		id: string,
+		data: Buffer,
+		timeoutMs: number,
+	): Promise<void> {
 		if (this.negotiated === 2) {
 			try {
 				this.input(id, data);
@@ -279,7 +282,7 @@ export class DaemonClient {
 			);
 		}
 		const requestId = randomUUID();
-		const reply = await this.requestInput(id, requestId, data);
+		const reply = await this.requestInput(id, requestId, data, timeoutMs);
 		if (reply.type === "input-ok") return;
 		if (reply.type === "error") {
 			throw new AcknowledgedInputError(
@@ -424,6 +427,7 @@ export class DaemonClient {
 		id: string,
 		requestId: string,
 		data: Buffer,
+		timeoutMs: number,
 	): Promise<ServerMessage> {
 		return new Promise<ServerMessage>((resolve, reject) => {
 			let settled = false;
@@ -469,11 +473,11 @@ export class DaemonClient {
 				() =>
 					fail(
 						new AcknowledgedInputError(
-							`daemon acknowledged input ${id}: timed out after ${INPUT_ACK_TIMEOUT_MS}ms`,
+							`daemon acknowledged input ${id}: timed out after ${timeoutMs}ms`,
 							"unknown",
 						),
 					),
-				INPUT_ACK_TIMEOUT_MS,
+				timeoutMs,
 			);
 			const cleanup = () => {
 				off();

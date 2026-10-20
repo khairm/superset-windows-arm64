@@ -86,6 +86,7 @@ import {
 import type { DeviceStore } from "./device-store";
 import type { KeyStore, SendNonceSource } from "./keys";
 import { deriveDirectionalKeys, zeroDirectionalKeys } from "./keys";
+import { FREETEXT_MAX_CHARS } from "./keystrokes";
 import {
 	MAX_APP_VERSION_CHARS,
 	MAX_LABEL_CHARS,
@@ -1062,7 +1063,14 @@ const answerItemSchema = z.discriminatedUnion("kind", [
 	z.object({
 		questionIndex: nonNegativeInt,
 		kind: z.literal("freetext"),
-		text: z.string().min(1).max(4096),
+		text: z.string().min(1).max(FREETEXT_MAX_CHARS),
+	}),
+	z.object({
+		questionIndex: nonNegativeInt,
+		kind: z.literal("multiselect_freetext"),
+		// MAY be empty: the typed text alone is an answer the agent sees.
+		optionIndexes: z.array(nonNegativeInt).max(64),
+		text: z.string().min(1).max(FREETEXT_MAX_CHARS),
 	}),
 ]);
 
@@ -1088,7 +1096,8 @@ const answerSchema = z
 					message: "questionIndex must be 0..N-1, each once, ascending",
 				});
 			}
-			if (item.kind !== "multiselect") return;
+			if (item.kind !== "multiselect" && item.kind !== "multiselect_freetext")
+				return;
 			// §11.2 — duplicates would toggle twice and silently deselect, so they
 			// are REFUSED rather than normalised: normalising is guessing at intent.
 			for (let i = 1; i < item.optionIndexes.length; i += 1) {

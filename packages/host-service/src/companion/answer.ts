@@ -6,7 +6,9 @@
  * identity and answer shape, `encodeAnswer` produces the proven byte sequence and
  * `injectSequence` writes it to the captured terminal under the per-terminal lock.
  * No transcript, screen, renderer, Windows interactive-session, agent-binding,
- * permission-latch or marker observation may veto or downgrade that write.
+ * permission-latch or marker observation may veto or downgrade that write. The
+ * one exception is `(ANSWER-DESK-TOUCH-FENCE)`: input counted on that terminal
+ * at or after `askedAtMs` vetoes the answer.
  *
  * The lock, answer-wide lease and durable request ledger remain: they prevent two
  * devices from interleaving bytes and make retries idempotent. Each PTY write is
@@ -34,8 +36,8 @@ import {
 	encodeAnswer,
 	findForbiddenControlChar,
 	findUnpairedSurrogate,
-	type Keystroke,
 	KeystrokeEncodingError,
+	type KeystrokeFrame,
 	MESSAGE_ALLOWED_C0,
 	type RawPtyWriter,
 	type RawWriteFn,
@@ -47,6 +49,7 @@ import {
 	TerminalLockTimeoutError,
 } from "./lease";
 import type { PendingQuestion, QuestionStore } from "./question-store";
+import { lastCountedInputAt } from "./terminal-input-fence";
 import {
 	type AgentKind,
 	type AnswerAttemptRecord,
@@ -56,9 +59,11 @@ import {
 	type AnswerStatusOutcome,
 	type AnswerStatusRequest,
 	type AnswerStatusResponse,
+	type AttemptFailureCode,
 	type AuditEntry,
 	type DurationMs,
 	type EpochMs,
+	type LeaseId,
 	type MessageRequest,
 	type MessageResponse,
 	type QuestionId,
@@ -66,6 +71,7 @@ import {
 	type RequestId,
 	type ResolvedBy,
 	SealedError,
+	type SealedErrorCode,
 	type SealedRequestContext,
 	type TerminalId,
 } from "./types";
@@ -89,24 +95,38 @@ export const LOCK_WAIT_TIMEOUT_MS = 5_000;
 export const SCREEN_ADVANCE_POLL_MS = 25;
 
 /**
- * (ANSWER-FRAME-PACING) Fixed inter-frame settling time proven against a real
- * Claude Code 2.1.228 N=4 picker. Daemon write acknowledgements report only that
- * the PTY accepted a frame; they arrive before the TUI advances to the next item.
- * Protocol-v3 therefore waits this long after every acknowledged non-final frame.
- *
- * The boundary failure mode is not a stall — it is a silently submitted wrong
- * answer set. In the fixed-gap N=4 sweep, a 250 ms run misattributed every answer
- * one question over with no error, while 500 ms passed 3/3 with the exact expected
- * tool result. The fixed delay reads no TUI state, so it also works with the
- * renderer absent, the display off, or Windows locked.
+ * (ANSWER-FRAME-PACING) Fixed gap between picker-screen frames (one write per
+ * screen, from `encodeAnswer`). A daemon acknowledgement says only that the PTY
+ * took the frame, not that Claude moved to the next screen, and a write that
+ * lands before the screen changes drops or misplaces keys. Proven on Claude Code
+ * 2.1.303 (tmp/multiselect-other/round6): 2000 ms 25/25 across P1, P2, P3,
+ * multi-a and 4 questions; 1000 ms 15/15; 250 ms per key P1 2/5 (a Q2 digit
+ * landed in Q1's text); the whole form as one write P1 0/4. The fixed delay reads
+ * no TUI state, so it also works with the renderer absent, the display off, or
+ * Windows locked.
  */
-export const ANSWER_INTER_FRAME_DELAY_MS = 500;
+export const ANSWER_INTER_FRAME_DELAY_MS = 2_000;
 
 /**
- * Unpaced execution allowance for one sequence. Pacing is added dynamically for
- * every legal inter-frame gap; it must not consume this allowance.
+ * Unpaced execution allowance for one sequence. Pacing is added for every gap
+ * between frames; it must not consume this allowance. The worst case (lock wait,
+ * settle, 5 frames) must stay inside the phone's 30 s answer read.
  */
-export const SEQUENCE_EXECUTION_ALLOWANCE_MS = 10_000;
+export const SEQUENCE_EXECUTION_ALLOWANCE_MS = 5_000;
+
+/**
+ * The first write waits until the capture is this old. G-HOOK6000
+ * (tmp/multiselect-other/round7): hook to picker 79-292 ms, and a first write at
+ * hook + 6000 ms answered 20/20.
+ */
+export const FIRST_WRITE_SETTLE_MS = 6_000;
+
+/**
+ * `askedAtMs` (the hook's clock) may lead `capturedAtMs` (the host's) by at most
+ * this much. The desk-touch fence counts input from `askedAtMs`, so a later
+ * `askedAtMs` would hide a touch.
+ */
+export const ASKED_AT_MAX_LEAD_MS = 2_000;
 
 /** PROTOCOL §7.5 — a message body is 1..8 192 chars. */
 export const MESSAGE_MAX_CHARS = 8_192;
@@ -193,9 +213,9 @@ export interface HostTerminalRef {
  * Note the two writers are deliberately DIFFERENT SHAPES so neither can be
  * passed where the other belongs:
  *  - `writer` is a `RawPtyWriter`, mintable only by `createRawPtyWriter`, which
- *    requires the acknowledged raw-writer runtime marker. Bracketed paste is
- *    INERT against the picker, while fire-and-forget input cannot report daemon
- *    refusal, so either wrong writer fails at bridge startup;
+ *    requires the acknowledged raw-writer runtime marker. The paste-framing writer
+ *    frames the whole frame and adds its own Return, while fire-and-forget input
+ *    cannot report daemon refusal, so either wrong writer fails at bridge startup;
  *  - `writeFramed` is async and takes `{text, submit}`, and is used ONLY by
  *    `handleMessage`, which never touches a picker.
  */
@@ -542,18 +562,7 @@ export function screenShowsPickerChrome(screen: string): boolean {
 }
 
 /** The sealed codes this module is allowed to emit. A closed set, per §10. */
-type SealedCode =
-	| "stale_question"
-	| "already_resolved"
-	| "lease_held"
-	| "guard_failed"
-	| "picker_open"
-	| "capability_unsupported"
-	/** (ANSWER-LEDGER) The fence. See where it is thrown for why not `already_resolved`. */
-	| "request_closed"
-	| "write_disabled"
-	| "bad_request"
-	| "internal";
+type SealedCode = Exclude<SealedErrorCode, "session_expired" | "access_denied">;
 
 function sealed(
 	statusCode: number,
@@ -567,6 +576,24 @@ function sealed(
 		retryAfterMs: null,
 		detail,
 	});
+}
+
+/** (ANSWER-DESK-TOUCH-FENCE) The refusal before the first write, and its replay. */
+function deskInputRefusal(): SealedError {
+	return sealed(
+		412,
+		"desk_input",
+		"input reached this terminal after the question was asked; nothing was written — answer it at the desk",
+	);
+}
+
+/**
+ * (ANSWER-DESK-TOUCH-FENCE) Whether input counted on this question's terminal at
+ * or after `askedAtMs`. Keyed by the host terminal id, never the wire handle.
+ */
+function deskTouchedSinceAsked(question: PendingQuestion): boolean {
+	const touchedAtMs = lastCountedInputAt(question.hostTerminalId);
+	return touchedAtMs !== null && touchedAtMs >= question.askedAtMs;
 }
 
 /**
@@ -898,6 +925,7 @@ export async function handleAnswer(
 	if (claim.kind === "replay") {
 		const previous = claim.record;
 		if (previous.status === "failed") {
+			if (previous.failureCode === "desk_input") throw deskInputRefusal();
 			// The request-id fence stays closed, but legacy guard failures never
 			// re-surface as a guard refusal. A fresh request may answer the still-open
 			// question through the guardless path.
@@ -959,18 +987,63 @@ export async function handleAnswer(
 		// 3..6. The question must still be the thing the client thinks it is.
 		const question = requirePendingAnswerQuestion(deps, request);
 
+		const payloadHash = hashRequest(request);
+		const auditIdentity = {
+			kind: "answer" as const,
+			deviceId: ctx.device.deviceId,
+			surface: request.surface,
+			requestId: request.requestId,
+			questionId: request.questionId,
+			terminalId: question.terminalId,
+			payloadHash,
+			// (ANSWER-GUARDLESS) No guard stack runs, so no audit line can claim a
+			// guard evaluation. The default is `null` — "never asked" — and the sites
+			// that write `[]` do so because the record type they feed cannot express
+			// the difference. `[]` is never a claim that a guard abstained.
+			guardsAbstained: null as AnswerGuardName[] | null,
+		};
+		/** A refusal before any write, audited with whatever lease exists (none before 10). */
+		const auditedRefusal = async (
+			error: SealedError,
+			leaseId: LeaseId | null,
+		): Promise<SealedError> => {
+			await appendAnswerAudit(deps, {
+				...auditIdentity,
+				tsMs: deps.now(),
+				leaseId,
+				guards: null,
+				outcome: "failed",
+				failureCode: error.body.code,
+			});
+			return error;
+		};
+
+		// The fence counts input from `askedAtMs`; a capture whose `askedAtMs`
+		// runs ahead of the host's own capture time would hide a desk touch.
+		if (question.askedAtMs > question.capturedAtMs + ASKED_AT_MAX_LEAD_MS) {
+			throw await auditedRefusal(
+				sealed(
+					400,
+					"bad_request",
+					`the question's askedAtMs is more than ${ASKED_AT_MAX_LEAD_MS} ms after it was captured; nothing was written`,
+					{ reason: "asked_after_capture" },
+				),
+				null,
+			);
+		}
+
 		// 7. (ANSWER-GUARDLESS) Installed clients may still send the legacy
 		//    `confirmedBiometric` claim, but it is optional and ignored. Explicit
 		//    submit from the paired, authenticated device is the authorization.
 
 		// 8. Encode. PURE — no terminal, no lock, so every failure here provably
 		//    wrote nothing.
-		let keystrokes: Keystroke[];
+		let frames: KeystrokeFrame[];
 		try {
-			keystrokes = encodeAnswer(question.questions, request.answers);
+			frames = encodeAnswer(question.questions, request.answers);
 		} catch (error) {
 			if (error instanceof KeystrokeEncodingError)
-				throw sealedFromEncoding(error);
+				throw await auditedRefusal(sealedFromEncoding(error), null);
 			throw error;
 		}
 
@@ -1021,6 +1094,19 @@ export async function handleAnswer(
 				`the terminal could not be prepared; nothing was written — submit a new request to retry (${prepared.error})`,
 			);
 		}
+		// A daemon that cannot acknowledge input cannot be paced between screens,
+		// so only a one-frame answer may go to it.
+		if (!prepared.acknowledgedInputSupported && frames.length > 1) {
+			throw await auditedRefusal(
+				sealed(
+					501,
+					"capability_unsupported",
+					"this terminal's daemon cannot acknowledge input, so an answer that spans several picker screens is refused; nothing was written — answer it at the desk",
+					{ reason: "legacy_daemon_multi_frame" },
+				),
+				null,
+			);
+		}
 
 		// 10. The answer-wide lease. A second device is REFUSED, never queued (§11.4).
 		const startedAtMs = deps.now();
@@ -1043,22 +1129,7 @@ export async function handleAnswer(
 		}
 		const lease = acquisition.lease;
 
-		const payloadHash = hashRequest(request);
-		const baseAudit = {
-			kind: "answer" as const,
-			deviceId: ctx.device.deviceId,
-			surface: request.surface,
-			requestId: request.requestId,
-			leaseId: lease.leaseId,
-			questionId: request.questionId,
-			terminalId: question.terminalId,
-			payloadHash,
-			// (ANSWER-GUARDLESS) No guard stack runs, so no audit line can claim a
-			// guard evaluation. The default is `null` — "never asked" — and the sites
-			// that write `[]` do so because the record type they feed cannot express
-			// the difference. `[]` is never a claim that a guard abstained.
-			guardsAbstained: null as AnswerGuardName[] | null,
-		};
+		const baseAudit = { ...auditIdentity, leaseId: lease.leaseId };
 
 		/**
 		 * The identity every attempt record for this request carries, spread into the
@@ -1114,13 +1185,36 @@ export async function handleAnswer(
 			const result = await deps.locks.runExclusive(
 				question.terminalId,
 				LOCK_WAIT_TIMEOUT_MS,
-				() => {
-					// The preflight happened before audit I/O and lock acquisition. Re-check
-					// the store at the last synchronous point before the first PTY write so a
-					// desk answer or superseding capture cannot turn this answer into composer
-					// text or an answer to the replacement picker. This is question identity,
-					// not screen/transcript/session evidence.
-					requireCurrentPendingAnswerQuestion(deps, request);
+				async (): Promise<InjectionResult> => {
+					// Claude may still be drawing the picker; the first write waits
+					// until the capture is FIRST_WRITE_SETTLE_MS old.
+					const settleMs = Math.min(
+						FIRST_WRITE_SETTLE_MS,
+						question.capturedAtMs + FIRST_WRITE_SETTLE_MS - deps.now(),
+					);
+					if (settleMs > 0) await deps.delay(settleMs);
+					// The preflight happened before audit I/O, lock acquisition and the
+					// settle. Re-check the store at the last point before the first PTY
+					// write so a desk answer or superseding capture cannot turn this
+					// answer into composer text or an answer to the replacement picker.
+					// This is question identity, not screen/transcript/session evidence.
+					const current = requireCurrentPendingAnswerQuestion(deps, request);
+					// (ANSWER-DESK-TOUCH-FENCE) A picker touched at the desk may have a
+					// moved caret or ticks the encoder cannot know about.
+					if (deskTouchedSinceAsked(current)) {
+						throw await auditedRefusal(deskInputRefusal(), lease.leaseId);
+					}
+					// The lock wait and the settle ran on the lease. A lease lost here
+					// fails with zero writes before the durable write fence exists.
+					const renewal = deps.leases.extend(lease.leaseId, deps.now());
+					if (!renewal.ok) {
+						return stoppedInjection(
+							`lease ${renewal.reason}`,
+							0,
+							"not_written",
+							null,
+						);
+					}
 					let durableFence: LedgerRecord | null;
 					try {
 						durableFence = deps.ledger.beginWrite(
@@ -1156,11 +1250,11 @@ export async function handleAnswer(
 						);
 					}
 					return injectSequence(deps, {
-						question,
+						requestId: request.requestId,
+						question: current,
 						host,
-						keystrokes,
+						frames,
 						leaseId: lease.leaseId,
-						acknowledgedInputSupported: prepared.acknowledgedInputSupported,
 						writer,
 					});
 				},
@@ -1264,11 +1358,15 @@ export async function handleAnswer(
 				);
 			}
 
+			const keystrokesTotal = frames.reduce(
+				(total, frame) => total + frame.keystrokes.length,
+				0,
+			);
 			deps.questions.markStale(
 				request.questionId,
 				result.writeOutcome === "unknown"
-					? `write outcome unknown after ${result.written}/${keystrokes.length} acknowledged keystrokes: ${result.reason}`
-					: `partial write: ${result.written}/${keystrokes.length} keystrokes landed, then ${result.reason}`,
+					? `write outcome unknown after ${result.written}/${keystrokesTotal} acknowledged keystrokes: ${result.reason}`
+					: `partial write: ${result.written}/${keystrokesTotal} keystrokes landed, then ${result.reason}`,
 			);
 			deps.log({
 				event: "companion.answer.unconfirmed",
@@ -1276,16 +1374,16 @@ export async function handleAnswer(
 				terminalId: question.terminalId,
 				leaseId: lease.leaseId,
 				keystrokesWritten: result.written,
-				keystrokesTotal: keystrokes.length,
-				abortedAt: result.abortedAt,
+				keystrokesTotal,
 				writeOutcome: result.writeOutcome,
+				failureCode: result.failureCode,
 				reason: result.reason,
 			});
 			const record: AnswerAttemptRecord = {
 				...baseAttempt,
 				status: "unconfirmed",
 				resolvedAtMs: null,
-				failureCode: null,
+				failureCode: result.failureCode,
 				guardsPassed: [],
 				guardsAbstained: [],
 			};
@@ -1296,7 +1394,7 @@ export async function handleAnswer(
 				guards: null,
 				guardsAbstained: [],
 				outcome: "unconfirmed",
-				failureCode: null,
+				failureCode: result.failureCode,
 			});
 			return recordToResponse(record);
 		} catch (error) {
@@ -1378,9 +1476,10 @@ export async function handleAnswer(
 		// records its own outcome, so this is the last chance to stop it claiming
 		// forever that keystrokes are landing.
 		//
-		// A still-`claimed` row proves the write transition never happened and records
-		// `failed/internal`. An `in_flight` SealedError is a known refusal, narrowed to
-		// the ledger's durable code set for §11.4 replay. Any other `in_flight` fault
+		// A still-`claimed` row proves the write transition never happened. A
+		// SealedError is a known refusal and records its own code, narrowed to the
+		// ledger's durable code set for §11.4 replay and the status read; any other
+		// pre-write fault records `failed/internal`. Any other `in_flight` fault
 		// remains `unconfirmed`, because bytes may already have moved.
 		const durable = deps.ledger.get(request.requestId);
 		if (durable?.status === "claimed" || durable?.status === "in_flight") {
@@ -1389,11 +1488,12 @@ export async function handleAnswer(
 				requestId: request.requestId,
 				status:
 					preWrite || error instanceof SealedError ? "failed" : "unconfirmed",
-				failureCode: preWrite
-					? "internal"
-					: error instanceof SealedError
+				failureCode:
+					error instanceof SealedError
 						? toLedgerFailureCode(error.body.code)
-						: null,
+						: preWrite
+							? "internal"
+							: null,
 				resolvedAtMs: null,
 				guardsPassed: [],
 				leaseId: durable.leaseId,
@@ -1412,97 +1512,98 @@ type InjectionResult =
 	| {
 			kind: "unconfirmed";
 			reason: string;
-			abortedAt: number;
 			written: number;
 			writeOutcome: AcknowledgedInputFailureKind;
+			/** `desk_input` when the desk-touch fence stopped the sequence. */
+			failureCode: "desk_input" | null;
 	  };
 
+/** A sequence that stopped after `written` acknowledged keystrokes. */
+function stoppedInjection(
+	reason: string,
+	written: number,
+	writeOutcome: AcknowledgedInputFailureKind,
+	failureCode: "desk_input" | null,
+): InjectionResult {
+	return { kind: "unconfirmed", reason, written, writeOutcome, failureCode };
+}
+
 /**
- * (ANSWER-GUARDLESS) Runs the proven byte sequence inside the per-terminal lock.
+ * (ANSWER-GUARDLESS) Runs the proven byte sequence inside the per-terminal lock,
+ * one write per picker screen.
  *
  * The captured question identity and submitted answer are validated before this
  * function runs. Once that boundary has produced a byte sequence, no transcript,
  * screen snapshot, desktop session, agent binding, permission latch or marker may
- * veto it. In particular, this path does not depend on the renderer, the physical
- * display, or the Windows interactive login session, so display-off and locked
- * desktops behave exactly like an unlocked desktop.
+ * veto it. The one exception is `(ANSWER-DESK-TOUCH-FENCE)`: input counted on
+ * that terminal at or after `askedAtMs` vetoes the answer. `handleAnswer` checks
+ * it before the first frame; this function checks it before every later frame
+ * and stops as `unconfirmed` with `desk_input`. This path does not depend on the
+ * renderer, the physical display, or the Windows interactive login session, so
+ * display-off and locked desktops behave exactly like an unlocked desktop.
  *
- * PTY input is an ordered byte stream, but an acknowledged `pty.write` only says
- * that the PTY accepted the frame; it does not say Claude's picker has advanced.
- * `(ANSWER-FRAME-PACING)` therefore keeps protocol-v3 keystrokes discrete and
- * waits a fixed, deterministic interval after every acknowledged non-final frame.
- * The wait is not an observation and cannot veto or downgrade anything. Protocol
- * v2 remains one complete legacy frame with no pacing and an honest `unconfirmed`
- * outcome because that daemon cannot acknowledge input.
+ * An acknowledged `pty.write` only says that the PTY accepted the frame; it does
+ * not say Claude's picker has advanced. `(ANSWER-FRAME-PACING)` therefore waits a
+ * fixed interval after every acknowledged non-final frame. The wait is not an
+ * observation and cannot veto or downgrade anything. Each write's acknowledgement
+ * timeout is the remaining sequence budget, so a slow acknowledgement can never
+ * confirm past the deadline, and a gap that leaves no budget for the next frame
+ * stops the sequence before it sleeps.
  */
 export async function injectSequence(
 	deps: AnswerDeps,
 	input: {
+		requestId: RequestId;
 		question: PendingQuestion;
 		host: HostTerminalRef;
-		keystrokes: readonly Keystroke[];
+		frames: readonly KeystrokeFrame[];
 		leaseId: string;
-		acknowledgedInputSupported: boolean;
 		writer: RawPtyWriter;
 	},
 ): Promise<InjectionResult> {
-	const {
-		question,
-		host,
-		keystrokes,
-		leaseId,
-		acknowledgedInputSupported,
-		writer,
-	} = input;
-	const interFrameWaits = acknowledgedInputSupported
-		? Math.max(0, keystrokes.length - 1)
-		: 0;
+	const { requestId, question, host, frames, leaseId, writer } = input;
 	const deadlineMs =
 		deps.now() +
 		SEQUENCE_EXECUTION_ALLOWANCE_MS +
-		interFrameWaits * ANSWER_INTER_FRAME_DELAY_MS;
+		Math.max(0, frames.length - 1) * ANSWER_INTER_FRAME_DELAY_MS;
 	let written = 0;
 
 	const abort = (
 		reason: string,
-		index: number,
 		writeOutcome: AcknowledgedInputFailureKind,
-	): InjectionResult => ({
-		kind: "unconfirmed",
-		reason,
-		abortedAt: index,
-		written,
-		writeOutcome,
-	});
+		failureCode: "desk_input" | null,
+	): InjectionResult =>
+		stoppedInjection(reason, written, writeOutcome, failureCode);
 
-	const frames = acknowledgedInputSupported
-		? keystrokes.map((keystroke, index) => ({
-				data: keystroke.data,
-				acknowledgedKeystrokes: 1,
-				abortAt: index,
-			}))
-		: keystrokes.length === 0
-			? []
-			: [
-					{
-						data: keystrokes.map((keystroke) => keystroke.data).join(""),
-						acknowledgedKeystrokes: keystrokes.length,
-						abortAt: keystrokes.length,
-					},
-				];
 	if (frames.length === 0) {
-		return abort("missing keystroke sequence", 0, "not_written");
+		return abort("missing keystroke sequence", "not_written", null);
 	}
 
 	for (let frameIndex = 0; frameIndex < frames.length; frameIndex += 1) {
 		const frame = frames[frameIndex];
 		if (frame === undefined) {
-			return abort("missing input frame", frameIndex, "not_written");
+			return abort("missing input frame", "not_written", null);
 		}
 
 		const nowMs = deps.now();
 		if (nowMs >= deadlineMs) {
-			return abort("sequence deadline exceeded", frame.abortAt, "not_written");
+			return abort("sequence deadline exceeded", "not_written", null);
+		}
+
+		// (ANSWER-DESK-TOUCH-FENCE) Never a 412 here: earlier frames have landed.
+		if (frameIndex > 0 && deskTouchedSinceAsked(question)) {
+			deps.log({
+				event: "companion.answer.desk_input_between_frames",
+				requestId,
+				questionId: question.questionId,
+				terminalId: question.terminalId,
+				frameIndex,
+			});
+			return abort(
+				"input reached the terminal after the question was asked",
+				"not_written",
+				"desk_input",
+			);
 		}
 
 		const extension = deps.leases.extend(leaseId, nowMs);
@@ -1514,7 +1615,7 @@ export async function injectSequence(
 				reason: extension.reason,
 				frameIndex,
 			});
-			return abort(`lease ${extension.reason}`, frame.abortAt, "not_written");
+			return abort(`lease ${extension.reason}`, "not_written", null);
 		}
 
 		let result: RawWriteResult;
@@ -1523,6 +1624,7 @@ export async function injectSequence(
 				terminalId: host.hostTerminalId,
 				workspaceId: host.hostWorkspaceId,
 				data: frame.data,
+				ackTimeoutMs: deadlineMs - nowMs,
 			});
 		} catch (error) {
 			deps.log({
@@ -1532,7 +1634,7 @@ export async function injectSequence(
 				frameIndex,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			return abort("pty write threw", frame.abortAt, "unknown");
+			return abort("pty write threw", "unknown", null);
 		}
 
 		if ("error" in result) {
@@ -1547,21 +1649,43 @@ export async function injectSequence(
 			});
 			return abort(
 				`pty write refused: ${result.error}`,
-				frame.abortAt,
 				result.writeOutcome,
+				null,
 			);
 		}
 
-		written += frame.acknowledgedKeystrokes;
+		written += frame.keystrokes.length;
+		const ackedAtMs = deps.now();
+		deps.log({
+			event: "companion.answer.frame_acked",
+			requestId,
+			frameIndex,
+			frameCount: frames.length,
+			ackMs: ackedAtMs - nowMs,
+		});
 
-		// Sleep only AFTER an acknowledged non-final v3 write. On the next loop the
-		// deadline is checked, then the lease is renewed immediately before writing.
-		// No screen, renderer, transcript, display, lock or agent state is consulted.
-		if (acknowledgedInputSupported && frameIndex < frames.length - 1) {
+		// Sleep only AFTER an acknowledged non-final write. On the next loop the
+		// deadline and the fence are checked, then the lease is renewed
+		// immediately before writing.
+		if (frameIndex < frames.length - 1) {
+			if (ackedAtMs + ANSWER_INTER_FRAME_DELAY_MS >= deadlineMs) {
+				return abort(
+					"the gap and the next frame do not fit the sequence deadline",
+					"not_written",
+					null,
+				);
+			}
 			await deps.delay(ANSWER_INTER_FRAME_DELAY_MS);
 		}
 	}
 
+	if (deps.now() > deadlineMs) {
+		return abort(
+			"the last acknowledgement arrived after the sequence deadline",
+			"unknown",
+			null,
+		);
+	}
 	return { kind: "confirmed" };
 }
 
@@ -2438,6 +2562,7 @@ export function ledgerRecordToResponse(record: LedgerRecord): AnswerResponse {
 		resolvedAtMs: record.status === "confirmed" ? record.resolvedAtMs : null,
 		guardsPassed: record.guardsPassed,
 		guardsAbstained: replayedGuardsAbstained(record),
+		...unconfirmedFailureCode(record),
 	};
 }
 
@@ -2454,7 +2579,18 @@ function recordToResponse(record: AnswerAttemptRecord): AnswerResponse {
 		resolvedAtMs: record.status === "confirmed" ? record.resolvedAtMs : null,
 		guardsPassed: record.guardsPassed,
 		guardsAbstained: record.guardsAbstained,
+		...unconfirmedFailureCode(record),
 	};
+}
+
+/** The wire's optional `failureCode`: on an `unconfirmed` record that has one, else absent. */
+function unconfirmedFailureCode(record: {
+	status: string;
+	failureCode: AttemptFailureCode | null;
+}): Pick<AnswerResponse, "failureCode"> {
+	return record.status === "unconfirmed" && record.failureCode !== null
+		? { failureCode: record.failureCode }
+		: {};
 }
 
 /**

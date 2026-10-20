@@ -1,32 +1,37 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
-	ANSWER_INTER_FRAME_DELAY_MS,
 	type AnswerDeps,
 	assertAnswerDeps,
 	type HostTerminalRef,
 	handleAnswer,
+	handleAnswerStatus,
 	injectSequence,
 	ledgerRecordToResponse,
-	SEQUENCE_EXECUTION_ALLOWANCE_MS,
 } from "./answer";
 import type { AttemptLedger, LedgerRecord } from "./attempt-ledger";
 import { ROUTES } from "./http";
 import {
 	createRawPtyWriter,
-	type Keystroke,
+	encodeAnswer,
+	type KeystrokeFrame,
 	RAW_PTY_WRITER_KIND,
 	type RawWriteInput,
 	type RawWriteResult,
 } from "./keystrokes";
 import { createLeaseRegistry, createTerminalLockRegistry } from "./lease";
 import type { PendingQuestion, QuestionStore } from "./question-store";
+import { multiItem, singleItem } from "./question-item-fixtures";
+import { forgetTerminal, stampInput } from "./terminal-input-fence";
 import type {
+	AnswerItem,
 	AnswerLease,
 	AnswerRequest,
+	AuditEntry,
 	DeviceId,
 	Fingerprint,
 	LeaseId,
 	QuestionId,
+	QuestionItem,
 	TerminalId,
 } from "./types";
 
@@ -35,6 +40,7 @@ const QUESTION = {
 	fingerprint: "fp-guardless" as Fingerprint,
 	state: "pending",
 	askedAtMs: 1,
+	capturedAtMs: 1,
 	resolvedAtMs: null,
 	resolvedBy: null,
 	remoteAnswer: null,
@@ -65,24 +71,14 @@ const LEASE = {
 	expiresAtMs: 2_000,
 } satisfies AnswerLease;
 
-const KEYSTROKES: Keystroke[] = [
-	{
-		kind: "select_digit",
-		data: "1",
-		questionIndex: 0,
-		optionIndex: 0,
-		expect: { kind: "item_picker", itemIndex: 0 },
-		submits: false,
-	},
-	{
-		kind: "submit_return",
-		data: "\r",
-		questionIndex: 0,
-		optionIndex: null,
-		expect: { kind: "same_prompt", itemIndex: 0 },
-		submits: true,
-	},
-];
+/** Two digit questions: three frames, one per screen. */
+const FRAMES: KeystrokeFrame[] = encodeAnswer(
+	[singleItem(0), singleItem(1)],
+	[
+		{ questionIndex: 0, kind: "select", optionIndex: 0 },
+		{ questionIndex: 1, kind: "select", optionIndex: 1 },
+	],
+);
 
 function testLeases(
 	extend: AnswerDeps["leases"]["extend"],
@@ -101,9 +97,9 @@ function stubDeps(overrides: Partial<AnswerDeps> = {}): AnswerDeps {
 	} as unknown as AnswerDeps;
 }
 
-function testWriter(write: (data: string) => RawWriteResult) {
+function testWriter(write: (input: RawWriteInput) => RawWriteResult) {
 	return createRawPtyWriter(
-		Object.assign(async (input: RawWriteInput) => write(input.data), {
+		Object.assign(async (input: RawWriteInput) => write(input), {
 			writerKind: RAW_PTY_WRITER_KIND,
 			prepare: async () => ({
 				acknowledgedInputSupported: true,
@@ -116,14 +112,14 @@ function testWriter(write: (data: string) => RawWriteResult) {
 function run(
 	writer: ReturnType<typeof testWriter>,
 	deps = stubDeps(),
-	acknowledgedInputSupported = true,
+	frames: readonly KeystrokeFrame[] = FRAMES,
 ) {
 	return injectSequence(deps, {
+		requestId: "00000000-0000-4000-8000-000000000001",
 		question: QUESTION,
 		host: HOST,
-		keystrokes: KEYSTROKES,
+		frames,
 		leaseId: "lease-guardless",
-		acknowledgedInputSupported,
 		writer,
 	});
 }
@@ -183,35 +179,40 @@ function memoryLedger(): AttemptLedger {
 			});
 		},
 		get: (requestId) => records.get(requestId) ?? null,
-		resolveStatus: () => ({ kind: "unconfirmed", why: "unused in this test" }),
+		resolveStatus: (requestId) => {
+			const record = records.get(requestId);
+			return record === undefined
+				? { kind: "unconfirmed", why: "no record in this test" }
+				: { kind: "known", record };
+		},
 		rotateEpoch: () => "epoch-rotated",
 	};
 }
 
 function answerHarness(
 	options: {
+		questions?: QuestionItem[];
+		answers?: AnswerItem[];
+		question?: Partial<PendingQuestion>;
 		repaint?: AnswerDeps["nudgeRepaint"];
 		onWrite?: (data: string, question: PendingQuestion) => void;
+		onDelay?: (ms: number, question: PendingQuestion) => void;
 		locks?: AnswerDeps["locks"];
+		acknowledgedInputSupported?: boolean;
+		writeResult?: () => RawWriteResult;
 	} = {},
 ) {
 	let now = 10_000;
-	let writes = 0;
+	const writes: string[] = [];
+	const delays: number[] = [];
+	const audits: AuditEntry[] = [];
 	const events: Record<string, unknown>[] = [];
 	const question: PendingQuestion = {
 		...QUESTION,
 		questionId: "AAAAAAAAAAAAAAAAAAAAAA" as QuestionId,
 		fingerprint: "AQEBAQEBAQEBAQEBAQEBAQ" as Fingerprint,
-		questions: [
-			{
-				index: 0,
-				header: "Pick one",
-				question: "Which?",
-				multiSelect: false,
-				options: [{ index: 0, label: "A", description: "" }],
-				freeTextOption: null,
-			},
-		],
+		questions: options.questions ?? [singleItem(0)],
+		...options.question,
 	};
 	const questions = {
 		get: (questionId: QuestionId) =>
@@ -240,15 +241,15 @@ function answerHarness(
 	} as unknown as QuestionStore;
 	const writeInput = Object.assign(
 		async (input: RawWriteInput) => {
-			writes += 1;
+			writes.push(input.data);
 			options.onWrite?.(input.data, question);
-			return { success: true as const };
+			return options.writeResult?.() ?? { success: true as const };
 		},
 		{
 			writerKind: RAW_PTY_WRITER_KIND,
 			prepare: async () => ({
 				success: true as const,
-				acknowledgedInputSupported: true,
+				acknowledgedInputSupported: options.acknowledgedInputSupported ?? true,
 			}),
 		},
 	);
@@ -260,16 +261,27 @@ function answerHarness(
 		ledger: memoryLedger(),
 		questions,
 		markRemoteAnsweredAndPublish: questions.markRemoteAnswered,
-		audit: { append: async () => {}, prune: async () => 0 },
-		now: () => now++,
-		delay: async () => {},
+		audit: {
+			append: async (entry: AuditEntry) => {
+				audits.push(entry);
+			},
+			prune: async () => 0,
+		},
+		now: () => now,
+		delay: async (ms: number) => {
+			delays.push(ms);
+			now += ms;
+			options.onDelay?.(ms, question);
+		},
 		log: (event: Record<string, unknown>) => events.push(event),
 	} as unknown as AnswerDeps;
 	const request = {
 		questionId: question.questionId,
 		fingerprint: question.fingerprint,
 		requestId: "00000000-0000-4000-8000-000000000001",
-		answers: [{ questionIndex: 0, kind: "select", optionIndex: 0 }],
+		answers: options.answers ?? [
+			{ questionIndex: 0, kind: "select", optionIndex: 0 },
+		],
 		surface: "phone",
 	} satisfies AnswerRequest;
 	const ctx = {
@@ -285,7 +297,16 @@ function answerHarness(
 		request,
 		question,
 		events,
-		writeCount: () => writes,
+		writes,
+		delays,
+		audits,
+		now: () => now,
+		writeCount: () => writes.length,
+		status: () =>
+			handleAnswerStatus(deps, ctx, {
+				requestId: request.requestId,
+				coverageEpoch: "epoch-guardless",
+			}),
 	};
 }
 
@@ -308,6 +329,25 @@ describe("(ANSWER-GUARDLESS) answer boundary", () => {
 				...request,
 				confirmedBiometric: "yes",
 			}),
+		).toThrow();
+	});
+
+	it("accepts ticks plus text, and text alone, and refuses 301 units on both free-text kinds", () => {
+		const parse = (answer: Record<string, unknown>) =>
+			ROUTES["/v1/answer"].schema.parse({ ...request, answers: [answer] });
+		const base = { questionIndex: 0, kind: "multiselect_freetext" };
+		expect(() =>
+			parse({ ...base, optionIndexes: [0, 2], text: "x".repeat(300) }),
+		).not.toThrow();
+		expect(() => parse({ ...base, optionIndexes: [], text: "x" })).not.toThrow();
+		expect(() =>
+			parse({ ...base, optionIndexes: [2, 0], text: "x" }),
+		).toThrow();
+		expect(() =>
+			parse({ ...base, optionIndexes: [0], text: "x".repeat(301) }),
+		).toThrow();
+		expect(() =>
+			parse({ questionIndex: 0, kind: "freetext", text: "x".repeat(301) }),
 		).toThrow();
 	});
 });
@@ -466,85 +506,132 @@ describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
 	});
 });
 
-describe("(ANSWER-FRAME-PACING) deterministic v3 injection", () => {
-	const fourFrames: Keystroke[] = [
-		{
-			kind: "select_digit",
-			data: "1",
+describe("(ANSWER-GUARDLESS) answer validation writes nothing", () => {
+	it("refuses bad ticks, over-long text and control or broken text with 400", async () => {
+		const ticks = (optionIndexes: number[]): AnswerItem => ({
 			questionIndex: 0,
-			optionIndex: 0,
-			expect: { kind: "item_picker", itemIndex: 0 },
-			submits: false,
-		},
-		{
-			kind: "select_digit",
-			data: "2",
-			questionIndex: 1,
-			optionIndex: 1,
-			expect: { kind: "item_picker", itemIndex: 1 },
-			submits: false,
-		},
-		{
-			kind: "select_digit",
-			data: "3",
-			questionIndex: 2,
-			optionIndex: 2,
-			expect: { kind: "item_picker", itemIndex: 2 },
-			submits: false,
-		},
-		{
-			kind: "submit_return",
-			data: "\r",
-			questionIndex: 2,
-			optionIndex: null,
-			expect: { kind: "same_prompt", itemIndex: 2 },
-			submits: true,
-		},
-	];
-
-	it("waits exactly 500ms after each non-final v3 frame, then renews immediately before the next write", async () => {
-		const events: string[] = [];
-		const deps = stubDeps({
-			delay: async (ms) => {
-				events.push(`delay:${ms}`);
+			kind: "multiselect_freetext",
+			optionIndexes,
+			text: "ok",
+		});
+		const typed = (text: string): AnswerItem => ({
+			questionIndex: 0,
+			kind: "multiselect_freetext",
+			optionIndexes: [0],
+			text,
+		});
+		const cases: { item: AnswerItem; multi: boolean }[] = [
+			{ item: ticks([0, 0]), multi: true },
+			{ item: ticks([2, 0]), multi: true },
+			{ item: ticks([3]), multi: true },
+			{ item: typed("x".repeat(301)), multi: true },
+			{
+				item: { questionIndex: 0, kind: "freetext", text: "x".repeat(301) },
+				multi: false,
 			},
-			leases: testLeases(() => {
-				events.push("extend");
-				return { ok: true as const, lease: LEASE };
+			...["a\rb", "a\nb", "a\tb", "a\x1bb", "a\u009bb", "a\ud800b"].map(
+				(text) => ({ item: typed(text), multi: true }),
+			),
+		];
+		for (const [index, { item, multi }] of cases.entries()) {
+			const harness = answerHarness({
+				questions: [multi ? multiItem(0) : singleItem(0)],
+				answers: [item],
+			});
+			await expect(
+				handleAnswer(harness.deps, harness.ctx, {
+					...harness.request,
+					requestId: `00000000-0000-4000-8000-0000000001${String(index).padStart(2, "0")}`,
+				}),
+			).rejects.toMatchObject({
+				statusCode: 400,
+				body: { code: "bad_request" },
+			});
+			expect(harness.writeCount()).toBe(0);
+		}
+	});
+
+	it("records a pre-write refusal under its own code, readable by status, with a failed audit line", async () => {
+		const harness = answerHarness({
+			questions: [0, 1, 2, 3, 4].map((index) => singleItem(index)),
+			answers: [0, 1, 2, 3, 4].map((questionIndex) => ({
+				questionIndex,
+				kind: "select" as const,
+				optionIndex: 0,
+			})),
+		});
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toMatchObject({
+			statusCode: 501,
+			body: { code: "capability_unsupported" },
+		});
+
+		expect(harness.writeCount()).toBe(0);
+		expect(harness.deps.ledger.get(harness.request.requestId)).toMatchObject({
+			status: "failed",
+			failureCode: "capability_unsupported",
+		});
+		expect((await harness.status()).outcome).toMatchObject({
+			kind: "known",
+			status: "failed",
+			failureCode: "capability_unsupported",
+		});
+		expect(harness.audits).toEqual([
+			expect.objectContaining({
+				outcome: "failed",
+				failureCode: "capability_unsupported",
+				leaseId: null,
+				payloadHash: expect.any(String),
 			}),
-		});
-		const writer = testWriter((data) => {
-			events.push(`write:${JSON.stringify(data)}`);
-			return { success: true };
-		});
-
-		const result = await injectSequence(deps, {
-			question: QUESTION,
-			host: HOST,
-			keystrokes: fourFrames,
-			leaseId: LEASE.leaseId,
-			acknowledgedInputSupported: true,
-			writer,
-		});
-
-		expect(result).toEqual({ kind: "confirmed" });
-		expect(events).toEqual([
-			"extend",
-			'write:"1"',
-			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
-			"extend",
-			'write:"2"',
-			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
-			"extend",
-			'write:"3"',
-			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
-			"extend",
-			'write:"\\r"',
 		]);
 	});
 
-	it("does not pace the single complete protocol-v2 legacy frame", async () => {
+	it("refuses a capture whose askedAtMs runs more than 2 s ahead of its capture", async () => {
+		const harness = answerHarness({
+			question: { askedAtMs: 5_000 + 2_001, capturedAtMs: 5_000 },
+		});
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			body: { code: "bad_request" },
+		});
+		expect(harness.writeCount()).toBe(0);
+	});
+});
+
+describe("(ANSWER-FRAME-PACING) one write per picker screen", () => {
+	it("writes ticks plus typed text on a one-question multi-select as the group, then the final Return alone", async () => {
+		const questions = [multiItem(0)];
+		const answers: AnswerItem[] = [
+			{
+				questionIndex: 0,
+				kind: "multiselect_freetext",
+				optionIndexes: [0, 2],
+				text: "hello other",
+			},
+		];
+		const harness = answerHarness({ questions, answers });
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("confirmed");
+		expect(harness.writes).toEqual(
+			encodeAnswer(questions, answers).map((frame) => frame.data),
+		);
+		expect(harness.delays).toEqual([2000]);
+	});
+
+	it("waits exactly 2000 ms between frames, renews immediately before the next write, and logs each ack", async () => {
 		const events: string[] = [];
+		const logged: Record<string, unknown>[] = [];
 		const deps = stubDeps({
 			delay: async (ms) => {
 				events.push(`delay:${ms}`);
@@ -553,55 +640,88 @@ describe("(ANSWER-FRAME-PACING) deterministic v3 injection", () => {
 				events.push("extend");
 				return { ok: true as const, lease: LEASE };
 			}),
+			log: (event) => logged.push(event),
 		});
-		const writer = testWriter((data) => {
-			events.push(`write:${JSON.stringify(data)}`);
-			return { error: "v2 is unacknowledged", writeOutcome: "unknown" };
+		const writer = testWriter((input) => {
+			events.push(`write:${JSON.stringify(input.data)}`);
+			return { success: true };
 		});
+		const p1 = encodeAnswer(
+			[singleItem(0), singleItem(1)],
+			[
+				{ questionIndex: 0, kind: "freetext", text: "hello" },
+				{ questionIndex: 1, kind: "select", optionIndex: 1 },
+			],
+		);
 
-		expect(
-			await injectSequence(deps, {
-				question: QUESTION,
-				host: HOST,
-				keystrokes: fourFrames,
-				leaseId: LEASE.leaseId,
-				acknowledgedInputSupported: false,
-				writer,
-			}),
-		).toMatchObject({ kind: "unconfirmed", written: 0, abortedAt: 4 });
-		expect(events).toEqual(["extend", 'write:"123\\r"']);
+		expect(await run(writer, deps, p1)).toEqual({ kind: "confirmed" });
+		expect(logged).toEqual(
+			[0, 1, 2].map((frameIndex) => ({
+				event: "companion.answer.frame_acked",
+				requestId: "00000000-0000-4000-8000-000000000001",
+				frameIndex,
+				frameCount: 3,
+				ackMs: 0,
+			})),
+		);
+		const [first, second, third] = p1.map((frame) =>
+			JSON.stringify(frame.data),
+		);
+		expect(events).toEqual([
+			"extend",
+			`write:${first}`,
+			"delay:2000",
+			"extend",
+			`write:${second}`,
+			"delay:2000",
+			"extend",
+			`write:${third}`,
+		]);
 	});
 
-	it("checks the dynamic deadline after a wait and before renewing or writing", async () => {
+	it("budgets 5000 ms plus 2000 ms per gap, hands each ack the remaining budget, stops before a gap that cannot fit, and a late final ack is unconfirmed", async () => {
 		let now = 0;
-		const events: string[] = [];
+		const ackTimeouts: number[] = [];
 		const deps = stubDeps({
 			now: () => now,
 			delay: async (ms) => {
-				events.push(`delay:${ms}`);
-				now = SEQUENCE_EXECUTION_ALLOWANCE_MS + ms;
+				now += ms;
 			},
-			leases: testLeases(() => {
-				events.push("extend");
-				return { ok: true as const, lease: LEASE };
-			}),
 		});
-		const writer = testWriter((data) => {
-			events.push(`write:${JSON.stringify(data)}`);
+		const writer = testWriter((input) => {
+			ackTimeouts.push(input.ackTimeoutMs);
+			if (ackTimeouts.length === FRAMES.length) now = 5_000 + 2 * 2_000 + 1;
 			return { success: true };
 		});
 
 		expect(await run(writer, deps)).toMatchObject({
 			kind: "unconfirmed",
-			reason: "sequence deadline exceeded",
-			written: 1,
-			abortedAt: 1,
+			written: 3,
+			failureCode: null,
 		});
-		expect(events).toEqual([
-			"extend",
-			'write:"1"',
-			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
-		]);
+		expect(ackTimeouts).toEqual([9_000, 7_000, 5_000]);
+
+		let slowNow = 0;
+		const slowDelays: number[] = [];
+		const slowDeps = stubDeps({
+			now: () => slowNow,
+			delay: async (ms) => {
+				slowDelays.push(ms);
+				slowNow += ms;
+			},
+		});
+		const slowWriter = testWriter(() => {
+			slowNow += 7_000;
+			return { success: true };
+		});
+
+		expect(await run(slowWriter, slowDeps)).toMatchObject({
+			kind: "unconfirmed",
+			written: 1,
+			writeOutcome: "not_written",
+			failureCode: null,
+		});
+		expect(slowDelays).toEqual([]);
 	});
 
 	it("fails loud when the required pacing timer rejects instead of bursting the remainder", async () => {
@@ -616,16 +736,16 @@ describe("(ANSWER-FRAME-PACING) deterministic v3 injection", () => {
 				return { ok: true as const, lease: LEASE };
 			}),
 		});
-		const writer = testWriter((data) => {
-			events.push(`write:${JSON.stringify(data)}`);
+		const writer = testWriter((input) => {
+			events.push(`write:${JSON.stringify(input.data)}`);
 			return { success: true };
 		});
 
 		await expect(run(writer, deps)).rejects.toThrow("timer unavailable");
 		expect(events).toEqual([
 			"extend",
-			'write:"1"',
-			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+			`write:${JSON.stringify("\x1b[49u")}`,
+			"delay:2000",
 		]);
 	});
 
@@ -644,8 +764,8 @@ describe("(ANSWER-FRAME-PACING) deterministic v3 injection", () => {
 					: { ok: false as const, reason: "expired" as const };
 			}),
 		});
-		const writer = testWriter((data) => {
-			events.push(`write:${JSON.stringify(data)}`);
+		const writer = testWriter((input) => {
+			events.push(`write:${JSON.stringify(input.data)}`);
 			return { success: true };
 		});
 
@@ -653,14 +773,210 @@ describe("(ANSWER-FRAME-PACING) deterministic v3 injection", () => {
 			kind: "unconfirmed",
 			reason: "lease expired",
 			written: 1,
-			abortedAt: 1,
 		});
 		expect(events).toEqual([
 			"extend",
-			'write:"1"',
-			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+			`write:${JSON.stringify("\x1b[49u")}`,
+			"delay:2000",
 			"extend",
 		]);
+	});
+
+	it("waits until the capture is 6000 ms old before the first write, and never more than 6000 ms", async () => {
+		for (const { capturedAtMs, expected } of [
+			{ capturedAtMs: 10_000 - 1_000, expected: 5_000 },
+			{ capturedAtMs: 10_000 + 60_000, expected: 6_000 },
+		]) {
+			const harness = answerHarness({
+				question: { askedAtMs: capturedAtMs, capturedAtMs },
+			});
+
+			expect(
+				(await handleAnswer(harness.deps, harness.ctx, harness.request))
+					.status,
+			).toBe("confirmed");
+			expect(harness.delays).toEqual([expected]);
+		}
+	});
+
+	it("refuses a desk answer that lands during the settle wait, before any write", async () => {
+		const harness = answerHarness({
+			question: { capturedAtMs: 10_000 },
+			onDelay: (_ms, question) => {
+				question.state = "resolved";
+				question.resolvedBy = { deviceLabel: null, surface: "desktop" };
+			},
+		});
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toMatchObject({ body: { code: "already_resolved" } });
+		expect(harness.writeCount()).toBe(0);
+	});
+
+	it("refuses a multi-frame answer on a daemon that cannot acknowledge, before the lease", async () => {
+		const harness = answerHarness({
+			acknowledgedInputSupported: false,
+			questions: [singleItem(0), singleItem(1)],
+			answers: [
+				{ questionIndex: 0, kind: "select", optionIndex: 0 },
+				{ questionIndex: 1, kind: "select", optionIndex: 1 },
+			],
+		});
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toMatchObject({
+			statusCode: 501,
+			body: { code: "capability_unsupported" },
+		});
+		expect(harness.writeCount()).toBe(0);
+		expect(harness.audits).toEqual([
+			expect.objectContaining({ outcome: "failed", leaseId: null }),
+		]);
+	});
+
+	it("still writes a one-frame answer to a daemon that cannot acknowledge, and reports it unconfirmed", async () => {
+		const harness = answerHarness({
+			acknowledgedInputSupported: false,
+			writeResult: () => ({
+				error: "daemon protocol 2 cannot acknowledge input",
+				writeOutcome: "unknown",
+			}),
+		});
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("unconfirmed");
+		expect(harness.writes).toEqual(["\x1b[49u"]);
+	});
+});
+
+describe("(ANSWER-DESK-TOUCH-FENCE) input at the terminal after the question", () => {
+	const touched: string[] = [];
+	afterEach(() => {
+		for (const hostTerminalId of touched.splice(0)) {
+			forgetTerminal(hostTerminalId);
+		}
+	});
+
+	function fenceHarness(
+		hostTerminalId: string,
+		options: Parameters<typeof answerHarness>[0] = {},
+	) {
+		touched.push(hostTerminalId);
+		const harness = answerHarness({
+			...options,
+			question: { hostTerminalId, ...options.question },
+		});
+		expect(harness.question.terminalId).not.toBe(hostTerminalId);
+		return harness;
+	}
+
+	it("refuses with 412 desk_input when touched during the settle, before any write", async () => {
+		const hostTerminalId = "host-terminal-fence-settle";
+		const harness = fenceHarness(hostTerminalId, {
+			question: { capturedAtMs: 10_000 },
+			onDelay: () => stampInput(hostTerminalId, harness.now()),
+		});
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toMatchObject({ statusCode: 412, body: { code: "desk_input" } });
+		expect(harness.writeCount()).toBe(0);
+		expect(harness.deps.ledger.get(harness.request.requestId)).toMatchObject({
+			status: "failed",
+			failureCode: "desk_input",
+		});
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toMatchObject({ statusCode: 412, body: { code: "desk_input" } });
+		expect((await harness.status()).outcome).toMatchObject({
+			kind: "known",
+			status: "failed",
+			failureCode: "desk_input",
+		});
+	});
+
+	it("stops between frames as unconfirmed with desk_input on the response, the replay and the status read", async () => {
+		const hostTerminalId = "host-terminal-fence-between";
+		const harness = fenceHarness(hostTerminalId, {
+			questions: [singleItem(0), singleItem(1)],
+			answers: [
+				{ questionIndex: 0, kind: "select", optionIndex: 0 },
+				{ questionIndex: 1, kind: "select", optionIndex: 1 },
+			],
+			onDelay: () => stampInput(hostTerminalId, harness.now()),
+		});
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response).toMatchObject({
+			status: "unconfirmed",
+			failureCode: "desk_input",
+		});
+		expect(harness.writes).toEqual(["\x1b[49u"]);
+		expect(
+			await handleAnswer(harness.deps, harness.ctx, harness.request),
+		).toMatchObject({ status: "unconfirmed", failureCode: "desk_input" });
+		expect((await harness.status()).outcome).toMatchObject({
+			kind: "known",
+			status: "unconfirmed",
+			failureCode: "desk_input",
+		});
+	});
+
+	it("does not refuse input stamped before the question was asked", async () => {
+		const hostTerminalId = "host-terminal-fence-before";
+		const harness = fenceHarness(hostTerminalId, {
+			question: { askedAtMs: 5_000, capturedAtMs: 5_000 },
+		});
+		stampInput(hostTerminalId, 4_999);
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("confirmed");
+		expect(response.failureCode).toBeUndefined();
+	});
+
+	it("refuses input stamped at exactly askedAtMs", async () => {
+		const hostTerminalId = "host-terminal-fence-exact";
+		const harness = fenceHarness(hostTerminalId, {
+			question: { askedAtMs: 5_000, capturedAtMs: 5_000 },
+		});
+		stampInput(hostTerminalId, 5_000);
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toMatchObject({ statusCode: 412, body: { code: "desk_input" } });
+		expect(harness.writeCount()).toBe(0);
+	});
+
+	it("accepts askedAtMs exactly 2000 ms after the capture", async () => {
+		const harness = fenceHarness("host-terminal-fence-lead", {
+			question: { askedAtMs: 5_000 + 2_000, capturedAtMs: 5_000 },
+		});
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("confirmed");
+		expect(harness.writeCount()).toBe(1);
 	});
 });
 
@@ -668,8 +984,8 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 	it("confirms successful writes without consulting transcript, screen, session, binding, permission, or marker sources", async () => {
 		let now = 1_000;
 		const written: string[] = [];
-		const writer = testWriter((data) => {
-			written.push(data);
+		const writer = testWriter((input) => {
+			written.push(input.data);
 			return { success: true };
 		});
 		const forbidden = () => {
@@ -690,26 +1006,7 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 		const result = await run(writer, deps);
 
 		expect(result).toEqual({ kind: "confirmed" });
-		expect(written).toEqual(["1", "\r"]);
-	});
-
-	it("queues the whole sequence in one legacy frame before reporting an unknown v2 outcome", async () => {
-		const queued: string[] = [];
-		const writer = testWriter((data) => {
-			queued.push(data);
-			return {
-				error: "daemon protocol 2 cannot acknowledge input",
-				writeOutcome: "unknown",
-			};
-		});
-
-		expect(await run(writer, stubDeps(), false)).toMatchObject({
-			kind: "unconfirmed",
-			written: 0,
-			abortedAt: KEYSTROKES.length,
-			writeOutcome: "unknown",
-		});
-		expect(queued).toEqual([KEYSTROKES.map((key) => key.data).join("")]);
+		expect(written).toEqual(["\x1b[49u", "\x1b[50u", "\x1b[13u"]);
 	});
 
 	it("reports an acknowledged writer rejection as a zero-write failure", async () => {
@@ -731,7 +1028,6 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 		expect(await run(writer)).toMatchObject({
 			kind: "unconfirmed",
 			written: 0,
-			abortedAt: 0,
 			writeOutcome: "unknown",
 			reason: "pty write threw",
 		});
@@ -748,7 +1044,6 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 		expect(result).toMatchObject({
 			kind: "unconfirmed",
 			written: 0,
-			abortedAt: 0,
 			reason: "pty write refused: pty unavailable",
 		});
 	});
@@ -767,7 +1062,6 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 		expect(result).toMatchObject({
 			kind: "unconfirmed",
 			written: 1,
-			abortedAt: 1,
 			reason: "pty write refused: pty unavailable",
 		});
 	});

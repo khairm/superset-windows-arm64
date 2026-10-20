@@ -80,14 +80,15 @@ import {
 	isCanonicalWireId,
 	randomBytes,
 } from "./crypto";
-import type {
-	AnswerGuardName,
-	EpochMs,
-	ErrorCode,
-	RequestId,
-	SealedErrorCode,
+import {
+	ANSWER_GUARD_NAMES,
+	type AnswerGuardName,
+	ATTEMPT_FAILURE_CODES,
+	type AttemptFailureCode,
+	type EpochMs,
+	type ErrorCode,
+	type RequestId,
 } from "./types";
-import { ANSWER_GUARD_NAMES } from "./types";
 
 /** Bytes of randomness in a coverage epoch. 16 matches the install generation. */
 const COVERAGE_EPOCH_BYTES = 16;
@@ -102,8 +103,8 @@ const QUESTION_FENCE_STATUSES = [
 ] as const satisfies readonly AnswerAttemptStatus[];
 
 /**
- * Every failure code the ledger may PERSIST, and the set the read boundary
- * enforces.
+ * The read boundary: a persisted failure code must be one of
+ * `ATTEMPT_FAILURE_CODES`.
  *
  * Wider than the old JSON store's two codes (`guard_failed`, `internal`) on
  * purpose. Since the claim moved to the top of `handleAnswer`, a request can be
@@ -116,28 +117,12 @@ const QUESTION_FENCE_STATUSES = [
  * Every member is a §10 sealed code, so a stored value is always something a client
  * already knows how to render.
  */
-const LEDGER_FAILURE_CODES = [
-	"stale_question",
-	"already_resolved",
-	"request_closed",
-	"lease_held",
-	"guard_failed",
-	"picker_open",
-	"capability_unsupported",
-	"write_disabled",
-	"bad_request",
-	"internal",
-] as const satisfies readonly SealedErrorCode[];
-
-/** A code the ledger can store, narrowed from §10's sealed set. */
-export type LedgerFailureCode = (typeof LEDGER_FAILURE_CODES)[number];
-
-function isLedgerFailureCode(code: string): code is LedgerFailureCode {
-	return (LEDGER_FAILURE_CODES as readonly string[]).includes(code);
+function isLedgerFailureCode(code: string): code is AttemptFailureCode {
+	return (ATTEMPT_FAILURE_CODES as readonly string[]).includes(code);
 }
 
 /** Narrows a sealed transport error to the subset the durable ledger accepts. */
-export function toLedgerFailureCode(code: ErrorCode): LedgerFailureCode {
+export function toLedgerFailureCode(code: ErrorCode): AttemptFailureCode {
 	return isLedgerFailureCode(code) ? code : "internal";
 }
 
@@ -167,7 +152,7 @@ export interface LedgerRecord {
 	startedAtMs: EpochMs | null;
 	createdAtMs: EpochMs;
 	resolvedAtMs: EpochMs | null;
-	failureCode: LedgerFailureCode | null;
+	failureCode: AttemptFailureCode | null;
 	guardsPassed: AnswerGuardName[];
 	coverageEpoch: string;
 }
@@ -230,7 +215,7 @@ export interface AttemptLedger {
 			"claimed" | "in_flight" | "closed_not_received"
 		>;
 		resolvedAtMs: EpochMs | null;
-		failureCode: LedgerFailureCode | null;
+		failureCode: AttemptFailureCode | null;
 		guardsPassed: readonly AnswerGuardName[];
 		/** Known only by outcome time; the claim predates the lease. */
 		leaseId: string | null;
@@ -630,7 +615,7 @@ export function createAttemptLedger(options: {
 			startedAtMs: row.startedAtMs as EpochMs | null,
 			createdAtMs: row.createdAtMs as EpochMs,
 			resolvedAtMs: row.resolvedAtMs as EpochMs | null,
-			failureCode: row.failureCode as LedgerFailureCode | null,
+			failureCode: row.failureCode as AttemptFailureCode | null,
 			guardsPassed,
 			coverageEpoch: row.coverageEpoch,
 		};

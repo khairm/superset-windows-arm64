@@ -210,12 +210,15 @@ function questionItem(): QuestionItem {
 }
 
 /** A pending question raised inside the session, as the store holds it. */
-function sessionQuestion(): PendingQuestion {
+function sessionQuestion(
+	questions: QuestionItem[] = [questionItem()],
+): PendingQuestion {
 	return {
 		questionId: "AAAAAAAAAAAAAAAAAAAAAA" as QuestionId,
 		fingerprint: "AQEBAQEBAQEBAQEBAQEBAQ" as Fingerprint,
 		state: "pending",
 		askedAtMs: 1,
+		capturedAtMs: 1,
 		resolvedAtMs: null,
 		resolvedBy: null,
 		remoteAnswer: null,
@@ -223,7 +226,7 @@ function sessionQuestion(): PendingQuestion {
 		sessionId: "s-session",
 		terminalId: "wire-terminal" as TerminalId,
 		agentType: null,
-		questions: [questionItem()],
+		questions,
 		origin: "unauthenticated_localhost_hook",
 		hostTerminalId: SESSION_TERMINAL_ID,
 		hostWorkspaceId: SESSION_WORKSPACE_ID,
@@ -281,6 +284,7 @@ function memoryLedger(): AttemptLedger {
 function answerHarness(question: PendingQuestion) {
 	let now = 10_000;
 	const writeTargets: { terminalId: string; workspaceId: string }[] = [];
+	const writes: string[] = [];
 	const repaints: HostTerminalRef[] = [];
 	const questions = {
 		get: (questionId: QuestionId) =>
@@ -305,6 +309,7 @@ function answerHarness(question: PendingQuestion) {
 	} as unknown as QuestionStore;
 	const writeInput = Object.assign(
 		async (input: RawWriteInput) => {
+			writes.push(input.data);
 			writeTargets.push({
 				terminalId: input.terminalId,
 				workspaceId: input.workspaceId,
@@ -354,7 +359,7 @@ function answerHarness(question: PendingQuestion) {
 			writeEnabled: true,
 		},
 	} as unknown as Parameters<typeof handleAnswer>[1];
-	return { deps, ctx, request, question, writeTargets, repaints };
+	return { deps, ctx, request, question, writeTargets, writes, repaints };
 }
 
 describe("(SESSIONS-PROJECT) answering a session question remotely", () => {
@@ -403,6 +408,43 @@ describe("(SESSIONS-PROJECT) answering a session question remotely", () => {
 		expect(harness.question.remoteAnswer).toMatchObject({
 			resolvedBy: { deviceLabel: "phone", surface: "watch" },
 		});
+	});
+
+	it("routes ticks plus typed text on a session's multi-select question to the session's terminal", async () => {
+		const harness = answerHarness(
+			sessionQuestion([
+				{
+					...questionItem(),
+					multiSelect: true,
+					freeTextOption: { index: 2, label: "Type something" },
+				},
+			]),
+		);
+
+		const response = await handleAnswer(harness.deps, harness.ctx, {
+			...harness.request,
+			answers: [
+				{
+					questionIndex: 0,
+					kind: "multiselect_freetext",
+					optionIndexes: [1],
+					text: "typed",
+				},
+			],
+		});
+
+		expect(response.status).toBe("confirmed");
+		expect(harness.writes).toEqual([
+			"\x1b[50u\x1b[B\x1b[B\x1b[200~typed\x1b[201~\x1b[B\x1b[13u",
+			"\x1b[13u",
+		]);
+		expect(harness.writeTargets.length).toBeGreaterThan(0);
+		for (const target of harness.writeTargets) {
+			expect(target).toEqual({
+				terminalId: SESSION_TERMINAL_ID,
+				workspaceId: SESSION_WORKSPACE_ID,
+			});
+		}
 	});
 
 	it("leaves the existing guards intact — a resolved session question is still refused, and no bytes are written", async () => {

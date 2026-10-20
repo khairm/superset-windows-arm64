@@ -2423,8 +2423,9 @@ interface AnswerAdapterDeps {
  * mints with. An unmappable handle is `null`, never a guess.
  *
  * `writer` is the acknowledged RAW pty write and is the only thing that drives
- * a picker: bracketed-paste framing is INERT against it, and ordinary terminal
- * input cannot report daemon refusal. `createRawPtyWriter` checks the explicit
+ * a picker: the encoder's own bracketed paste carries free text into the focused
+ * free-text field, the paste-framing writer would add a Return of its own, and
+ * ordinary terminal input cannot report daemon refusal. `createRawPtyWriter` checks the explicit
  * runtime marker at startup so either wrong path fails loud.
  */
 function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
