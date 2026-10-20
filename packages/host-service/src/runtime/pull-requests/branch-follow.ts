@@ -12,33 +12,33 @@ export interface BranchFollowReaders {
 	probeGitEntry: (worktreePath: string) => Promise<GitEntryProbeResult>;
 }
 
-async function readCheckedOutBranch(
-	worktreePath: string,
-	{ readHead, readBranch, probeGitEntry }: BranchFollowReaders,
-): Promise<string | null> {
-	const head = await readHead(worktreePath);
-	if (head.kind === "branch") return head.name;
-	if (head.kind === "detached") return null;
-	if ((await probeGitEntry(worktreePath)) === "absent") return null;
-	return readBranch(worktreePath);
-}
-
 export async function followBranch({
 	db,
 	workspace,
-	...readers
+	readHead,
+	readBranch,
+	probeGitEntry,
 }: BranchFollowReaders & {
 	db: HostDb;
 	workspace: Pick<
 		typeof workspaces.$inferSelect,
 		"id" | "worktreePath" | "branch"
 	>;
-}): Promise<null> {
-	const branch = await readCheckedOutBranch(workspace.worktreePath, readers);
-	if (branch === null || branch === workspace.branch) return null;
+}): Promise<void> {
+	const { worktreePath } = workspace;
+	const head = await readHead(worktreePath);
+	if (head.kind === "detached") return;
+	if (
+		head.kind === "unknown" &&
+		(await probeGitEntry(worktreePath)) === "absent"
+	) {
+		return;
+	}
+	const branch =
+		head.kind === "branch" ? head.name : await readBranch(worktreePath);
+	if (branch === null || branch === workspace.branch) return;
 	db.update(workspaces)
 		.set({ branch, updatedAt: Date.now() })
 		.where(and(eq(workspaces.id, workspace.id), isNull(workspaces.archivedAt)))
 		.run();
-	return null;
 }

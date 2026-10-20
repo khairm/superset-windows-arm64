@@ -1,3 +1,4 @@
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useDeferredValue, useEffect, useRef } from "react";
 import { V2WorkspacesBoard } from "./components/V2WorkspacesBoard";
@@ -7,13 +8,16 @@ import { useAccessibleV2Workspaces } from "./hooks/useAccessibleV2Workspaces";
 import {
 	DEVICE_FILTER_THIS_DEVICE,
 	useV2WorkspacesFilterStore,
+	V2_WORKSPACES_AGENT_STATUS_FILTERS,
 	V2_WORKSPACES_ARCHIVED_WINDOWS,
 	V2_WORKSPACES_PIN_FILTERS,
+	V2_WORKSPACES_PR_STATE_FILTERS,
+	type V2WorkspacesAgentStatusFilter,
 	type V2WorkspacesArchivedWindow,
 	type V2WorkspacesPinFilter,
+	type V2WorkspacesPrStateFilter,
 	type V2WorkspacesViewMode,
 } from "./stores/v2WorkspacesFilterStore";
-import { filterStateFromSearch } from "./utils/filterStateFromSearch";
 
 export type V2WorkspacesSearch = {
 	q?: string;
@@ -32,6 +36,17 @@ export type V2WorkspacesSearch = {
 	archived?: V2WorkspacesArchivedWindow;
 };
 
+function parseList<T extends string>(
+	raw: unknown,
+	allowed?: readonly T[],
+): T[] {
+	if (typeof raw !== "string" || !raw) return [];
+	const entries = raw.split(",").filter(Boolean);
+	return (
+		allowed ? entries.filter((entry) => allowed.includes(entry as T)) : entries
+	) as T[];
+}
+
 export const Route = createFileRoute(
 	"/_authenticated/_dashboard/v2-workspaces/",
 )({
@@ -46,7 +61,11 @@ export const Route = createFileRoute(
 			typeof search.projects === "string" && search.projects
 				? search.projects
 				: undefined,
-		pr: typeof search.pr === "string" && search.pr ? search.pr : undefined,
+		// (FORK-PRS-OFF) With pull requests off nothing can clear a PR filter.
+		pr:
+			!FORK_PULL_REQUESTS_DISABLED && typeof search.pr === "string" && search.pr
+				? search.pr
+				: undefined,
 		agent:
 			typeof search.agent === "string" && search.agent
 				? search.agent
@@ -106,8 +125,33 @@ function V2WorkspacesPage() {
 	const hydratedRef = useRef(false);
 	if (!hydratedRef.current) {
 		hydratedRef.current = true;
-		// (FORK-PRS-OFF) The helper drops `?pr=` while pull requests are off.
-		useV2WorkspacesFilterStore.setState(filterStateFromSearch(search));
+		useV2WorkspacesFilterStore.setState({
+			searchQuery: search.q ?? "",
+			...(search.device !== undefined && { deviceFilter: search.device }),
+			...(search.projects !== undefined && {
+				projectFilters: parseList(search.projects),
+			}),
+			...(search.pr !== undefined && {
+				prStateFilters: parseList<V2WorkspacesPrStateFilter>(
+					search.pr,
+					V2_WORKSPACES_PR_STATE_FILTERS,
+				),
+			}),
+			...(search.agent !== undefined && {
+				agentStatusFilters: parseList<V2WorkspacesAgentStatusFilter>(
+					search.agent,
+					V2_WORKSPACES_AGENT_STATUS_FILTERS,
+				),
+			}),
+			...(search.creators !== undefined && {
+				creatorFilters: parseList(search.creators),
+			}),
+			...(search.pin !== undefined && { pinFilter: search.pin }),
+			...(search.view !== undefined && { viewMode: search.view }),
+			...(search.archived !== undefined && {
+				archivedWindow: search.archived,
+			}),
+		});
 	}
 
 	// Debounced: each navigate() re-renders every router-state subscriber

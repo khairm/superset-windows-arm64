@@ -1,8 +1,19 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type DiskHead, readHeadFromDisk } from "./head-file";
+import {
+	type DiskHead,
+	readBranchFromGit,
+	readHeadFromDisk,
+} from "./head-file";
 
 const root = mkdtempSync(join(tmpdir(), "head-file-"));
 afterAll(() => {
@@ -86,5 +97,28 @@ describe("readHeadFromDisk", () => {
 		mkdirSync(worktree);
 		layout(worktree);
 		expect(await readHeadFromDisk(worktree)).toEqual(expected);
+	});
+});
+
+describe("readBranchFromGit", () => {
+	test("launches exactly one git process", async () => {
+		const repo = mkdtempSync(join(root, "repo-"));
+		execFileSync("git", ["init", "-q", "-b", "main", repo]);
+		const traceFile = join(root, "trace2-event.json");
+		const previousTrace = process.env.GIT_TRACE2_EVENT;
+		process.env.GIT_TRACE2_EVENT = traceFile;
+		try {
+			expect(await readBranchFromGit(repo)).toBe("main");
+		} finally {
+			if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
+			else process.env.GIT_TRACE2_EVENT = previousTrace;
+		}
+		const launches = readFileSync(traceFile, "utf8")
+			.split("\n")
+			.filter((line) => line.trim() !== "")
+			.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
+			.filter((entry) => entry.event === "start")
+			.map((entry) => entry.argv?.slice(1));
+		expect(launches).toEqual([["symbolic-ref", "--quiet", "--short", "HEAD"]]);
 	});
 });

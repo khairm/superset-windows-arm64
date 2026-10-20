@@ -10,7 +10,7 @@ import {
 	spyOn,
 	test,
 } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { eq } from "drizzle-orm";
@@ -3785,45 +3785,4 @@ describe("(FORK-PRS-OFF) a disabled runtime only follows the checked-out branch"
 		}
 		expect(getWorkspace(db, "ws")).toEqual(before);
 	});
-
-	// A fresh repo path is never in the remote-URL cache, so a credential env
-	// resolution would show up here as an extra `git remote get-url`.
-	test("the default branch reader launches exactly one git process", async () => {
-		const fixture = await createGitFixture();
-		const traceDir = mkdtempSync(join(tmpdir(), "prs-off-trace-"));
-		const traceFile = join(traceDir, "trace2-event.json");
-		const db = createRealDb();
-		seedProject(db);
-		seedWorkspace(db, {
-			id: "ws",
-			branch: "old",
-			worktreePath: fixture.repoPath,
-		});
-		const { manager } = createDisabledManager(db, {
-			readHead: async () => ({ kind: "unknown" }),
-		});
-		const previousTrace = process.env.GIT_TRACE2_EVENT;
-		try {
-			process.env.GIT_TRACE2_EVENT = traceFile;
-			try {
-				await manager.refreshPullRequestsByWorkspaces(["ws"]);
-			} finally {
-				if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
-				else process.env.GIT_TRACE2_EVENT = previousTrace;
-			}
-			const launches = readFileSync(traceFile, "utf8")
-				.split("\n")
-				.filter((line) => line.trim() !== "")
-				.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
-				.filter((entry) => entry.event === "start")
-				.map((entry) => entry.argv?.slice(1));
-			expect(launches).toEqual([
-				["symbolic-ref", "--quiet", "--short", "HEAD"],
-			]);
-			expect(getWorkspace(db, "ws")?.branch).toBe("main");
-		} finally {
-			fixture.dispose();
-			rmSync(traceDir, { recursive: true, force: true });
-		}
-	}, 30_000);
 });

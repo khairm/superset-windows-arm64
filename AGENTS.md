@@ -115,8 +115,8 @@ In brief:
   terminals.
 - **Terminal full-speed helper** — the deliberate exception to "never change
   pty-daemon code" above (`(WIN-TERMINAL-HIGHQOS)`): ptyd runs a hidden PS 5.1
-  `Add-Type` helper that lists processes with NtQuerySystemInformation and tags
-  ptyd's tree HighQoS once a second; Eco asked for by a program is respected;
+  `Add-Type` helper that tags ptyd's tree HighQoS once a second; Eco asked for
+  by a program is respected;
   faults cost speed only. The 0.4.0 -> 0.4.1 bump costs one Force update
   (closes every terminal once); a rollback keeps 0.4.1 running until Settings >
   Terminal restart. When an upstream merge brings pty-daemon to 0.4.1, bump
@@ -187,8 +187,6 @@ In brief:
   5 s for .git, 30 s file-only; is-git-repo caches yes 5 min/no 5 s, origin/HEAD
   10 min. Each host-main-thread git/gh launch blocks terminal I/O on Windows
   ARM64; keep launches rare (`(PR-SWEEP-SKIPS-EXITED)`, `(GIT-LAUNCH-BUDGET)`).
-  With PRs off (`(FORK-PRS-OFF)`) the PR sweep is a no-op and nothing
-  launches gh; branch sweeps and watcher sync read HEAD from disk.
   isGitRepo answers "no" from disk (async, 2 s cap, any doubt launches git);
   the ignored-dirs refresh skips the listing for non-git workspaces, lists in
   the worker pool, and on failure keeps its set unless ignore rules changed
@@ -227,9 +225,9 @@ In brief:
   re-enable path for browser or chat — their callers (`addBrowserTab`,
   `onAddBrowser`, `LocalChatSetting`) were removed and must be restored from
   upstream too. Page watch and ports come back on the const alone; PRs are
-  flip-only. PRs off: no PR sweeps or gh; PR-only procedures refuse; stored
-  links hidden, not deleted; branch label follows checkouts via a disk HEAD
-  read (`(FORK-PRS-OFF-BRANCH-FOLLOW)`).
+  flip-only. PRs off (`(FORK-PRS-OFF)`): no PR sweeps or gh; PR-only
+  procedures refuse; stored links hidden, not deleted; branch label follows
+  checkouts via a disk HEAD read (`(FORK-PRS-OFF-BRANCH-FOLLOW)`).
 - **Alternate-screen eviction is DEFERRED** — the snapshot-restore fixes
   shipped; evicting an alternate-screen terminal from the live registry did
   not. The exemption keeping those terminals resident is intentional, not a

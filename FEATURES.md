@@ -606,7 +606,6 @@ setAccessibilitySupportEnabled	apps/desktop/src/main/windows/main.ts
 (FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/usePaneRegistry.tsx
 (FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacesHeader/V2WorkspacesHeader.tsx
 (FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/page.tsx
-(FORK-PRS-OFF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/utils/filterStateFromSearch/filterStateFromSearch.ts
 (FORK-PRS-OFF)	apps/desktop/test/integration/fork-disabled-features.integration.test.ts
 (FORK-PRS-OFF-BRANCH-FOLLOW)	packages/host-service/src/runtime/pull-requests/branch-follow.ts
 (FORK-PRS-OFF-BRANCH-FOLLOW)	packages/host-service/src/runtime/git/head-file.ts

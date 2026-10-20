@@ -446,6 +446,20 @@ export class PullRequestRuntimeManager {
 		workspaceIds: string[],
 	): Promise<PullRequestWorkspaceSnapshot[]> {
 		if (workspaceIds.length === 0) return [];
+		// (FORK-PRS-OFF) Stored links stay in the DB, hidden.
+		if (this.disabled) {
+			return this.db
+				.select({ workspaceId: workspaces.id })
+				.from(workspaces)
+				.where(inArray(workspaces.id, workspaceIds))
+				.all()
+				.map(({ workspaceId }) => ({
+					workspaceId,
+					pullRequest: null,
+					error: null,
+					lastFetchedAt: null,
+				}));
+		}
 
 		const rows = this.db
 			.select({
@@ -465,16 +479,6 @@ export class PullRequestRuntimeManager {
 			.leftJoin(pullRequests, eq(workspaces.pullRequestId, pullRequests.id))
 			.where(inArray(workspaces.id, workspaceIds))
 			.all();
-
-		// (FORK-PRS-OFF) Stored links stay in the DB, hidden.
-		if (this.disabled) {
-			return rows.map((row) => ({
-				workspaceId: row.workspaceId,
-				pullRequest: null,
-				error: null,
-				lastFetchedAt: null,
-			}));
-		}
 
 		return rows.map((row) => ({
 			workspaceId: row.workspaceId,
@@ -853,12 +857,13 @@ export class PullRequestRuntimeManager {
 
 		try {
 			if (this.disabled) {
-				// (FORK-PRS-OFF-BRANCH-FOLLOW) `await` keeps a rejection in this catch.
-				return await followBranch({
+				// (FORK-PRS-OFF-BRANCH-FOLLOW)
+				await followBranch({
 					db: this.db,
 					workspace,
 					...this.branchReaders,
 				});
+				return null;
 			}
 			// (NON-GIT WORKSPACE) A non-git workspace has no branch/HEAD/upstream
 			// to read and no PR to sync. Skip before touching git so the inert
