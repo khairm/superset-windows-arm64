@@ -83,6 +83,7 @@ test("rejects worktree selection for the shared-checkout branch", async () => {
 test("rejects PR creation on the shared-checkout branch", async () => {
 	const s = await createProjectScenario({
 		hostOptions: {
+			pullRequestsDisabled: false,
 			apiOverrides: cloudFlows.workspaceCreateOk(),
 			execGh: async () => ({
 				number: 42,

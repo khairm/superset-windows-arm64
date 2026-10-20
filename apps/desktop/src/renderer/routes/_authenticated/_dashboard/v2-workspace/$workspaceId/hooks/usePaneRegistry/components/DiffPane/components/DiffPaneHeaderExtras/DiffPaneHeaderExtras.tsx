@@ -1,5 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { WorkspaceStore } from "@superset/panes";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { Eye, EyeOff, MessageSquare, MessageSquareOff } from "lucide-react";
@@ -35,39 +36,45 @@ export function DiffPaneHeaderExtras({
 
 	return (
 		<div className="flex shrink-0 items-center gap-1">
-			<DiffPanePRLink workspaceId={workspaceId} store={store} />
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<button
-						type="button"
-						onClick={() => updateSetting("showDiffComments", !showDiffComments)}
-						aria-label={
-							showDiffComments
-								? t({
-										message: "Hide PR review comments",
-									})
-								: t({
-										message: "Show PR review comments",
-									})
-						}
-						aria-pressed={showDiffComments}
-						className={buttonClass(showDiffComments)}
-					>
-						{showDiffComments ? (
-							<MessageSquare className="size-3.5" />
-						) : (
-							<MessageSquareOff className="size-3.5" />
-						)}
-					</button>
-				</TooltipTrigger>
-				<TooltipContent side="bottom">
-					{showDiffComments ? (
-						<Trans>Hide review comments</Trans>
-					) : (
-						<Trans>Show review comments</Trans>
-					)}
-				</TooltipContent>
-			</Tooltip>
+			{FORK_PULL_REQUESTS_DISABLED ? null : (
+				<>
+					<DiffPanePRLink workspaceId={workspaceId} store={store} />
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								onClick={() =>
+									updateSetting("showDiffComments", !showDiffComments)
+								}
+								aria-label={
+									showDiffComments
+										? t({
+												message: "Hide PR review comments",
+											})
+										: t({
+												message: "Show PR review comments",
+											})
+								}
+								aria-pressed={showDiffComments}
+								className={buttonClass(showDiffComments)}
+							>
+								{showDiffComments ? (
+									<MessageSquare className="size-3.5" />
+								) : (
+									<MessageSquareOff className="size-3.5" />
+								)}
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">
+							{showDiffComments ? (
+								<Trans>Hide review comments</Trans>
+							) : (
+								<Trans>Show review comments</Trans>
+							)}
+						</TooltipContent>
+					</Tooltip>
+				</>
+			)}
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<button

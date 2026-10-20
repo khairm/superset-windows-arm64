@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { protectedProcedure } from "../../../index";
 import { resolveGithubRepo } from "../../workspace-creation/shared/project-helpers";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 import { fetchPullRequestDiff } from "../shared/fetch-pull-request-diff";
 
 export const getDiff = protectedProcedure
@@ -9,6 +10,8 @@ export const getDiff = protectedProcedure
 		z.object({ projectId: z.string(), prNumber: z.number().int().positive() }),
 	)
 	.query(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		try {
 			const repo = await resolveGithubRepo(ctx, input.projectId);
 			return await fetchPullRequestDiff(

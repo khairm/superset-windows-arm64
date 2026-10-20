@@ -1,5 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { FEATURE_FLAGS } from "@superset/shared/constants";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -430,29 +431,31 @@ export function DashboardSidebarHeader({
 						</Tooltip>
 					)}
 
-					<Tooltip delayDuration={300}>
-						<TooltipTrigger asChild>
-							<button
-								type="button"
-								onClick={handlePullRequestsClick}
-								aria-label={t({
-									message: "Pull requests",
-								})}
-								aria-current={isPullRequestsOpen ? "page" : undefined}
-								className={cn(
-									"flex size-7 items-center justify-center rounded-md transition-colors",
-									isPullRequestsOpen
-										? "bg-fill-selected text-muted-foreground"
-										: "text-muted-foreground hover:bg-fill-hover",
-								)}
-							>
-								<GoGitPullRequest className="size-3.5" />
-							</button>
-						</TooltipTrigger>
-						<TooltipContent side="right">
-							<Trans>Pull requests</Trans>
-						</TooltipContent>
-					</Tooltip>
+					{!FORK_PULL_REQUESTS_DISABLED && (
+						<Tooltip delayDuration={300}>
+							<TooltipTrigger asChild>
+								<button
+									type="button"
+									onClick={handlePullRequestsClick}
+									aria-label={t({
+										message: "Pull requests",
+									})}
+									aria-current={isPullRequestsOpen ? "page" : undefined}
+									className={cn(
+										"flex size-7 items-center justify-center rounded-md transition-colors",
+										isPullRequestsOpen
+											? "bg-fill-selected text-muted-foreground"
+											: "text-muted-foreground hover:bg-fill-hover",
+									)}
+								>
+									<GoGitPullRequest className="size-3.5" />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent side="right">
+								<Trans>Pull requests</Trans>
+							</TooltipContent>
+						</Tooltip>
+					)}
 
 					<Tooltip delayDuration={300}>
 						<TooltipTrigger asChild>
@@ -742,25 +745,27 @@ export function DashboardSidebarHeader({
 				</button>
 			)}
 
-			<button
-				type="button"
-				onClick={handlePullRequestsClick}
-				aria-label={t({
-					message: "Pull requests",
-				})}
-				aria-current={isPullRequestsOpen ? "page" : undefined}
-				className={cn(
-					"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
-					isPullRequestsOpen
-						? "bg-fill-selected text-foreground"
-						: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
-				)}
-			>
-				<GoGitPullRequest className="size-4 shrink-0 text-muted-foreground" />
-				<span className="flex-1 text-left">
-					<Trans>Pull requests</Trans>
-				</span>
-			</button>
+			{!FORK_PULL_REQUESTS_DISABLED && (
+				<button
+					type="button"
+					onClick={handlePullRequestsClick}
+					aria-label={t({
+						message: "Pull requests",
+					})}
+					aria-current={isPullRequestsOpen ? "page" : undefined}
+					className={cn(
+						"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
+						isPullRequestsOpen
+							? "bg-fill-selected text-foreground"
+							: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
+					)}
+				>
+					<GoGitPullRequest className="size-4 shrink-0 text-muted-foreground" />
+					<span className="flex-1 text-left">
+						<Trans>Pull requests</Trans>
+					</span>
+				</button>
+			)}
 
 			<button
 				type="button"

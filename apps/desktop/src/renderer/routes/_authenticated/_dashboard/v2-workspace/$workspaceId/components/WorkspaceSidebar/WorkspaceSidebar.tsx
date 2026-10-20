@@ -1,4 +1,5 @@
 import { useLingui } from "@lingui/react/macro";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -169,8 +170,14 @@ export function WorkspaceSidebar({
 	// (NON-GIT WORKSPACE) Drop the Changes + Review tabs (and the PR header
 	// below) for a non-git folder — keep only Files. Terminal + agents live
 	// outside this sidebar and are unaffected. The Card tab stays in both.
+	// (FORK-PRS-OFF)
 	const tabs: SidebarTabDefinition[] = isGitRepo
-		? [filesTab, changesTab, reviewTab, cardTab]
+		? [
+				filesTab,
+				changesTab,
+				...(FORK_PULL_REQUESTS_DISABLED ? [] : [reviewTab]),
+				cardTab,
+			]
 		: [filesTab, cardTab];
 	// The persisted activeTab may be a git tab ("changes"/"review") that no
 	// longer exists for a non-git folder; fall back to Files so content renders.

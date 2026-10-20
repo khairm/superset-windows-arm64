@@ -3,6 +3,7 @@ import { z } from "zod";
 import { protectedProcedure } from "../../../index";
 import { resolveGithubRepo } from "../../workspace-creation/shared/project-helpers";
 import { execGh } from "../../workspace-creation/utils/exec-gh";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 import { evictPullRequestContent } from "../shared/pull-request-content-cache";
 
 const addCommentInputSchema = z.object({
@@ -16,6 +17,8 @@ const addCommentInputSchema = z.object({
 export const addComment = protectedProcedure
 	.input(addCommentInputSchema)
 	.mutation(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		const repo = await resolveGithubRepo(ctx, input.projectId);
 		try {
 			// One REST request: `gh pr comment` posts over GraphQL and then reads

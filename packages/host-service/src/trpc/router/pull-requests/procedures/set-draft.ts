@@ -3,6 +3,7 @@ import { z } from "zod";
 import { protectedProcedure } from "../../../index";
 import { resolveGithubRepo } from "../../workspace-creation/shared/project-helpers";
 import { execGh } from "../../workspace-creation/utils/exec-gh";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 import { syncPullRequestAfterWrite } from "../shared/sync-after-write";
 
 const setDraftInputSchema = z.object({
@@ -15,6 +16,8 @@ const setDraftInputSchema = z.object({
 export const setDraft = protectedProcedure
 	.input(setDraftInputSchema)
 	.mutation(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		const repo = await resolveGithubRepo(ctx, input.projectId);
 		const action = input.draft ? "draft" : "ready";
 		try {

@@ -13,10 +13,11 @@
  *
  * Two assertions did NOT survive, because the UI they named never existed on
  * this screen: the modal's workspace-name / branch-name inputs and its
- * "Runs in <label>" row. Master mode is asserted here through the three
- * branch-shaped controls the screen does own — the naming-instructions gear,
- * the "Link pull request" trigger and the compare-base-branch picker — all of
- * which disappear in master mode and are all present in branch mode.
+ * "Runs in <label>" row. Master mode is asserted here through the two
+ * branch-shaped controls the screen does own — the naming-instructions gear
+ * and the compare-base-branch picker — both of which disappear in master mode
+ * and are present in branch mode. The "Link pull request" trigger is hidden in
+ * every mode while `FORK_PULL_REQUESTS_DISABLED` is true.
  *
  * `resolveMasterMode.test.ts` owns WHICH mode a project resolves to. This file
  * owns what the surface does once it is in one: what disappears, what stays,
@@ -635,13 +636,13 @@ afterAll(async () => {
 });
 
 describe("NewWorkspaceScreen master mode rendering", () => {
-	test("hides everything branch-shaped", () => {
+	test("hides the branch-shaped controls and the PR trigger", () => {
 		// The screen has no name/branch inputs and no "Runs in <label>" row to
-		// assert on — these three are every branch-shaped control it owns.
+		// assert on. It has two branch-shaped controls plus the PR trigger.
 		const view = renderForm();
 		expect(view.queryByLabelText("Update naming instructions")).toBeNull();
-		expect(view.queryByLabelText("Link pull request")).toBeNull();
 		expect(view.queryByTestId("compare-base-branch-picker")).toBeNull();
+		expect(view.queryByLabelText("Link pull request")).toBeNull();
 	});
 
 	test("keeps the prompt, the agent pickers and the context controls", () => {
@@ -655,11 +656,11 @@ describe("NewWorkspaceScreen master mode rendering", () => {
 		expect(view.getByLabelText("Link task")).toBeTruthy();
 	});
 
-	test("branch mode is untouched: every branch control is still there", () => {
+	test("branch mode shows the branch controls but no PR trigger", () => {
 		isGitRepo = true;
 		const view = renderForm();
 		expect(view.getByLabelText("Update naming instructions")).toBeTruthy();
-		expect(view.getByLabelText("Link pull request")).toBeTruthy();
+		expect(view.queryByLabelText("Link pull request")).toBeNull();
 		expect(view.getByTestId("compare-base-branch-picker")).toBeTruthy();
 	});
 });
@@ -879,7 +880,7 @@ describe("NewWorkspaceScreen master submit", () => {
 		useNewWorkspaceDraftStore.setState({ hostId: "host-2" });
 		const view = renderForm();
 		expect(view.getByTestId("compare-base-branch-picker")).toBeTruthy();
-		expect(view.getByLabelText("Link pull request")).toBeTruthy();
+		expect(view.queryByLabelText("Link pull request")).toBeNull();
 	});
 
 	test("a rejected agents.run toasts, after the navigation has happened", async () => {

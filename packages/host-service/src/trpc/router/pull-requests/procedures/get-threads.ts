@@ -19,6 +19,10 @@ const getThreadsInputSchema = z.object({
 export const getThreads = protectedProcedure
 	.input(getThreadsInputSchema)
 	.query(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		if (ctx.runtime.pullRequests.disabled) {
+			return { reviewThreads: [], fetchFailed: false };
+		}
 		const repo = await resolveGithubRepo(ctx, input.projectId);
 		const octokit = await ctx.github();
 

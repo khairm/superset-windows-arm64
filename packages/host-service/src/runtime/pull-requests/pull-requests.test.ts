@@ -193,6 +193,10 @@ function createManager(
 		worktreeExists?: (worktreePath: string) => boolean;
 		loadExitedWorkspaceFilter?: PullRequestRuntimeManagerOptions["loadExitedWorkspaceFilter"];
 		gitWatcher?: PullRequestRuntimeManagerOptions["gitWatcher"];
+		disabled?: boolean;
+		readHead?: PullRequestRuntimeManagerOptions["readHead"];
+		probeGitEntry?: PullRequestRuntimeManagerOptions["probeGitEntry"];
+		readBranch?: PullRequestRuntimeManagerOptions["readBranch"];
 	} = {},
 ) {
 	return new PullRequestRuntimeManager({
@@ -218,6 +222,10 @@ function createManager(
 		// sync-path tests exercise the git read, not the missing-dir skip.
 		worktreeExists: overrides.worktreeExists ?? (() => true),
 		loadExitedWorkspaceFilter: overrides.loadExitedWorkspaceFilter,
+		disabled: overrides.disabled,
+		readHead: overrides.readHead,
+		probeGitEntry: overrides.probeGitEntry,
+		readBranch: overrides.readBranch,
 	});
 }
 
@@ -3590,4 +3598,204 @@ describe("(GIT-LAUNCH-BUDGET-B) the runtime runs on a PR-sync trigger, not the G
 			fixture.dispose();
 		}
 	}, 30_000);
+});
+
+describe("(FORK-PRS-OFF) a disabled runtime only follows the checked-out branch", () => {
+	function createDisabledManager(
+		db: HostDb,
+		overrides: Parameters<typeof createManager>[1] = {},
+	) {
+		const calls = { gh: 0, github: 0, refs: 0 };
+		const manager = createManager(db, {
+			disabled: true,
+			execGh: async () => {
+				calls.gh += 1;
+				throw new Error("gh must not run");
+			},
+			github: async () => {
+				calls.github += 1;
+				throw new Error("octokit must not run");
+			},
+			readWorkspaceRefs: async () => {
+				calls.refs += 1;
+				throw new Error("PR refs must not be read");
+			},
+			probeGitEntry: async () => "present",
+			...overrides,
+		});
+		return { manager, calls };
+	}
+
+	function syncInFlight(
+		manager: PullRequestRuntimeManager,
+		workspaceId: string,
+	): Promise<void> {
+		const { workspaceSyncState } = manager as unknown as {
+			workspaceSyncState: Map<string, { running: Promise<void> }>;
+		};
+		const running = workspaceSyncState.get(workspaceId)?.running;
+		if (!running) throw new Error(`no sync in flight for ${workspaceId}`);
+		return running;
+	}
+
+	test("start and a watcher event write the disk branch; an archived row is never written", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedWorkspace(db, { id: "ws", branch: "old" });
+		seedWorkspace(db, { id: "ws-archived", branch: "kept" });
+		db.update(workspaces)
+			.set({ archivedAt: 1 })
+			.where(eq(workspaces.id, "ws-archived"))
+			.run();
+		let diskBranch = "feat/disk";
+		let emit: (event: { workspaceId: string }) => void = () => {};
+		const { manager, calls } = createDisabledManager(db, {
+			gitWatcher: {
+				onChanged: (listener) => {
+					emit = listener;
+					return () => {};
+				},
+			},
+			readHead: async () => ({ kind: "branch", name: diskBranch }),
+		});
+		try {
+			manager.start();
+			await syncInFlight(manager, "ws");
+			expect(getWorkspace(db, "ws")?.branch).toBe("feat/disk");
+			diskBranch = "feat/switched";
+			emit({ workspaceId: "ws" });
+			emit({ workspaceId: "ws-archived" });
+			await syncInFlight(manager, "ws");
+		} finally {
+			manager.stop();
+		}
+
+		expect(getWorkspace(db, "ws")?.branch).toBe("feat/switched");
+		expect(getWorkspace(db, "ws-archived")?.branch).toBe("kept");
+		expect(calls).toEqual({ gh: 0, github: 0, refs: 0 });
+	});
+
+	test("hides a stored PR link and its history; a refresh reaches neither GitHub nor PR refs", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedPullRequest(db, {
+			id: "pr-1",
+			prNumber: 11,
+			headBranch: "feat/pr",
+			headSha: "sha-pr",
+		});
+		seedWorkspace(db, { id: "ws", branch: "feat/pr", pullRequestId: "pr-1" });
+		db.insert(schema.workspacePullRequests)
+			.values({ workspaceId: "ws", pullRequestId: "pr-1", linkedAt: 1 })
+			.run();
+		const { manager, calls } = createDisabledManager(db, {
+			readHead: async () => ({ kind: "branch", name: "feat/pr" }),
+		});
+
+		expect(
+			await manager.getPullRequestsByWorkspaces(["ws", "ws-unknown"]),
+		).toEqual([
+			{
+				workspaceId: "ws",
+				pullRequest: null,
+				error: null,
+				lastFetchedAt: null,
+			},
+		]);
+		expect(await manager.getPullRequestHistoryByWorkspaces(["ws"])).toEqual([
+			{ workspaceId: "ws", pullRequests: [] },
+		]);
+		await manager.refreshPullRequestsByWorkspaces(["ws"]);
+
+		expect(calls).toEqual({ gh: 0, github: 0, refs: 0 });
+		expect(getWorkspace(db, "ws")?.pullRequestId).toBe("pr-1");
+	});
+
+	test("a failed disk read is logged at the sync boundary and never escapes", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedWorkspace(db, { id: "ws", branch: "feat/ws" });
+		const failure = new Error("disk read failed");
+		const { manager } = createDisabledManager(db, {
+			readHead: async () => {
+				throw failure;
+			},
+		});
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await manager.refreshPullRequestsByWorkspaces(["ws"]);
+			expect(warn.mock.calls).toEqual([
+				[
+					"[host-service:pull-request-runtime] Failed to sync workspace branch",
+					expect.objectContaining({ workspaceId: "ws", error: failure }),
+				],
+			]);
+		} finally {
+			warn.mockRestore();
+		}
+		expect(getWorkspace(db, "ws")?.branch).toBe("feat/ws");
+	});
+
+	test("an unknown HEAD costs one branch read and writes only branch and updatedAt", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedPullRequest(db, {
+			id: "pr-1",
+			prNumber: 11,
+			headBranch: "old",
+			headSha: "sha-old",
+		});
+		seedWorkspace(db, {
+			id: "ws",
+			branch: "old",
+			headSha: "sha-old",
+			upstreamOwner: REPO.owner,
+			upstreamRepo: REPO.name,
+			upstreamBranch: "old",
+			pullRequestId: "pr-1",
+		});
+		const before = getWorkspace(db, "ws");
+		const branchReads: string[] = [];
+		const { manager, calls } = createDisabledManager(db, {
+			readHead: async () => ({ kind: "unknown" }),
+			readBranch: async (worktreePath) => {
+				branchReads.push(worktreePath);
+				return "feat/new";
+			},
+		});
+
+		await manager.refreshPullRequestsByWorkspaces(["ws"]);
+
+		expect(branchReads).toEqual(["/repo/.worktrees/ws"]);
+		expect(calls.refs).toBe(0);
+		const after = getWorkspace(db, "ws");
+		expect(after).toMatchObject({
+			...before,
+			branch: "feat/new",
+			updatedAt: expect.any(Number),
+		});
+		expect(after?.updatedAt).not.toBe(before?.updatedAt);
+	});
+
+	test("a detached HEAD writes nothing and logs nothing", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedWorkspace(db, { id: "ws", branch: "feat/ws" });
+		const before = getWorkspace(db, "ws");
+		const { manager } = createDisabledManager(db, {
+			readHead: async () => ({ kind: "unknown" }),
+			readBranch: async () => null,
+		});
+		const warn = spyOn(console, "warn");
+		const error = spyOn(console, "error");
+		try {
+			await manager.refreshPullRequestsByWorkspaces(["ws"]);
+			expect(warn).not.toHaveBeenCalled();
+			expect(error).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+			error.mockRestore();
+		}
+		expect(getWorkspace(db, "ws")).toEqual(before);
+	});
 });

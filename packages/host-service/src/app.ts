@@ -14,6 +14,7 @@ const MAX_DISPLAY_PENDING = 64;
 import {
 	FORK_CHAT_V3_DISABLED,
 	FORK_PORT_SCAN_DISABLED,
+	FORK_PULL_REQUESTS_DISABLED,
 } from "@superset/shared/fork-disabled-features";
 import { TRPCError } from "@trpc/server";
 import type { MiddlewareHandler } from "hono";
@@ -85,7 +86,7 @@ import type {
 	HostServiceContext,
 } from "./types";
 import { getHostWorkerPool } from "./workers/host-worker-pool";
-import { gitWorkspaceRefsTask } from "./workers/tasks/git";
+import { gitHeadBranchTask, gitWorkspaceRefsTask } from "./workers/tasks/git";
 import { disposeWorkspaceTitleJobs } from "./workspaces/workspace-title-jobs";
 
 export interface CreateAppOptions {
@@ -121,6 +122,7 @@ export interface CreateAppOptions {
 	github?: () => Promise<Octokit>;
 	execGh?: ExecGh;
 	claudeAccounts?: ClaudeAccountsService;
+	pullRequestsDisabled?: boolean; // (FORK-PRS-OFF)
 }
 
 export interface CreateAppResult {
@@ -244,6 +246,18 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			nowMs: Date.now,
 			elapsedMs: () => performance.now(),
 		}),
+		disabled: options.pullRequestsDisabled ?? FORK_PULL_REQUESTS_DISABLED, // (FORK-PRS-OFF)
+		// (FORK-PRS-OFF-BRANCH-FOLLOW)
+		readBranch: (worktreePath) =>
+			getHostWorkerPool().run(
+				gitHeadBranchTask,
+				{ worktreePath },
+				{
+					timeoutMs: 15_000,
+					strategy: "coalesce",
+					dedupeKey: `${worktreePath}:head-branch`,
+				},
+			),
 	});
 	pullRequestRuntime.start();
 

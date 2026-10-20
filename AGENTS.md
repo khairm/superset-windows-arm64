@@ -113,6 +113,14 @@ In brief:
   terminal visibly, never cmd.exe; PATH/override changes need an app restart;
   never change pty-daemon code for this, it cannot upgrade without killing
   terminals.
+- **Terminal full-speed helper** — the deliberate exception to "never change
+  pty-daemon code" above (`(WIN-TERMINAL-HIGHQOS)`): ptyd runs a hidden PS 5.1
+  `Add-Type` helper that tags ptyd's tree HighQoS once a second; Eco asked for
+  by a program is respected; faults cost speed only. The 0.4.0 -> 0.4.1 bump
+  costs one Force update (closes every terminal once); a rollback keeps 0.4.1
+  running until Settings > Terminal restart. When an upstream merge brings
+  pty-daemon to 0.4.1, bump again (`package.json` + `bun.lock`, pattern
+  `edb57b7ebd`): equal versions merge silently.
 - **Agent status dots (Claude + Codex)** — per-terminal + workspace-rollup dot:
   red = needs input, yellow = working (incl. subagents/teammates/compaction/
   codex-companion holds), green = ready for review, blue = shell/background/
@@ -175,7 +183,8 @@ In brief:
 - **Host git launch budget** — 5-minute PR/branch sweeps and the watcher
   trailing sync skip exited cards and hidden projects via the sidebar mirror
   (last known list up to 24 h, then one in-memory full pass per sweep per
-  day). Watcher PR sync runs at most every
+  day). PR sweeps are off (`(FORK-PRS-OFF)`); watcher events only feed branch
+  following (disk HEAD read). Watcher branch-follow runs at most every
   5 s for .git, 30 s file-only; is-git-repo caches yes 5 min/no 5 s, origin/HEAD
   10 min. Each host-main-thread git/gh launch blocks terminal I/O on Windows
   ARM64; keep launches rare (`(PR-SWEEP-SKIPS-EXITED)`, `(GIT-LAUNCH-BUDGET)`).
@@ -207,15 +216,19 @@ In brief:
 - **Usage page stubbed** — `usage.quota` returns an empty list and calls no
   provider; usage lives in the usage tray and round screen (`(USAGE-PAGE-STUB)`).
 - **Unused upstream features hidden** — browser panes, page watchers, the v3
-  local chat pane and port scanning are off behind one `const` each in
-  `packages/shared/src/fork-disabled-features.ts`
+  local chat pane, port scanning and pull requests are off behind one `const`
+  each in `packages/shared/src/fork-disabled-features.ts`
   (`FORK_BROWSER_PANES_DISABLED`, `FORK_PAGE_WATCH_DISABLED`,
-  `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`), read by the renderer,
+  `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`,
+  `FORK_PULL_REQUESTS_DISABLED`), read by the renderer,
   Electron main and the host-service from that one place. Saved layouts still
   restore those panes, inert. Flipping a const to `false` is NOT the whole
   re-enable path for browser or chat — their callers (`addBrowserTab`,
   `onAddBrowser`, `LocalChatSetting`) were removed and must be restored from
-  upstream too. Page watch and ports come back on the const alone.
+  upstream too. Page watch and ports come back on the const alone; PRs are
+  flip-only. PRs off (`(FORK-PRS-OFF)`): no PR sweeps or gh; PR-only
+  procedures refuse; stored links hidden, not deleted; branch label follows
+  checkouts via a disk HEAD read (`(FORK-PRS-OFF-BRANCH-FOLLOW)`).
 - **Alternate-screen eviction is DEFERRED** — the snapshot-restore fixes
   shipped; evicting an alternate-screen terminal from the live registry did
   not. The exemption keeping those terminals resident is intentional, not a

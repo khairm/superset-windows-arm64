@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { protectedProcedure, router } from "../../index";
+import { assertPullRequestsEnabled } from "../pull-requests/shared/assert-enabled";
 import { createGithubWorkItemLoader } from "./work-item";
 
 const loadWorkItem = createGithubWorkItemLoader();
@@ -27,6 +28,8 @@ export const githubRouter = router({
 			}),
 		)
 		.query(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			if (ctx.runtime.pullRequests.disabled) return null;
 			const octokit = await ctx.github();
 			const { data } = await octokit.pulls.list({
 				owner: input.owner,
@@ -46,6 +49,8 @@ export const githubRouter = router({
 			}),
 		)
 		.query(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const octokit = await ctx.github();
 			const { data } = await octokit.pulls.get({
 				owner: input.owner,
@@ -70,6 +75,8 @@ export const githubRouter = router({
 			}),
 		)
 		.query(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			if (ctx.runtime.pullRequests.disabled) return [];
 			const octokit = await ctx.github();
 			const { data } = await octokit.pulls.list({
 				owner: input.owner,
@@ -164,6 +171,8 @@ export const githubRouter = router({
 			}),
 		)
 		.query(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const octokit = await ctx.github();
 			const data = await octokit.graphql<PullRequestDetailQuery>(
 				PULL_REQUEST_DETAIL_QUERY,
@@ -352,6 +361,8 @@ export const githubRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const octokit = await ctx.github();
 			try {
 				const { data } = await octokit.pulls.merge({
@@ -375,6 +386,8 @@ export const githubRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const octokit = await ctx.github();
 			try {
 				const id = await pullRequestNodeId(octokit, input);
@@ -403,6 +416,8 @@ export const githubRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const octokit = await ctx.github();
 			try {
 				await octokit.pulls.updateBranch({
@@ -427,6 +442,8 @@ export const githubRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const octokit = await ctx.github();
 			try {
 				await octokit.pulls.update({
@@ -452,6 +469,8 @@ export const githubRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			assertPullRequestsEnabled(ctx);
 			const octokit = await ctx.github();
 			try {
 				const id = await pullRequestNodeId(octokit, input);

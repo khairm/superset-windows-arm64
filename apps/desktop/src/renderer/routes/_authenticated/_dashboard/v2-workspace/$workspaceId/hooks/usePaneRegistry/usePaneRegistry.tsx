@@ -9,6 +9,7 @@ import type {
 import {
 	FORK_BROWSER_PANES_DISABLED,
 	FORK_CHAT_V3_DISABLED,
+	FORK_PULL_REQUESTS_DISABLED,
 } from "@superset/shared/fork-disabled-features";
 import { alert } from "@superset/ui/atoms/Alert";
 import { toast } from "@superset/ui/sonner";
@@ -804,13 +805,23 @@ export function usePaneRegistry({
 					<ChangesListPane context={ctx} workspaceId={workspaceId} />
 				),
 			},
-			review: {
-				getIcon: () => <GitPullRequestArrow className="size-3.5" />,
-				getTitle: () => t({ message: "Review" }),
-				renderPane: (ctx: RendererContext<PaneViewerData>) => (
-					<ReviewPane context={ctx} workspaceId={workspaceId} />
-				),
-			},
+			// (FORK-PRS-OFF)
+			...(FORK_PULL_REQUESTS_DISABLED
+				? {
+						review: createDisabledPaneDefinition(
+							t({ message: "Review" }),
+							<GitPullRequestArrow className="size-3.5" />,
+						),
+					}
+				: {
+						review: {
+							getIcon: () => <GitPullRequestArrow className="size-3.5" />,
+							getTitle: () => t({ message: "Review" }),
+							renderPane: (ctx: RendererContext<PaneViewerData>) => (
+								<ReviewPane context={ctx} workspaceId={workspaceId} />
+							),
+						},
+					}),
 			"pages-list": {
 				getIcon: () => <FileText className="size-3.5" />,
 				getTitle: () => t({ message: "Pages" }),
@@ -905,7 +916,7 @@ export function usePaneRegistry({
 											}
 										: d,
 								),
-						}
+						},
 					}),
 			comment: {
 				getIcon: (ctx: RendererContext<PaneViewerData>) => {
@@ -946,36 +957,46 @@ export function usePaneRegistry({
 							: d,
 					),
 			},
-			"pull-request": {
-				getIcon: () => <GitPullRequest className="size-3.5" />,
-				getTitle: (pane) => {
-					const data = pane.data as PullRequestPaneData;
-					return t({ message: `Pull request #${data.number}` });
-				},
-				renderPane: (ctx: RendererContext<PaneViewerData>) => (
-					<PullRequestPane
-						data={ctx.pane.data as PullRequestPaneData}
-						onOpenDiff={onOpenDiff}
-						onOpenPage={(page) => openPagePaneInStore(ctx.store, page)}
-					/>
-				),
-				renderHeaderExtras: (ctx: RendererContext<PaneViewerData>) => (
-					<PullRequestPaneHeaderExtras
-						data={ctx.pane.data as PullRequestPaneData}
-					/>
-				),
-				contextMenuActions: (_ctx, defaults) =>
-					defaults.map((d) =>
-						d.key === "close-pane"
-							? {
-									...d,
-									label: t({
-										message: "Close Pull Request",
-									}),
-								}
-							: d,
-					),
-			},
+			// (FORK-PRS-OFF)
+			...(FORK_PULL_REQUESTS_DISABLED
+				? {
+						"pull-request": createDisabledPaneDefinition(
+							t({ message: "Pull request" }),
+							<GitPullRequest className="size-3.5" />,
+						),
+					}
+				: {
+						"pull-request": {
+							getIcon: () => <GitPullRequest className="size-3.5" />,
+							getTitle: (pane: { data: PaneViewerData }) => {
+								const data = pane.data as PullRequestPaneData;
+								return t({ message: `Pull request #${data.number}` });
+							},
+							renderPane: (ctx: RendererContext<PaneViewerData>) => (
+								<PullRequestPane
+									data={ctx.pane.data as PullRequestPaneData}
+									onOpenDiff={onOpenDiff}
+									onOpenPage={(page) => openPagePaneInStore(ctx.store, page)}
+								/>
+							),
+							renderHeaderExtras: (ctx: RendererContext<PaneViewerData>) => (
+								<PullRequestPaneHeaderExtras
+									data={ctx.pane.data as PullRequestPaneData}
+								/>
+							),
+							contextMenuActions: (_ctx, defaults) =>
+								defaults.map((d) =>
+									d.key === "close-pane"
+										? {
+												...d,
+												label: t({
+													message: "Close Pull Request",
+												}),
+											}
+										: d,
+								),
+						},
+					}),
 			[SUBAGENT_PANE_KIND]: {
 				getIcon: () => <LuBot className="size-3.5" />,
 				getTitle: (pane) => {

@@ -25,6 +25,7 @@ test("project and repository endpoints share a case-insensitive in-flight cache"
 	});
 	const caller = createCallerFactory(router({ getDiff, getDiffByRepo }))({
 		isAuthenticated: true,
+		runtime: { pullRequests: { disabled: false } },
 	} as HostServiceContext);
 	const byProject = caller.getDiff({ projectId: "project", prNumber: 81 });
 	const byRepo = caller.getDiffByRepo({

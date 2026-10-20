@@ -78,6 +78,7 @@ describe("github router with mocked Octokit", () => {
 	beforeEach(async () => {
 		calls.length = 0;
 		host = await createTestHost({
+			pullRequestsDisabled: false,
 			githubFactory: async () => fakeOctokit,
 		});
 	});

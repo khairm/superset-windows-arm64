@@ -20,6 +20,7 @@ function createCaller(opts: {
 	const replyCalls: ReplyCall[] = [];
 	const ctx = {
 		isAuthenticated: true,
+		runtime: { pullRequests: { disabled: false } },
 		db: {
 			query: {
 				workspaces: {

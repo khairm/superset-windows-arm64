@@ -11,6 +11,7 @@ import {
 	getAgentModeSupport,
 } from "@superset/shared/agent-models";
 import { startableCloudEnvironments } from "@superset/shared/cloud-environments";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { CLOUD_HOST_ID } from "@superset/shared/host-routing";
 import {
 	PromptInputButton,
@@ -1059,7 +1060,7 @@ export function NewWorkspaceScreen({
 								{/* (MASTER-PLUS-LAUNCH) A PR checkout needs a branch to
 								    check out into; master mode has none, so the trigger
 								    goes rather than offering something submit refuses. */}
-								{!isMasterMode && (
+								{!isMasterMode && !FORK_PULL_REQUESTS_DISABLED && (
 									<PRLinkCommand
 										onSelect={setLinkedPR}
 										projectId={projectId}

@@ -54,6 +54,7 @@ import {
 } from "../project/utils/create-local-workspace";
 import { ensureMainWorkspace } from "../project/utils/ensure-main-workspace";
 import { tryRevParseGitRoot } from "../project/utils/resolve-repo";
+import { assertPullRequestsEnabled } from "../pull-requests/shared/assert-enabled";
 import { getHostWorktreeBaseDir } from "../settings/worktree-location";
 import { claimWorkspaceRestore } from "../workspace-cleanup";
 import { createMultiRepoWorkspaceFlow } from "../workspace-creation/multi-repo-create";
@@ -705,6 +706,8 @@ export const workspacesRouter = router({
 			}
 		})
 		.mutation(async ({ ctx, input }) => {
+			// (FORK-PRS-OFF)
+			if (input.pr !== undefined) assertPullRequestsEnabled(ctx);
 			for (const launch of input.agents ?? []) {
 				validateAgentLaunchOptions(ctx.db, launch);
 			}

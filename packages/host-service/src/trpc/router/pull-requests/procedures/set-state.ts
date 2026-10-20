@@ -3,6 +3,7 @@ import { z } from "zod";
 import { protectedProcedure } from "../../../index";
 import { resolveGithubRepo } from "../../workspace-creation/shared/project-helpers";
 import { execGh } from "../../workspace-creation/utils/exec-gh";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 import { syncPullRequestAfterWrite } from "../shared/sync-after-write";
 
 const setStateInputSchema = z.object({
@@ -16,6 +17,8 @@ const setStateInputSchema = z.object({
 export const setState = protectedProcedure
 	.input(setStateInputSchema)
 	.mutation(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		const repo = await resolveGithubRepo(ctx, input.projectId);
 		const verb = input.state === "closed" ? "close" : "reopen";
 		try {

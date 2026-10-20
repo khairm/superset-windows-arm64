@@ -2,6 +2,7 @@ import { z } from "zod";
 import { protectedProcedure } from "../../../index";
 import { replyToReviewComment } from "../../git/utils/reply-to-review-comment";
 import { resolveGithubRepo } from "../../workspace-creation/shared/project-helpers";
+import { assertPullRequestsEnabled } from "../shared/assert-enabled";
 
 const replyToThreadInputSchema = z.object({
 	projectId: z.string(),
@@ -19,6 +20,8 @@ const replyToThreadInputSchema = z.object({
 export const replyToThread = protectedProcedure
 	.input(replyToThreadInputSchema)
 	.mutation(async ({ ctx, input }) => {
+		// (FORK-PRS-OFF)
+		assertPullRequestsEnabled(ctx);
 		const repo = await resolveGithubRepo(ctx, input.projectId);
 		const octokit = await ctx.github();
 		return replyToReviewComment(octokit, {

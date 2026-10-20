@@ -1,7 +1,7 @@
 import type { PaneDefinition } from "@superset/panes";
 import type { ReactNode } from "react";
 
-// (FORK-BROWSER-OFF) (FORK-CHAT-V3-OFF)
+// (FORK-BROWSER-OFF) (FORK-CHAT-V3-OFF) (FORK-PRS-OFF)
 export function createDisabledPaneDefinition<TData>(
 	title: string,
 	icon: ReactNode,

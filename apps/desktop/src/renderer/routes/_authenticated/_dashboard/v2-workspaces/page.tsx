@@ -1,3 +1,4 @@
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useDeferredValue, useEffect, useRef } from "react";
 import { V2WorkspacesBoard } from "./components/V2WorkspacesBoard";
@@ -60,7 +61,11 @@ export const Route = createFileRoute(
 			typeof search.projects === "string" && search.projects
 				? search.projects
 				: undefined,
-		pr: typeof search.pr === "string" && search.pr ? search.pr : undefined,
+		// (FORK-PRS-OFF) With pull requests off nothing can clear a PR filter.
+		pr:
+			!FORK_PULL_REQUESTS_DISABLED && typeof search.pr === "string" && search.pr
+				? search.pr
+				: undefined,
 		agent:
 			typeof search.agent === "string" && search.agent
 				? search.agent
