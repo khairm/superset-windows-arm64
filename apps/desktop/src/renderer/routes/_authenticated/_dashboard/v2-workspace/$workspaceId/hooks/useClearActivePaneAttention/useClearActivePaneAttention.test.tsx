@@ -49,21 +49,33 @@ const realHostServiceClient = {
 };
 mock.module("renderer/lib/host-service-client", () => ({
 	...realHostServiceClient,
-	getHostServiceClient: () => ({}),
-	hostServiceQueryRetry: () => false,
-	hostServiceQueryRetryDelay: () => 0,
-	getHostServiceClientByUrl: () => ({
-		companion: {
-			reportLifecycleRead: {
-				mutate: async (input: SeenCall) => {
-					seenCalls.push(input);
-					return { accepted: true };
+	getHostServiceClient: whileFaking(
+		() => ({}),
+		realHostServiceClient.getHostServiceClient,
+	),
+	hostServiceQueryRetry: whileFaking(
+		() => false,
+		realHostServiceClient.hostServiceQueryRetry,
+	),
+	hostServiceQueryRetryDelay: whileFaking(
+		() => 0,
+		realHostServiceClient.hostServiceQueryRetryDelay,
+	),
+	getHostServiceClientByUrl: whileFaking(
+		() => ({
+			companion: {
+				reportLifecycleRead: {
+					mutate: async (input: SeenCall) => {
+						seenCalls.push(input);
+						return { accepted: true };
+					},
 				},
+				syncAlertContexts: { mutate: async () => ({ accepted: true }) },
+				retireStaleReadyAlerts: { mutate: async () => ({ accepted: true }) },
 			},
-			syncAlertContexts: { mutate: async () => ({ accepted: true }) },
-			retireStaleReadyAlerts: { mutate: async () => ({ accepted: true }) },
-		},
-	}),
+		}),
+		realHostServiceClient.getHostServiceClientByUrl,
+	),
 }));
 
 const WORKSPACE = "workspace-1";

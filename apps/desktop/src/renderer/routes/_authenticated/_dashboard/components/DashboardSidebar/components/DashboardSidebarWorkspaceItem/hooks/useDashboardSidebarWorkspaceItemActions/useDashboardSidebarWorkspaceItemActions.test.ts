@@ -12,7 +12,7 @@
  * around it is three lines that pass two callbacks in.
  */
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 // Type-only, so it is erased before the `mock.module` calls below run — the
 // module itself is still loaded dynamically further down like every other one.
 import type { DismissedWorkspaceTerminal } from "./useDashboardSidebarWorkspaceItemActions";
@@ -43,6 +43,18 @@ let snapshotRows: Array<{
 	pendingPermission: boolean | null;
 }> = [];
 
+// Later files inherit these mocks; after this file they get the real code.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: (...args: NoInfer<Args>) => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake(...args) : real(...args));
+}
+
 /**
  * `mock.module` is PROCESS-GLOBAL and there is no unmock, so these are
  * re-installed before every test: `resyncAgentStatus.test.ts` mocks the same
@@ -52,60 +64,73 @@ let snapshotRows: Array<{
 const realHostServiceClient = {
 	...(await import("renderer/lib/host-service-client")),
 };
+const realSonner = { ...(await import("@superset/ui/sonner")) };
+const realToast = realSonner.toast;
 function installMocks(): void {
 	mock.module("@superset/ui/sonner", () => ({
-		toast: {
-			error: (message: string) => {
-				errorToasts.push(message);
+		...realSonner,
+		toast: Object.assign(
+			(...args: Parameters<typeof realToast>) => realToast(...args),
+			realToast,
+			{
+				error: whileFaking((message) => {
+					errorToasts.push(String(message));
+				}, realToast.error),
 			},
-			success: () => {},
-			info: () => {},
-			warning: () => {},
-			message: () => {},
-			dismiss: () => {},
-		},
-		Toaster: () => null,
+		),
 	}));
 
 	mock.module("renderer/lib/host-service-client", () => ({
 		...realHostServiceClient,
-		getHostServiceClient: () => ({}),
-		hostServiceQueryRetry: () => false,
-		hostServiceQueryRetryDelay: () => 0,
-		getHostServiceClientByUrl: () => ({
-			terminalAgents: {
-				dismissWorkspaceStatuses: {
-					mutate: async (input: {
-						workspaceId: string;
-						terminalId?: string;
-					}) => {
-						dismissCalls.push(input);
-						if (dismissRejects) throw new Error("host gone");
-						return {
-							dismissStartedAtMs: at(9_000),
-							terminals: dismissTerminals,
-						};
+		getHostServiceClient: whileFaking(
+			() => ({}),
+			realHostServiceClient.getHostServiceClient,
+		),
+		hostServiceQueryRetry: whileFaking(
+			() => false,
+			realHostServiceClient.hostServiceQueryRetry,
+		),
+		hostServiceQueryRetryDelay: whileFaking(
+			() => 0,
+			realHostServiceClient.hostServiceQueryRetryDelay,
+		),
+		getHostServiceClientByUrl: whileFaking(
+			() => ({
+				terminalAgents: {
+					dismissWorkspaceStatuses: {
+						mutate: async (input: {
+							workspaceId: string;
+							terminalId?: string;
+						}) => {
+							dismissCalls.push(input);
+							if (dismissRejects) throw new Error("host gone");
+							return {
+								dismissStartedAtMs: at(9_000),
+								terminals: dismissTerminals,
+							};
+						},
 					},
 				},
-			},
-			companion: {
-				reportLifecycleRead: {
-					mutate: async (input: SeenCall) => {
-						seenCalls.push(input);
-						return { accepted: acceptSeen, refusal: null };
+				companion: {
+					reportLifecycleRead: {
+						mutate: async (input: SeenCall) => {
+							seenCalls.push(input);
+							return { accepted: acceptSeen, refusal: null };
+						},
 					},
 				},
-			},
-			notifications: {
-				agentStatusSnapshot: {
-					query: async () => ({
-						rows: snapshotRows,
-						knownTerminalIds: snapshotRows.map((row) => row.terminalId),
-						hostNow: at(10_000),
-					}),
+				notifications: {
+					agentStatusSnapshot: {
+						query: async () => ({
+							rows: snapshotRows,
+							knownTerminalIds: snapshotRows.map((row) => row.terminalId),
+							hostNow: at(10_000),
+						}),
+					},
 				},
-			},
-		}),
+			}),
+			realHostServiceClient.getHostServiceClientByUrl,
+		),
 	}));
 }
 

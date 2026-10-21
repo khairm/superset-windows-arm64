@@ -12,7 +12,15 @@
  * `companionAlertSync` is tested through.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	mock,
+} from "bun:test";
 import type { WorkspaceState } from "@superset/panes";
 import type { AgentLifecyclePayload } from "@superset/workspace-client";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
@@ -30,26 +38,50 @@ const at = (ms: number): number => T0 + ms;
 
 let seenCalls: SeenCall[] = [];
 
+// Later files inherit these mocks; after this file they get the real code.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: () => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake() : real(...args));
+}
+
 const realHostServiceClient = {
 	...(await import("renderer/lib/host-service-client")),
 };
 mock.module("renderer/lib/host-service-client", () => ({
 	...realHostServiceClient,
-	getHostServiceClient: () => ({}),
-	hostServiceQueryRetry: () => false,
-	hostServiceQueryRetryDelay: () => 0,
-	getHostServiceClientByUrl: () => ({
-		companion: {
-			reportLifecycleRead: {
-				mutate: async (input: SeenCall) => {
-					seenCalls.push(input);
-					return { accepted: true };
+	getHostServiceClient: whileFaking(
+		() => ({}),
+		realHostServiceClient.getHostServiceClient,
+	),
+	hostServiceQueryRetry: whileFaking(
+		() => false,
+		realHostServiceClient.hostServiceQueryRetry,
+	),
+	hostServiceQueryRetryDelay: whileFaking(
+		() => 0,
+		realHostServiceClient.hostServiceQueryRetryDelay,
+	),
+	getHostServiceClientByUrl: whileFaking(
+		() => ({
+			companion: {
+				reportLifecycleRead: {
+					mutate: async (input: SeenCall) => {
+						seenCalls.push(input);
+						return { accepted: true };
+					},
 				},
+				syncAlertContexts: { mutate: async () => ({ accepted: true }) },
+				retireStaleReadyAlerts: { mutate: async () => ({ accepted: true }) },
 			},
-			syncAlertContexts: { mutate: async () => ({ accepted: true }) },
-			retireStaleReadyAlerts: { mutate: async () => ({ accepted: true }) },
-		},
-	}),
+		}),
+		realHostServiceClient.getHostServiceClientByUrl,
+	),
 }));
 
 // NOTHING ELSE IS MOCKED, deliberately. `mock.module` is process-wide in Bun

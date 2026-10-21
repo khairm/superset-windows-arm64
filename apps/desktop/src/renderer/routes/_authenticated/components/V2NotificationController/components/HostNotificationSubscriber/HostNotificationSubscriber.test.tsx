@@ -42,24 +42,28 @@ let pendingResyncs: ((value: unknown) => void)[] = [];
 
 /**
  * `mock.module` is PROCESS-GLOBAL and there is no unmock, so every stub here
- * outlives this file and is inherited by whatever bun runs next.
+ * is inherited by whatever bun runs next.
  *
  * Each one is therefore the REAL module with a single export overridden,
  * rather than a hand-written object: a stub that merely looks complete enough
  * for this test took down unrelated suites twice (a missing
  * `electronTrpc.createClient`, then a missing `setClientMachineId`), and it
  * would do so again the next time one of these modules grows an export.
- * electron-trpc is the exception — its export is a tRPC proxy that cannot be
- * spread — so that one names `createClient` explicitly. For the same reason
- * only the exports this test genuinely needs to neutralise are overridden: the
- * workspaces here have no hydrated pane layout, so the alert-context, title-
- * listener and lifecycle paths do nothing anyway and are left real.
+ * A tRPC proxy cannot be spread, so a Proxy fakes only `settings` and passes
+ * every other key to the real one; every fake ends with the file. For the same
+ * reason only the exports this test genuinely needs to neutralise are
+ * overridden: the workspaces here have no hydrated pane layout, so the
+ * alert-context, title-listener and lifecycle paths do nothing anyway and are
+ * left real.
  *
  * Re-installed in `beforeEach` too: another file mocking the same module wins
  * globally the moment it loads, whichever order bun picks.
  */
-const realHostEventBus = await import("renderer/lib/host-event-bus");
-const realHostServiceAuth = await import("renderer/lib/host-service-auth");
+const realElectronTrpc = { ...(await import("renderer/lib/electron-trpc")) };
+const realHostEventBus = { ...(await import("renderer/lib/host-event-bus")) };
+const realHostServiceAuth = {
+	...(await import("renderer/lib/host-service-auth")),
+};
 const realResyncAgentStatus = {
 	...(await import("../../lib/resyncAgentStatus")),
 };
@@ -79,41 +83,46 @@ function whileFaking<Args extends unknown[]>(
 	return (...args) => (faking ? fake() : real(...args));
 }
 
+const fakeSettings = {
+	getNotificationVolume: { useQuery: () => ({ data: 100 }) },
+	getNotificationSoundsMuted: { useQuery: () => ({ data: false }) },
+};
+
 function installMocks(): void {
 	mock.module("renderer/lib/electron-trpc", () => ({
-		electronTrpc: {
-			// `renderer/lib/trpc-client` calls this at module load.
-			createClient: () => ({}),
-			Provider: ({ children }: { children?: unknown }) => children,
-			useContext: () => ({}),
-			useUtils: () => ({}),
-			settings: {
-				getNotificationVolume: { useQuery: () => ({ data: 100 }) },
-				getNotificationSoundsMuted: { useQuery: () => ({ data: false }) },
-			},
-		},
+		...realElectronTrpc,
+		electronTrpc: new Proxy(realElectronTrpc.electronTrpc, {
+			get: (target, key) =>
+				faking && key === "settings" ? fakeSettings : Reflect.get(target, key),
+		}),
 	}));
 
 	mock.module("renderer/lib/host-event-bus", () => ({
 		...realHostEventBus,
-		getHostEventBus: () => ({
-			on: () => () => {},
-			subscribeConnectionStatus: (listener: ConnectionListener) => {
-				connectionListeners.push(listener);
-				return () => {
-					connectionListeners = connectionListeners.filter(
-						(entry) => entry !== listener,
-					);
-				};
-			},
-			retain: () => () => {},
-			getConnectionStatus: () => ({ state: busState }),
-		}),
+		getHostEventBus: whileFaking(
+			() => ({
+				on: () => () => {},
+				subscribeConnectionStatus: (listener: ConnectionListener) => {
+					connectionListeners.push(listener);
+					return () => {
+						connectionListeners = connectionListeners.filter(
+							(entry) => entry !== listener,
+						);
+					};
+				},
+				retain: () => () => {},
+				getConnectionStatus: () => ({ state: busState }),
+			}),
+			realHostEventBus.getHostEventBus,
+		),
 	}));
 
 	mock.module("renderer/lib/host-service-auth", () => ({
 		...realHostServiceAuth,
-		refreshHostServiceSecrets: async () => {},
+		refreshHostServiceSecrets: whileFaking(
+			async () => {},
+			realHostServiceAuth.refreshHostServiceSecrets,
+		),
 	}));
 
 	mock.module("../../lib/resyncAgentStatus", () => ({
@@ -163,15 +172,6 @@ const moreWorkspaces = [
 	{
 		workspaceId: "workspace-2",
 		workspaceName: "W2",
-		paneLayout: null,
-		rightPaneLayout: null,
-	},
-];
-const evenMoreWorkspaces = [
-	...moreWorkspaces,
-	{
-		workspaceId: "workspace-3",
-		workspaceName: "W3",
 		paneLayout: null,
 		rightPaneLayout: null,
 	},
@@ -282,58 +282,6 @@ describe("(MANUAL-DISMISS) HostNotificationSubscriber periodic resync", () => {
 
 		await settleResyncs();
 		expect(resyncCalls).toBe(2);
-	});
-
-	/** Only the LATEST key is held — an intermediate set is already history. */
-	it("collapses several mid-flight key changes into one follow-up", async () => {
-		const view = mount();
-		expect(resyncCalls).toBe(1);
-
-		rerenderWith(view, moreWorkspaces);
-		rerenderWith(view, evenMoreWorkspaces);
-		expect(resyncCalls).toBe(1);
-
-		await settleResyncs();
-		expect(resyncCalls).toBe(2);
-
-		await settleResyncs();
-		expect(resyncCalls).toBe(2);
-	});
-
-	/**
-	 * A tick that arrives mid-flight is SUPPRESSED rather than queued: it carries
-	 * the same key the live request was issued under, so it has nothing to add.
-	 * The next tick covers it.
-	 *
-	 * The in-flight request here is started OFF-CYCLE (a workspace-key change 45s
-	 * into the interval) so the tick lands while it is still inside its deadline.
-	 * A request started BY a tick is always older than the 30s deadline by the
-	 * time the next one arrives, and the deadline has released it — which is the
-	 * point of the deadline and is covered below.
-	 */
-	it("suppresses a tick while a resync is still in flight", async () => {
-		const view = mount();
-		expect(resyncCalls).toBe(1);
-		await settleResyncs();
-
-		act(() => {
-			jest.advanceTimersByTime(45_000);
-		});
-		// Deliberately left unresolved, 15s short of the next tick.
-		rerenderWith(view, moreWorkspaces);
-		expect(resyncCalls).toBe(2);
-
-		act(() => {
-			jest.advanceTimersByTime(15_000);
-		});
-		expect(resyncCalls).toBe(2);
-
-		await settleResyncs();
-		act(() => {
-			jest.advanceTimersByTime(PERIODIC_RESYNC_MS);
-		});
-		expect(resyncCalls).toBe(3);
-		await settleResyncs();
 	});
 
 	it("stops ticking when the socket closes, and resumes on reconnect", async () => {

@@ -12,7 +12,15 @@
  * own coverage and is deliberately left alone.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	mock,
+} from "bun:test";
 
 interface SeenCall {
 	workspaceId: string;
@@ -55,48 +63,72 @@ interface SnapshotRow {
 	pendingPermission: boolean | null;
 }
 
+// Later files inherit these mocks; after this file they get the real code.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: (...args: NoInfer<Args>) => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake(...args) : real(...args));
+}
+
 const realHostServiceClient = {
 	...(await import("renderer/lib/host-service-client")),
 };
 mock.module("renderer/lib/host-service-client", () => ({
 	...realHostServiceClient,
-	getHostServiceClient: () => ({}),
-	hostServiceQueryRetry: () => false,
-	hostServiceQueryRetryDelay: () => 0,
-	getHostServiceClientByUrl: (hostUrl: string) => ({
-		notifications: {
-			agentStatusSnapshot: {
-				query: async () => ({
-					rows: snapshotRows,
-					knownTerminalIds,
-					hostNow,
-				}),
-			},
-		},
-		companion: {
-			reportLifecycleRead: {
-				mutate: async (input: SeenCall) => {
-					seenCalls.push(input);
-					if (rejectSeen) throw new Error("host gone");
-					return { accepted: acceptSeen };
+	getHostServiceClient: whileFaking(
+		() => ({}),
+		realHostServiceClient.getHostServiceClient,
+	),
+	hostServiceQueryRetry: whileFaking(
+		() => false,
+		realHostServiceClient.hostServiceQueryRetry,
+	),
+	hostServiceQueryRetryDelay: whileFaking(
+		() => 0,
+		realHostServiceClient.hostServiceQueryRetryDelay,
+	),
+	getHostServiceClientByUrl: whileFaking(
+		(hostUrl: string) => ({
+			notifications: {
+				agentStatusSnapshot: {
+					query: async () => ({
+						rows: snapshotRows,
+						knownTerminalIds,
+						hostNow,
+					}),
 				},
 			},
-			syncAlertContexts: {
-				mutate: async () => ({ accepted: true }),
-			},
-			retireStaleReadyAlerts: {
-				mutate: async (input: { boundaryMs: number }) => {
-					relaunchCalls.push({
-						hostUrl,
-						boundaryMs: input.boundaryMs,
-						seenAtReport:
-							useV2NotificationStore.getState().terminalSeenAt["terminal-1"],
-					});
-					return { accepted: acceptRelaunch };
+			companion: {
+				reportLifecycleRead: {
+					mutate: async (input: SeenCall) => {
+						seenCalls.push(input);
+						if (rejectSeen) throw new Error("host gone");
+						return { accepted: acceptSeen };
+					},
+				},
+				syncAlertContexts: {
+					mutate: async () => ({ accepted: true }),
+				},
+				retireStaleReadyAlerts: {
+					mutate: async (input: { boundaryMs: number }) => {
+						relaunchCalls.push({
+							hostUrl,
+							boundaryMs: input.boundaryMs,
+							seenAtReport:
+								useV2NotificationStore.getState().terminalSeenAt["terminal-1"],
+						});
+						return { accepted: acceptRelaunch };
+					},
 				},
 			},
-		},
-	}),
+		}),
+		realHostServiceClient.getHostServiceClientByUrl,
+	),
 }));
 
 const { useV2NotificationStore } = await import(

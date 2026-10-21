@@ -1,8 +1,29 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
+
+// Later files inherit the sonner mock; after this file it runs the real toast.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: (...args: NoInfer<Args>) => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake(...args) : real(...args));
+}
 
 const mutate = mock(async (_url: string) => ({}));
-const showError = mock((_message: string) => {});
-mock.module("@superset/ui/sonner", () => ({ toast: { error: showError } }));
+const showError = mock((_message: unknown) => {});
+const realSonner = { ...(await import("@superset/ui/sonner")) };
+const realToast = realSonner.toast;
+mock.module("@superset/ui/sonner", () => ({
+	...realSonner,
+	toast: Object.assign(
+		(...args: Parameters<typeof realToast>) => realToast(...args),
+		realToast,
+		{ error: whileFaking(showError, realToast.error) },
+	),
+}));
 mock.module("renderer/lib/trpc-client", () => ({
 	electronTrpcClient: { external: { openUrl: { mutate } } },
 }));

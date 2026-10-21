@@ -10,13 +10,6 @@ if (!alreadyRegistered) GlobalRegistrator.register();
 	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-mock.module("renderer/lib/fileIcons", () => ({
-	FileIcon: () => null,
-	useFallthroughIcons: () => {},
-	useInitialTreeIcons: () => ({ set: "complete", colored: true }),
-}));
-
-const realWorkspaceClient = await import("@superset/workspace-client");
 const realWorkspaceProvider = await import(
 	"renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider"
 );
@@ -26,82 +19,73 @@ const realCollectionsProvider = await import(
 const realHostUrl = await import(
 	"renderer/hooks/host-service/useWorkspaceHostUrl"
 );
-const realHotkeys = await import("renderer/hotkeys");
 const realAgentSessionLauncher = await import("../useAgentSessionLauncher");
 
-mock.module("@superset/workspace-client", () => ({
-	...realWorkspaceClient,
-	// usePaneRegistry mounts useAgentSurfaceSwitch, whose chat wiring reads the
-	// workspace client; the registry under test never talks to either.
-	useWorkspaceClient: () => ({
-		hostUrl: "http://127.0.0.1:1",
-		getWsToken: async () => "",
-	}),
-	workspaceTrpc: {
-		terminal: {
-			killSession: {
-				useMutation: () => ({ mutate: mock(() => {}), isPending: false }),
-			},
-		},
-		agents: {
-			run: {
-				useMutation: () => ({
-					mutateAsync: mock(() => Promise.resolve({})),
-					isPending: false,
-				}),
-			},
-		},
-		useUtils: () => ({
-			terminal: { list: { invalidate: mock(() => Promise.resolve()) } },
-		}),
-	},
-}));
+// Later files inherit these mocks; after this file they get the real code.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: () => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake() : real(...args));
+}
+
 mock.module(
 	"renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider",
 	() => ({
 		...realWorkspaceProvider,
-		useWorkspace: () => ({ workspace: { id: "saved-workspace" } }),
+		useWorkspace: whileFaking(
+			() => ({ workspace: { id: "saved-workspace" } }),
+			realWorkspaceProvider.useWorkspace,
+		),
 	}),
 );
 mock.module(
 	"renderer/routes/_authenticated/providers/CollectionsProvider",
 	() => ({
 		...realCollectionsProvider,
-		useCollections: () => ({
-			v2WorkspaceLocalState: { get: () => null, update: mock(() => {}) },
-		}),
+		useCollections: whileFaking(
+			() => ({
+				v2WorkspaceLocalState: { get: () => null, update: mock(() => {}) },
+			}),
+			realCollectionsProvider.useCollections,
+		),
 	}),
 );
 mock.module("renderer/hooks/host-service/useWorkspaceHostUrl", () => ({
 	...realHostUrl,
-	useWorkspaceHostTarget: () => ({ status: "ready", kind: "local" }),
-}));
-mock.module("renderer/hotkeys", () => ({
-	...realHotkeys,
-	useHotkeyDisplay: () => ({ text: "Ctrl+K" }),
+	useWorkspaceHostTarget: whileFaking(
+		() => ({ status: "ready", kind: "local" }),
+		realHostUrl.useWorkspaceHostTarget,
+	),
 }));
 mock.module("../useAgentSessionLauncher", () => ({
 	...realAgentSessionLauncher,
-	useAgentSessionLauncher: () => ({
-		createNewAgentSession: mock(() => {}),
-		focusAgentTerminal: mock(() => {}),
-	}),
+	useAgentSessionLauncher: whileFaking(
+		() => ({
+			createNewAgentSession: mock(() => {}),
+			focusAgentTerminal: mock(() => {}),
+		}),
+		realAgentSessionLauncher.useAgentSessionLauncher,
+	),
 }));
 
 const { cleanup, renderHook } = await import("@testing-library/react");
 const { createWorkspaceStore } = await import("@superset/panes");
-const { QueryClient, QueryClientProvider } = await import(
-	"@tanstack/react-query"
-);
+const { WorkspaceClientProvider } = await import("@superset/workspace-client");
 const { usePaneRegistry } = await import("./usePaneRegistry");
 
-// The registry mounts react-query consumers (terminal appearance, agent
-// surface) that this test never exercises.
-function withQueryClient({ children }: { children: ReactNode }) {
+function withWorkspaceClient({ children }: { children: ReactNode }) {
 	return (
-		<QueryClientProvider client={new QueryClient()}>
+		<WorkspaceClientProvider
+			cacheKey="usePaneRegistry-test"
+			hostUrl="http://127.0.0.1:1"
+		>
 			{children}
-		</QueryClientProvider>
+		</WorkspaceClientProvider>
 	);
 }
 
@@ -131,7 +115,7 @@ describe("saved disabled panes (FORK-BROWSER-OFF) (FORK-CHAT-V3-OFF) (FORK-PRS-O
 						onOpenFile: mock(() => {}),
 						onRevealPath: mock(() => {}),
 					}),
-				{ wrapper: withQueryClient },
+				{ wrapper: withWorkspaceClient },
 			);
 			const pane = store.getState().getActivePane();
 			if (!pane) throw new Error(`no active ${kind} pane`);

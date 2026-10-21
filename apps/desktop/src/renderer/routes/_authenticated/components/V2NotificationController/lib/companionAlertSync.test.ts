@@ -11,7 +11,15 @@
  * everything above it is this module's own logic.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	mock,
+} from "bun:test";
 import type { AlertContextSnapshot } from "./alertContexts";
 
 // --- transport double -------------------------------------------------------
@@ -159,15 +167,39 @@ function makeClient() {
 	};
 }
 
+// Later files inherit these mocks; after this file they get the real code.
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+function whileFaking<Args extends unknown[]>(
+	fake: () => unknown,
+	real: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+	return (...args) => (faking ? fake() : real(...args));
+}
+
 const realHostServiceClient = {
 	...(await import("renderer/lib/host-service-client")),
 };
 mock.module("renderer/lib/host-service-client", () => ({
 	...realHostServiceClient,
-	getHostServiceClient: () => ({}),
-	hostServiceQueryRetry: () => false,
-	hostServiceQueryRetryDelay: () => 0,
-	getHostServiceClientByUrl: () => makeClient(),
+	getHostServiceClient: whileFaking(
+		() => ({}),
+		realHostServiceClient.getHostServiceClient,
+	),
+	hostServiceQueryRetry: whileFaking(
+		() => false,
+		realHostServiceClient.hostServiceQueryRetry,
+	),
+	hostServiceQueryRetryDelay: whileFaking(
+		() => 0,
+		realHostServiceClient.hostServiceQueryRetryDelay,
+	),
+	getHostServiceClientByUrl: whileFaking(
+		() => makeClient(),
+		realHostServiceClient.getHostServiceClientByUrl,
+	),
 }));
 
 const {
