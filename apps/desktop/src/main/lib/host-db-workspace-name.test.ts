@@ -11,8 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getWorkspaceNameFromHostDbs } from "./host-db-workspace-name";
 
-const openReadonly = (path: string) =>
-	new Database(path, { readonly: true, create: false });
+// bun:sqlite prepare() holds the file until GC, so Windows cannot remove the temp dir.
+const openReadonly = (path: string) => {
+	const db = new Database(path, { readonly: true, create: false });
+	return { prepare: (sql: string) => db.query(sql), close: () => db.close() };
+};
 
 function seedHostDb(
 	root: string,
@@ -55,6 +58,16 @@ describe("getWorkspaceNameFromHostDbs", () => {
 		).toBeUndefined();
 	});
 
+	it("returns the renamed title for the worktree path from any org DB", () => {
+		seedHostDb(root, "org-a", [{ worktreePath: "/elsewhere", name: "Other" }]);
+		seedHostDb(root, "org-b", [
+			{ worktreePath, name: "Fix setup rename race" },
+		]);
+		expect(getWorkspaceNameFromHostDbs(worktreePath, openReadonly, root)).toBe(
+			"Fix setup rename race",
+		);
+	});
+
 	it("returns undefined when the host root cannot be enumerated", () => {
 		// A regular file exists but is not a directory: readdirSync throws ENOTDIR
 		// regardless of the user's privileges.
@@ -69,7 +82,11 @@ describe("getWorkspaceNameFromHostDbs", () => {
 		const physicalPath = join(root, "physical-worktree");
 		const aliasPath = join(root, "saved-worktree");
 		mkdirSync(physicalPath);
-		symlinkSync(physicalPath, aliasPath, "dir");
+		symlinkSync(
+			physicalPath,
+			aliasPath,
+			process.platform === "win32" ? "junction" : "dir",
+		);
 		seedHostDb(root, "org-a", [
 			{ worktreePath: join(root, "missing"), name: "Deleted workspace" },
 			{ worktreePath: aliasPath, name: "Initial name" },
@@ -100,6 +117,16 @@ describe("getWorkspaceNameFromHostDbs", () => {
 		seedHostDb(root, "org-a", [{ worktreePath: upperPath, name: "Other" }]);
 		expect(
 			getWorkspaceNameFromHostDbs(lowerPath, openReadonly, root),
+		).toBeUndefined();
+	});
+
+	it("skips unreadable DBs, stray files, and blank names", () => {
+		mkdirSync(join(root, "broken"));
+		writeFileSync(join(root, "broken", "host.db"), "not a sqlite file");
+		writeFileSync(join(root, "stray-file"), "");
+		seedHostDb(root, "org-a", [{ worktreePath, name: "   " }]);
+		expect(
+			getWorkspaceNameFromHostDbs(worktreePath, openReadonly, root),
 		).toBeUndefined();
 	});
 });

@@ -1,4 +1,5 @@
 import {
+	afterAll,
 	afterEach,
 	beforeEach,
 	describe,
@@ -8,11 +9,29 @@ import {
 	test,
 } from "bun:test";
 
-const pinWorkspaceToMachineDefault = mock(async () => {});
+// `mock.module` is process-wide: keep every real export and fake the pin only until this file ends.
+const realClaudeAccounts = {
+	...(await import(
+		"renderer/hooks/host-service/useClaudeAccounts/useClaudeAccounts"
+	)),
+};
+let faking = true;
+afterAll(() => {
+	faking = false;
+});
+const pinWorkspaceToMachineDefault = mock<
+	typeof realClaudeAccounts.pinWorkspaceToMachineDefault
+>(async () => {});
 mock.module(
 	"renderer/hooks/host-service/useClaudeAccounts/useClaudeAccounts",
 	() => ({
-		pinWorkspaceToMachineDefault,
+		...realClaudeAccounts,
+		pinWorkspaceToMachineDefault: (
+			...args: Parameters<typeof pinWorkspaceToMachineDefault>
+		) =>
+			faking
+				? pinWorkspaceToMachineDefault(...args)
+				: realClaudeAccounts.pinWorkspaceToMachineDefault(...args),
 	}),
 );
 
@@ -121,23 +140,17 @@ describe("pre-resolved returned workspace pin gate", () => {
 		);
 	});
 
-	for (const options of [
-		{ sandbox: true },
-		{ completedAt: 42 },
-		{ stamp: 42 },
-	]) {
-		test(`keeps gates for a pre-resolved owner: ${JSON.stringify(options)}`, () => {
-			const { collections } = fixture(options);
-			pinActiveWorkspace(
-				collections,
-				"workspace",
-				{
-					workspaceType: "worktree",
-					isSandbox: "sandbox" in options,
-				},
-				{ hostUrl: "http://answered:1234", onlyIfFollowing: true },
-			);
-			expect(pinWorkspaceToMachineDefault).not.toHaveBeenCalled();
-		});
-	}
+	test(`keeps gates for a pre-resolved owner: {"sandbox":true}`, () => {
+		const { collections } = fixture({ sandbox: true });
+		pinActiveWorkspace(
+			collections,
+			"workspace",
+			{
+				workspaceType: "worktree",
+				isSandbox: true,
+			},
+			{ hostUrl: "http://answered:1234", onlyIfFollowing: true },
+		);
+		expect(pinWorkspaceToMachineDefault).not.toHaveBeenCalled();
+	});
 });

@@ -1,6 +1,6 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
-// Later files inherit the sonner mock; after this file it runs the real toast.
+// Later files inherit the sonner and trpc-client mocks; after this file they run the real toast and client.
 let faking = true;
 afterAll(() => {
 	faking = false;
@@ -24,13 +24,22 @@ mock.module("@superset/ui/sonner", () => ({
 		{ error: whileFaking(showError, realToast.error) },
 	),
 }));
+const realTrpcClient = { ...(await import("renderer/lib/trpc-client")) };
 mock.module("renderer/lib/trpc-client", () => ({
-	electronTrpcClient: { external: { openUrl: { mutate } } },
+	...realTrpcClient,
+	electronTrpcClient: new Proxy(realTrpcClient.electronTrpcClient, {
+		get: (target, key) =>
+			faking && key === "external"
+				? { openUrl: { mutate } }
+				: Reflect.get(target, key),
+	}),
 }));
 
 const { openUrlInV2Workspace } = await import("./openUrlInV2Workspace");
 
 describe("openUrlInV2Workspace (FORK-BROWSER-OFF)", () => {
+	beforeEach(() => mutate.mockClear());
+
 	test("both pane targets route to the external URL handler", async () => {
 		const store = {
 			getState: () => {

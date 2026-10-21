@@ -741,11 +741,16 @@ describe("pathIsMissing", () => {
 	});
 
 	test("a symlink to a deleted target is missing", async () => {
-		const target = path.join(tmpDir, "target.ts");
-		const link = path.join(tmpDir, "link.ts");
-		await fs.writeFile(target, "");
-		await fs.symlink(target, link);
-		await fs.rm(target);
+		const target = path.join(tmpDir, "target");
+		const link = path.join(tmpDir, "link");
+		await fs.mkdir(target);
+		await fs.symlink(
+			target,
+			link,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		expect(await pathIsMissing(link)).toBe(false);
+		await fs.rm(target, { recursive: true });
 		// The editor cannot open it either — `open` reports it as nonexistent.
 		expect(await pathIsMissing(link)).toBe(true);
 	});
