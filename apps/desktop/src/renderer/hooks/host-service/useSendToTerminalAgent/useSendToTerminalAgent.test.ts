@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-const RENDERER_ROOT = import.meta.dir.split("/").slice(0, -3).join("/");
+const RENDERER_ROOT = import.meta.dir.split(/[\\/]/).slice(0, -3).join("/");
 
 describe("text never reaches a terminal through the raw keystroke channel", () => {
 	test("the shared agent writer sends through terminal.send", async () => {

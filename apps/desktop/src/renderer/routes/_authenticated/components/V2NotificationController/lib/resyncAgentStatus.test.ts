@@ -61,7 +61,6 @@ const realHostServiceClient = {
 mock.module("renderer/lib/host-service-client", () => ({
 	...realHostServiceClient,
 	getHostServiceClient: () => ({}),
-	isHostServiceConnectionError: () => false,
 	hostServiceQueryRetry: () => false,
 	hostServiceQueryRetryDelay: () => 0,
 	getHostServiceClientByUrl: (hostUrl: string) => ({

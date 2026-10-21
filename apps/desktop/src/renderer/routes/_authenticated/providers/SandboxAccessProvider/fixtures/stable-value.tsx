@@ -98,6 +98,7 @@ describe("SandboxAccessProvider with the cloud flag off", () => {
 			targets: [],
 			isReady: true,
 			agentCredentialsChangedWorkspaceId: null,
+			usageRefusal: null,
 		});
 	});
 });

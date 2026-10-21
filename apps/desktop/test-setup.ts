@@ -75,8 +75,10 @@ for (const [name, value] of Object.entries(nativeRuntimeGlobals)) {
  * once at module load and writes on every `setState`, so a missing or
  * non-functional one throws on the first mutation of any persisted store.
  */
-function createMockStorage(): Storage {
-	const backing = new Map<string, string>();
+export function createMockStorage(
+	entries: Record<string, string> = {},
+): Storage {
+	const backing = new Map(Object.entries(entries));
 	return {
 		get length() {
 			return backing.size;
@@ -418,3 +420,11 @@ mock.module("@lingui/react", () => ({
 	...realLinguiReact,
 	useLingui: () => ({ i18n: testI18n, _: testI18n._ }),
 }));
+
+// happy-dom leaves a cancelled animation's `finished` rejection unhandled. The
+// Web Animations spec marks it handled, so browsers never report it.
+const cancelAnimation = Animation.prototype.cancel;
+Animation.prototype.cancel = function (this: Animation) {
+	this.finished.catch(() => {});
+	cancelAnimation.call(this);
+};

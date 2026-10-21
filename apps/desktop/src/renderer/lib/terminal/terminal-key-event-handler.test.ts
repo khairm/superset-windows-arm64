@@ -53,6 +53,7 @@ function fixture(platform = "Win32") {
 		paste,
 		input,
 		hasSelection: () => false,
+		modes: { mouseTrackingMode: "none" },
 	} as unknown as XTerm;
 	return {
 		paste,

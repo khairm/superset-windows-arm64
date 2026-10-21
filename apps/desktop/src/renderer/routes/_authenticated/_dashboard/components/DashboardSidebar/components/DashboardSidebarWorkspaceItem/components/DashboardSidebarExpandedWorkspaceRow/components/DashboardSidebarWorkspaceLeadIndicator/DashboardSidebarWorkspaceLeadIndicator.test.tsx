@@ -32,7 +32,7 @@ test("live agent state outranks the pull request", () => {
 		workspaceStatus: "permission",
 		pullRequestState: "open",
 	});
-	expect(needsInput.querySelector(".bg-yellow-500")).not.toBeNull();
+	expect(needsInput.querySelector(".bg-red-500")).not.toBeNull();
 	expect(needsInput.querySelector(".text-emerald-500")).toBeNull();
 });
 

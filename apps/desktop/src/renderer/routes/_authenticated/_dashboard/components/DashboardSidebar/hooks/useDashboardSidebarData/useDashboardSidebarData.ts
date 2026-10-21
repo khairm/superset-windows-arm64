@@ -692,7 +692,7 @@ export function useDashboardSidebarData({
 						taskId: source.taskId,
 						createdAt: source.createdAt,
 						updatedAt: source.updatedAt,
-						// (ACTIVITY-SPLIT) `lastActivityAt` is deliberately NOT carried
+						// (ACTIVITY-SPLIT) The activity stamp is deliberately NOT carried
 						// here: activity is read from useHostWorkspaceActivityStore, and a
 						// per-tick field on this row re-renders every sidebar consumer.
 						tabOrder: localState.tabOrder,

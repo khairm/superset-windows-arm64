@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import {
 	findTranscriberBinary,
 	parseTranscriberOutput,
@@ -16,7 +17,11 @@ describe("findTranscriberBinary", () => {
 				appPath: "/unused",
 				exists: () => true,
 			}),
-		).toBe("/App/Contents/Resources/resources/bin/superset-transcriber");
+		).toBe(
+			path.normalize(
+				"/App/Contents/Resources/resources/bin/superset-transcriber",
+			),
+		);
 	});
 
 	test("is absent off macOS and when the build skipped it", async () => {

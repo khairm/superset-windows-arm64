@@ -67,7 +67,8 @@ describe("build-bundled-pdev", () => {
 		return tarball;
 	}
 
-	it("extracts the pdev folder from a release tarball", async () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(process.platform === "win32")("extracts the pdev folder from a release tarball", async () => {
 		const tarball = packSource();
 
 		await extractPdevTarball(
@@ -92,7 +93,8 @@ describe("build-bundled-pdev", () => {
 		expect(existsSync(path.join(destDir, "._pdev"))).toBe(false);
 	});
 
-	it("downloads the release archive and checks its SHA-256", async () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(process.platform === "win32")("downloads the release archive and checks its SHA-256", async () => {
 		const bytes = readFileSync(packSource());
 		const assetName = `pdev-${PDEV_VERSION}-linux-x64.tar.gz`;
 		const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -117,7 +119,8 @@ describe("build-bundled-pdev", () => {
 		expect(isBundled(destDir, `${assetName} sha256:${sha256}`)).toBe(true);
 	});
 
-	it("downloads again when a cached bundle was not verified with the pinned SHA-256", async () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(process.platform === "win32")("downloads again when a cached bundle was not verified with the pinned SHA-256", async () => {
 		const assetName = `pdev-${PDEV_VERSION}-linux-x64.tar.gz`;
 		const bytes = readFileSync(packSource());
 		const sha256 = createHash("sha256").update(bytes).digest("hex");

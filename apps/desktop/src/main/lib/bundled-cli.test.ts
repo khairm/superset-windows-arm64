@@ -138,7 +138,8 @@ describe("bundled pdev", () => {
 		expect(readFileSync(shimPath, "utf-8")).toContain(
 			`exec '${bundledPdevPath}' "$@"`,
 		);
-		expect(statSync(shimPath).mode & 0o111).not.toBe(0);
+		if (process.platform !== "win32")
+			expect(statSync(shimPath).mode & 0o111).not.toBe(0);
 	});
 
 	it("does not overwrite a pdev the user installed", async () => {

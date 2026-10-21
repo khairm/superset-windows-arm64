@@ -8,13 +8,15 @@ import { join, relative, sep } from "node:path";
  * (ACTIVITY-SPLIT) The host's activity stamp moves on every agent tick. Carried
  * on the shared workspace rows, it re-rendered every `useHostWorkspaces()`
  * consumer and every project query hook each time. It now lives in a separate
- * store, and only the ingest file below may name the field. A new reader of
+ * store, and only the two files below may name the field. A new reader of
  * `.lastActivityAt` on `HostWorkspaceItem` or `DashboardSidebarWorkspace`
  * type-checks as a missing property, the build does not gate that error, and
  * "Last active" silently falls back to `updatedAt`. This test is what catches it.
  */
 const ALLOWED_FILES = new Set([
 	"hooks/host-workspaces/useHostWorkspaces/useHostWorkspaces.utils.ts",
+	// Allowed only while the inline cloud sidebar is dead (PostHog severed). Remove it when that comes back.
+	"routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/buildCloudSidebarWorkspaces.ts",
 ]);
 
 const RENDERER_ROOT = join(import.meta.dir, "..", "..", "..");
@@ -35,7 +37,7 @@ function* walk(dir: string): Generator<string> {
 }
 
 describe("workspace activity readers", () => {
-	test("only the ingest file names the activity stamp", () => {
+	test("only the ingest file and the cloud sidebar builder name the activity stamp", () => {
 		const offenders: string[] = [];
 		for (const file of walk(RENDERER_ROOT)) {
 			const path = relative(RENDERER_ROOT, file).split(sep).join("/");
