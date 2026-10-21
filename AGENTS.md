@@ -96,6 +96,10 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   GitHub freezes it once a run starts anyway, which is why all step logic lives
   in `.github/actions/` + `scripts/` (repairable mid-run).
   Rate-limited/unparsable AI output aborts rather than ships.
+- **Main only**: all work is committed straight to `main`. Never create a
+  branch in this repo or any other Superset repo (the phone/watch companion
+  app, libsql-windows-arm64, tokenizers-windows-arm64). CI's nightly candidate
+  and repair branches are not affected.
 
 ## Custom features / overrides
 
