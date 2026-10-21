@@ -25,7 +25,6 @@ import {
 	useState,
 } from "react";
 import { ActionSheetIOS, Alert, Pressable, View } from "react-native";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { Conversation } from "@/components/ai-elements/conversation";
 import { Text } from "@/components/ui/text";
 import {
@@ -48,6 +47,7 @@ import { ChatRowView } from "../ChatRowView";
 import { DockChip } from "./components/DockChip";
 import { ScrollToBottom } from "./components/ScrollToBottom";
 import { StickToBottom } from "./components/StickToBottom";
+import { useTapHandlers } from "./hooks/useTapHandlers";
 
 const CONFIG_OPTIONS_GRACE_MS = 1000;
 const BANNER_SPACE = 36;
@@ -190,19 +190,6 @@ export const ChatSessionView = forwardRef<
 			.catch(failAlert(t({ message: "Could not stop the agent" })));
 	}, [chat, turnId, failAlert, t]);
 
-	const stopTask = useCallback(
-		(taskId: string) => {
-			const title = t({ message: "Could not stop the task" });
-			void chat
-				.stopBackgroundTask(taskId)
-				.then((stopped) => {
-					if (!stopped) Alert.alert(title);
-				})
-				.catch(failAlert(title));
-		},
-		[chat, failAlert, t],
-	);
-
 	const branchFrom = useCallback(
 		(itemId: string) => {
 			ActionSheetIOS.showActionSheetWithOptions(
@@ -283,10 +270,8 @@ export const ChatSessionView = forwardRef<
 		[chat, failAlert, t],
 	);
 
-	const backgroundTasks = session?.backgroundTasks;
 	const actions = {
 		selectMode,
-		stopTask,
 		stop,
 		steerQueued,
 		removeQueued,
@@ -298,13 +283,11 @@ export const ChatSessionView = forwardRef<
 		useActiveChatStore.getState().publish(sessionId, {
 			modes,
 			currentModeId: pendingModeId ?? confirmedModeId,
-			backgroundTasks: backgroundTasks ?? [],
 			running: turnId !== null,
 			queued,
 			queuePaused,
 			queueControls,
 			selectMode: (modeId) => actionsRef.current.selectMode(modeId),
-			stopTask: (taskId) => actionsRef.current.stopTask(taskId),
 			stop: () => actionsRef.current.stop(),
 			steerQueued: (itemId) => actionsRef.current.steerQueued(itemId),
 			removeQueued: (itemId) => actionsRef.current.removeQueued(itemId),
@@ -315,7 +298,6 @@ export const ChatSessionView = forwardRef<
 		modes,
 		pendingModeId,
 		confirmedModeId,
-		backgroundTasks,
 		turnId,
 		queued,
 		queuePaused,
@@ -377,6 +359,7 @@ export const ChatSessionView = forwardRef<
 				<View className={endsGroup ? "pb-5" : "pb-2.5"}>
 					<ChatRowView
 						harness={harness}
+						hostUrl={hostUrl}
 						onDiscardPrompt={chat.discardPrompt}
 						onLongPressMessage={branchFrom}
 						onOpenActivity={openActivity}
@@ -395,21 +378,19 @@ export const ChatSessionView = forwardRef<
 				</View>
 			);
 		},
-		[harness, chat, onRespond, branchFrom, positions, replyEnds, openActivity],
+		[
+			harness,
+			hostUrl,
+			chat,
+			onRespond,
+			branchFrom,
+			positions,
+			replyEnds,
+			openActivity,
+		],
 	);
 
-	const onTapRef = useRef(onTap);
-	onTapRef.current = onTap;
-	const tap = useMemo(
-		() =>
-			Gesture.Tap()
-				.runOnJS(true)
-				.cancelsTouchesInView(false)
-				.onEnd((_event, success) => {
-					if (success) onTapRef.current?.();
-				}),
-		[],
-	);
+	const tapHandlers = useTapHandlers(onTap);
 
 	const banner =
 		session?.status === "dead"
@@ -429,36 +410,35 @@ export const ChatSessionView = forwardRef<
 				</View>
 			) : null}
 			<ItemBodiesProvider requestItemBodies={chat.requestItemBodies}>
-				<GestureDetector gesture={tap}>
-					<View className="flex-1">
-						<Conversation
-							contentContainerClassName="px-4"
-							contentContainerStyle={{
-								paddingTop: headerHeight + 16 + (banner ? BANNER_SPACE : 0),
-							}}
-							data={rows}
-							keyExtractor={(row) => row.key}
-							ListHeaderComponent={
-								chat.hasOlder ? (
-									<Pressable
-										accessibilityRole="button"
-										className="bg-secondary mb-4 self-center rounded-full px-3.5 py-1.5 active:opacity-70"
-										onPress={() => void chat.loadOlder()}
-									>
-										<Text className="text-foreground text-xs font-medium">
-											<Trans>Load earlier messages</Trans>
-										</Text>
-									</Pressable>
-								) : null
-							}
-							ListFooterComponent={<View style={{ height: dockHeight + 8 }} />}
-							renderItem={renderRow}
-						>
-							<StickToBottom inset={dockHeight} />
-							<ScrollToBottom />
-						</Conversation>
-					</View>
-				</GestureDetector>
+				<View className="flex-1" {...tapHandlers}>
+					<Conversation
+						contentContainerClassName="px-4"
+						contentContainerStyle={{
+							paddingTop: headerHeight + 16 + (banner ? BANNER_SPACE : 0),
+						}}
+						data={rows}
+						keyExtractor={(row) => row.key}
+						ListHeaderComponent={
+							chat.hasOlder ? (
+								<Pressable
+									accessibilityRole="button"
+									className="bg-secondary mb-4 self-center rounded-full px-3.5 py-1.5 active:opacity-70"
+									onPress={() => void chat.loadOlder()}
+								>
+									<Text className="text-foreground text-xs font-medium">
+										<Trans>Load earlier messages</Trans>
+									</Text>
+								</Pressable>
+							) : null
+						}
+						ListFooterComponent={<View style={{ height: dockHeight + 8 }} />}
+						keyboardDismissMode="interactive"
+						renderItem={renderRow}
+					>
+						<StickToBottom inset={dockHeight} />
+						<ScrollToBottom />
+					</Conversation>
+				</View>
 			</ItemBodiesProvider>
 			<View
 				className="absolute inset-x-0 bottom-0 gap-2 px-3 pb-2"

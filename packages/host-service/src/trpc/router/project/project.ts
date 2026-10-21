@@ -36,6 +36,7 @@ import {
 } from "../../../workspaces/local-workspace-store";
 import { machineOnlyProcedure, protectedProcedure, router } from "../../index";
 import { removeMultiRepoProjectArtifacts } from "../workspace-cleanup/multi-repo-cleanup";
+import { projectDirExists } from "../workspace-creation/shared/local-project";
 import {
 	normalizeSparseCheckoutPaths,
 	parseSparseCheckoutPaths,
@@ -240,7 +241,7 @@ export const projectRouter = router({
 
 	get: protectedProcedure
 		.input(z.object({ projectId: z.string().uuid() }))
-		.query(({ ctx, input }) => {
+		.query(async ({ ctx, input }) => {
 			const row = ctx.db
 				.select()
 				.from(projects)
@@ -254,6 +255,7 @@ export const projectRouter = router({
 				// Same fallback rule as project.list / toProjectSnapshot.
 				name: row.name || basename(row.repoPath),
 				repoPath: row.repoPath,
+				repoPathExists: await projectDirExists(row.repoPath),
 				repoOwner: row.repoOwner,
 				repoName: row.repoName,
 				repoUrl: row.repoUrl,

@@ -3,7 +3,7 @@ import type { MouseEventHandler, SyntheticEvent } from "react";
 import { useDashboardSidebarWorkspacePorts } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/DashboardSidebarPortsProvider";
 import { useInlineWorkspacePortsEnabled } from "renderer/stores/inline-workspace-ports";
 import type { DashboardSidebarWorkspaceIndentation } from "../../../../../../types";
-import { DashboardSidebarPortsChip } from "./components/DashboardSidebarPortsChip";
+import { DashboardSidebarPortsChip } from "../DashboardSidebarPortsChip";
 
 interface DashboardSidebarWorkspaceChipsProps {
 	workspaceId: string;

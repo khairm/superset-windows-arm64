@@ -35,7 +35,7 @@ import type {
 } from "../../../../types";
 import { ClaudeAccountIndicator } from "../ClaudeAccountIndicator";
 import { DashboardSidebarWorkspaceDetails } from "../DashboardSidebarWorkspaceDetails/DashboardSidebarWorkspaceDetails";
-import { DashboardSidebarWorkspaceDiffStats } from "../DashboardSidebarWorkspaceDiffStats";
+import { DashboardSidebarWorkspaceDiffStats } from "../DashboardSidebarLegacyExpandedWorkspaceRow/components/DashboardSidebarWorkspaceDiffStats";
 import { DashboardSidebarWorkspaceIcon } from "../DashboardSidebarWorkspaceIcon";
 import { DashboardSidebarWorkspaceQueuedBadge } from "../DashboardSidebarWorkspaceQueuedBadge";
 import { DashboardSidebarWorkspaceChips } from "./components/DashboardSidebarWorkspaceChips";

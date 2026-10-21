@@ -18,6 +18,7 @@ import {
 	SidebarCardSlot,
 	useHiringCard,
 	usePaymentFailedCard,
+	useReleaseNotesCard,
 	useStarNagCard,
 } from "renderer/components/SidebarCardSlot";
 import { UpdatesPill } from "renderer/components/UpdatesPill";
@@ -35,6 +36,7 @@ import {
 import { isInCloudSidebar } from "renderer/routes/_authenticated/_dashboard/utils/buildCloudSidebar";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+import { useReleaseNotesCardStore } from "renderer/stores/release-notes-card";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
 import {
@@ -65,6 +67,7 @@ import {
 import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
 import { useMigrateLegacySidebarFolders } from "./hooks/useMigrateLegacySidebarFolders";
+import { useNewDashboardSidebarEnabled } from "./hooks/useNewDashboardSidebarEnabled";
 import { useDashboardSidebarDnd } from "./hooks/useSidebarDnd";
 import { useSortedSidebarProjects } from "./hooks/useSortedSidebarProjects";
 import { ClaudeAccountSidebarProvider } from "./providers/ClaudeAccountSidebarProvider";
@@ -81,6 +84,10 @@ import type {
 	DashboardSidebarWorkspace,
 } from "./types";
 import { filterDashboardSidebarProjects } from "./utils/filterDashboardSidebarProjects";
+import {
+	filterDashboardSidebarProjectsByHost,
+	matchesHostFilter,
+} from "./utils/filterDashboardSidebarProjectsByHost";
 import { getProjectChildrenWorkspaces } from "./utils/projectChildren";
 
 interface DashboardSidebarProps {
@@ -198,6 +205,7 @@ const SortableProjectWrapper = memo(function SortableProjectWrapper({
 
 function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 	const { t } = useLingui();
+	const inlineCloudWorkspaces = useNewDashboardSidebarEnabled();
 	const {
 		groups,
 		hiddenProjects,
@@ -210,7 +218,7 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 		githubStatus,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
-	} = useDashboardSidebarData();
+	} = useDashboardSidebarData({ inlineCloudWorkspaces });
 	const {
 		deleteSection,
 		reorderProjects,
@@ -233,8 +241,19 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 	const workspacesListCollapsed = useSidebarSectionsCollapseStore(
 		(s) => s.collapsed.workspaces,
 	);
-	const { preferences, setSidebarProjectSortMode } = useV2UserPreferences();
+	const {
+		preferences,
+		setSidebarProjectSortMode,
+		setSidebarProjectHostFilter,
+	} = useV2UserPreferences();
 	const sortMode = preferences.sidebarProjectSortMode;
+	// Only meaningful once cloud rows sit inside projects; with them in their
+	// own section a stored "cloud" filter would empty every project. The icon
+	// rail has no control for it either, so it rests there too.
+	const hostFilter =
+		inlineCloudWorkspaces && !isCollapsed
+			? preferences.sidebarProjectHostFilter
+			: "all";
 	const [projectFilterQuery, setProjectFilterQuery] = useState("");
 	// The icon rail hides the Projects header (and its filter input); a
 	// filter left active there would invisibly hide projects.
@@ -327,16 +346,39 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 	// restores the drag order exactly.
 	// (ACTIVITY-SPLIT) An activity tick that keeps the order renders nothing.
 	const sortedGroups = useSortedSidebarProjects(orderedGroups, sortMode);
+	const hostFilteredGroups = useMemo(
+		() => filterDashboardSidebarProjectsByHost(sortedGroups, hostFilter),
+		[sortedGroups, hostFilter],
+	);
+	const displayedPinnedWorkspaces = useMemo(
+		() =>
+			hostFilter === "all"
+				? pinnedWorkspaces
+				: pinnedWorkspaces.filter((workspace) =>
+						matchesHostFilter(workspace, hostFilter),
+					),
+		[pinnedWorkspaces, hostFilter],
+	);
+	const displayedSessionWorkspaces = useMemo(
+		() =>
+			hostFilter === "all"
+				? sessionWorkspaces
+				: sessionWorkspaces.filter((workspace) =>
+						matchesHostFilter(workspace, hostFilter),
+					),
+		[sessionWorkspaces, hostFilter],
+	);
 	const displayedGroups = useMemo(
-		() => filterDashboardSidebarProjects(sortedGroups, projectFilterQuery),
-		[sortedGroups, projectFilterQuery],
+		() =>
+			filterDashboardSidebarProjects(hostFilteredGroups, projectFilterQuery),
+		[hostFilteredGroups, projectFilterQuery],
 	);
 	const renderedIds = useMemo(
 		() => displayedGroups.map((project) => project.id),
 		[displayedGroups],
 	);
 	const trimmedFilterQuery = projectFilterQuery.trim();
-	const isFilterActive = trimmedFilterQuery !== "";
+	const isFilterActive = trimmedFilterQuery !== "" || hostFilter !== "all";
 	// The sort modes only reorder rows inside a project, so the project list
 	// is still the manual order and stays draggable; only a filter, which
 	// hides projects outright, makes a project drop unsafe to commit.
@@ -345,7 +387,10 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 	useBlockedDragNotice({
 		reason: isFilterActive ? "filter" : sortMode !== "manual" ? "sort" : null,
 		onSwitchToManualOrder: () => setSidebarProjectSortMode("manual"),
-		onClearFilter: () => setProjectFilterQuery(""),
+		onClearFilter: () => {
+			setProjectFilterQuery("");
+			setSidebarProjectHostFilter("all");
+		},
 	});
 
 	// (HOVER-FREEZE) Don't reshuffle rows while the pointer is over the project
@@ -632,6 +677,10 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 		projectName: activeV2Project?.name ?? null,
 	});
 	const gettingStartedCard = useGettingStartedCard();
+	const releaseNotesCard = useReleaseNotesCard();
+	const isPreviewingReleaseNotes = useReleaseNotesCardStore(
+		(s) => s.isPreviewing,
+	);
 	const starNagCard = useStarNagCard({ isCollapsed });
 	const hiringCard = useHiringCard({ surface: "v2" });
 
@@ -741,17 +790,19 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 										>
 											{(isCollapsed || !workspacesListCollapsed) && (
 												<DashboardSidebarPinnedSection
-													pinnedWorkspaces={pinnedWorkspaces}
+													pinnedWorkspaces={displayedPinnedWorkspaces}
 													isCollapsed={isCollapsed}
 													onWorkspaceHover={refreshWorkspacePullRequest}
 												/>
 											)}
-											<DashboardSidebarCloudSection
-												isCollapsed={isCollapsed}
-												onWorkspaceHover={refreshWorkspacePullRequest}
-											/>
+											{!inlineCloudWorkspaces && (
+												<DashboardSidebarCloudSection
+													isCollapsed={isCollapsed}
+													onWorkspaceHover={refreshWorkspacePullRequest}
+												/>
+											)}
 											<DashboardSidebarSessionsSection
-												sessionWorkspaces={sessionWorkspaces}
+												sessionWorkspaces={displayedSessionWorkspaces}
 												snoozedSessionWorkspaces={snoozedSessionWorkspaces}
 												archivedSessionWorkspaces={archivedSessionWorkspaces}
 												deletedSessionWorkspaces={deletedSessionWorkspaces}
@@ -768,6 +819,10 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 														<DashboardSidebarWorkspacesHeader
 															sortMode={sortMode}
 															onSortModeChange={setSidebarProjectSortMode}
+															hostFilter={
+																inlineCloudWorkspaces ? hostFilter : null
+															}
+															onHostFilterChange={setSidebarProjectHostFilter}
 															filterQuery={projectFilterQuery}
 															onFilterQueryChange={setProjectFilterQuery}
 														/>
@@ -778,7 +833,10 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 											{!FORK_PULL_REQUESTS_DISABLED &&
 												!isCollapsed &&
 												!workspacesListCollapsed && (
-													<DashboardSidebarGithubNotice status={githubStatus} />
+													<DashboardSidebarGithubNotice
+														status={githubStatus}
+														isCollapsed={isCollapsed}
+													/>
 												)}
 											{(isCollapsed || !workspacesListCollapsed) && (
 												<SortableContext
@@ -808,18 +866,24 @@ function DashboardSidebarInner({ isCollapsed = false }: DashboardSidebarProps) {
 												isFilterActive &&
 												displayGroups.length === 0 && (
 													<div className="select-text cursor-text px-4 py-2 text-xs text-muted-foreground">
-														{t({
-															message: `No projects match "${trimmedFilterQuery}"`,
-														})}
+														{trimmedFilterQuery !== ""
+															? t({
+																	message: `No projects match "${trimmedFilterQuery}"`,
+																})
+															: hostFilter === "cloud"
+																? t({ message: "No cloud workspaces" })
+																: t({ message: "No local workspaces" })}
 													</div>
 												)}
 										</OverflowFadeContainer>
 										<SidebarCardSlot
 											isCollapsed={isCollapsed}
 											entries={[
+												isPreviewingReleaseNotes ? releaseNotesCard : null,
 												paymentFailedCard,
 												setupScriptCard,
 												gettingStartedCard,
+												releaseNotesCard,
 												starNagCard,
 												hiringCard,
 											]}

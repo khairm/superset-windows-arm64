@@ -12,6 +12,12 @@ import { HotkeyMenuShortcut } from "renderer/components/HotkeyMenuShortcut";
 // (CLOUD-SEVERANCE-P2)
 interface AddTabMenuProps {
 	onAddTerminal: () => void;
+	/**
+	 * Defers an action until the menu has closed. (FORK-BROWSER-OFF) left this
+	 * menu with one fork-only mount point that renders it without the
+	 * parameter, so an absent value runs the action straight away.
+	 */
+	runAfterClose?: ((action: () => void) => void) | undefined;
 	onAddChatV3?: (() => void) | undefined;
 	onAddChanges: () => void;
 	onAddDesktop?: (() => void) | undefined;
@@ -21,6 +27,7 @@ interface AddTabMenuProps {
 
 export function AddTabMenu({
 	onAddTerminal,
+	runAfterClose = (action) => action(),
 	onAddChatV3,
 	onAddChanges,
 	onAddDesktop,
@@ -29,7 +36,10 @@ export function AddTabMenu({
 }: AddTabMenuProps) {
 	return (
 		<>
-			<DropdownMenuItem className="gap-2" onClick={onAddTerminal}>
+			<DropdownMenuItem
+				className="gap-2"
+				onClick={() => runAfterClose(onAddTerminal)}
+			>
 				<BsTerminalPlus className="size-4" />
 				<span>
 					<Trans>Terminal</Trans>

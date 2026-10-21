@@ -66,6 +66,10 @@ export interface DashboardSidebarWorkspace {
 	/** Set briefly on an active row that just auto-returned from snooze, to
 	 * drive a subtle one-shot "just returned" highlight. */
 	justReturned?: boolean;
+	/** Whether the signed-in user created it; null when the host doesn't say. */
+	isMine: boolean | null;
+	/** A cloud sandbox still being made, or one that failed; null otherwise. */
+	sandboxStatus: "provisioning" | "failed" | null;
 }
 
 /**
@@ -152,6 +156,11 @@ export interface DashboardSidebarProject {
 	// (RECYCLE-BIN) reveal + collapse for the per-project Recycle Bin section.
 	showDeleted: boolean;
 	deletedCollapsed: boolean;
+	/**
+	 * A `cloud-repo` project stands in for a GitHub repo that no host has a
+	 * checkout of; it exists only to hold that repo's cloud workspaces.
+	 */
+	kind?: "cloud-repo";
 }
 
 export type DashboardSidebarGithubHoldReason =
@@ -167,4 +176,13 @@ export interface DashboardSidebarGithubStatus {
 	reason: DashboardSidebarGithubHoldReason;
 	since: number;
 	until: number;
+	/** What the failing call reported. Absent from hosts older than the field. */
+	detail?: string;
+}
+
+export interface DashboardSidebarGithubHold
+	extends DashboardSidebarGithubStatus {
+	machineId: string;
+	hostName: string | null;
+	isLocalHost: boolean;
 }

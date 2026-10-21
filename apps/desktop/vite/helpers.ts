@@ -122,6 +122,8 @@ export function linguiMacroPlugin(): Plugin {
 function connectSrcOrigins(): string {
 	const origins = [
 		process.env.NEXT_PUBLIC_API_URL || "https://api.cloud-severed.invalid",
+		process.env.NEXT_PUBLIC_MARKETING_URL ||
+			"https://marketing.cloud-severed.invalid",
 		process.env.RELAY_URL || "https://relay.cloud-severed.invalid",
 		process.env.REALTIME_URL || "https://realtime.cloud-severed.invalid",
 		process.env.SANDBOX_GATE_ORIGIN || "https://sandbox.cloud-severed.invalid",

@@ -9,6 +9,7 @@ import type { inferRouterOutputs } from "@trpc/server";
 import { useState } from "react";
 import { getTerminalAgentBindingsQueryKey } from "renderer/hooks/host-service/useTerminalAgentBindings";
 import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
+import { useActiveOrganizationId } from "renderer/hooks/useActiveOrganizationId";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
 import { useActiveRoute } from "renderer/lib/active-route";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -18,6 +19,7 @@ import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated
 import { DASHBOARD_SIDEBAR_PULL_REQUEST_QUERY_KEY_PREFIX } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/derivePullRequestQueryTargets";
 import { useSidebarWorkspaceStatus } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/DashboardSidebarWorkspaceStatusProvider";
 import { useCompleteWorkspaceCard } from "renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard";
+import { useCloudSidebarStore } from "renderer/routes/_authenticated/_dashboard/stores/cloudSidebarStore";
 import {
 	markTerminalSeenAndReportRead,
 	markTerminalSeenAndRetract,
@@ -199,6 +201,8 @@ interface UseDashboardSidebarWorkspaceItemActionsOptions {
 	isSessionWorkspace?: boolean;
 	/** (MASTER-ARCHIVE-ONLY) A master row never enters the Recycle Bin. */
 	isMainWorkspace?: boolean;
+	/** Listed from the cloud, with no placement row to hide. */
+	isCloudWorkspace?: boolean;
 	workspaceName: string;
 	branch: string;
 	isPinned?: boolean;
@@ -209,11 +213,14 @@ export function useDashboardSidebarWorkspaceItemActions({
 	projectId,
 	isSessionWorkspace = false,
 	isMainWorkspace = false,
+	isCloudWorkspace = false,
 	workspaceName,
 	branch,
 	isPinned = false,
 }: UseDashboardSidebarWorkspaceItemActionsOptions) {
 	const { t } = useLingui();
+	const organizationId = useActiveOrganizationId();
+	const setCloudInSidebar = useCloudSidebarStore((s) => s.setInSidebar);
 	const navigate = useNavigate();
 	const router = useRouter();
 	const hostService = useLocalHostService();
@@ -326,7 +333,9 @@ export function useDashboardSidebarWorkspaceItemActions({
 		const trimmed = renameValue.trim();
 		if (!trimmed || trimmed === workspaceName) return;
 		setPendingName(trimmed);
-		workspaceActions.renameWorkspace(workspaceId, trimmed);
+		workspaceActions.renameWorkspace(workspaceId, trimmed, {
+			cloud: isCloudWorkspace,
+		});
 	};
 
 	// (RECYCLE-BIN) In-bin "Delete permanently" — the only path into upstream's
@@ -349,6 +358,10 @@ export function useDashboardSidebarWorkspaceItemActions({
 	};
 
 	const handleRemoveFromSidebar = () => {
+		if (isCloudWorkspace) {
+			if (organizationId) setCloudInSidebar(organizationId, workspaceId, false);
+			return;
+		}
 		useRemoveFromSidebarIntent.getState().request({
 			workspaceId,
 			workspaceName,

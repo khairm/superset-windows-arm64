@@ -1,5 +1,6 @@
 import { useLingui } from "@lingui/react/macro";
 import type { RendererContext } from "@superset/panes";
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
 import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
 import { workspaceTrpc } from "@superset/workspace-client";
@@ -53,6 +54,7 @@ import {
 	runFolderLinkAction,
 	runUrlLinkAction,
 	type TerminalLinkActionDeps,
+	terminalPullRequestLinkAction,
 } from "../../utils/runTerminalLinkAction";
 import {
 	PasteUploadLimitError,
@@ -399,7 +401,14 @@ export function TerminalPane({
 					);
 				},
 				onUrlClick: (event, url) => {
-					const action = getUrlAction(event, url);
+					// (FORK-PRS-OFF) Upstream claims a plain click on a PR URL for
+					// its pull-request pane, which is inert here; let it fall
+					// through to the click policy so plain click still copies.
+					const action =
+						(FORK_PULL_REQUESTS_DISABLED
+							? null
+							: terminalPullRequestLinkAction(event, url)) ??
+						getUrlAction(event, url);
 					if (action === null) {
 						copyOnPlainClick(event, url);
 						return;
@@ -749,7 +758,13 @@ function resolveHoverLabel(
 		shiftKey: hovered.shift,
 	};
 	if (hovered.info.kind === "url") {
-		const action = getUrlAction(event, hovered.info.url);
+		// (FORK-PRS-OFF) Mirrors onUrlClick: never advertise the pull-request
+		// pane action while pull requests are off.
+		const action =
+			(FORK_PULL_REQUESTS_DISABLED
+				? null
+				: terminalPullRequestLinkAction(event, hovered.info.url)) ??
+			getUrlAction(event, hovered.info.url);
 		return action ? actionLabel(action, "url") : null;
 	}
 	if (hovered.info.isDirectory) {

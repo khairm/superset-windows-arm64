@@ -44,8 +44,8 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 		SETTING_ITEM_ID.BEHAVIOR_RESOURCE_MONITOR,
 		visibleItems,
 	);
-	const showOpenLinksInApp = isItemVisible(
-		SETTING_ITEM_ID.BEHAVIOR_OPEN_LINKS_IN_APP,
+	const showDictation = isItemVisible(
+		SETTING_ITEM_ID.BEHAVIOR_DICTATION,
 		visibleItems,
 	);
 	const showRecycleBinRetention = isItemVisible(
@@ -67,6 +67,7 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 
 	const utils = electronTrpc.useUtils();
 	const changesOpenTarget = useSettings((s) => s.changesOpenTarget);
+	const dictationEnabled = useSettings((s) => s.dictationEnabled);
 	const updateSetting = useSettings((s) => s.update);
 
 	const { data: confirmOnQuit, isLoading: isConfirmLoading } =
@@ -134,27 +135,6 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 			utils.autoResume.getEnabled.invalidate();
 		},
 	});
-
-	const { data: openLinksInApp, isLoading: isOpenLinksInAppLoading } =
-		electronTrpc.settings.getOpenLinksInApp.useQuery();
-	const setOpenLinksInApp = electronTrpc.settings.setOpenLinksInApp.useMutation(
-		{
-			onMutate: async ({ enabled }) => {
-				await utils.settings.getOpenLinksInApp.cancel();
-				const previous = utils.settings.getOpenLinksInApp.getData();
-				utils.settings.getOpenLinksInApp.setData(undefined, enabled);
-				return { previous };
-			},
-			onError: (_err, _vars, context) => {
-				if (context?.previous !== undefined) {
-					utils.settings.getOpenLinksInApp.setData(undefined, context.previous);
-				}
-			},
-			onSettled: () => {
-				utils.settings.getOpenLinksInApp.invalidate();
-			},
-		},
-	);
 
 	return (
 		<div className="p-6 max-w-4xl w-full">
@@ -287,34 +267,31 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 					/>
 				</div>
 
-				{showOpenLinksInApp && (
+				{showDictation && (
 					<div className="flex items-center justify-between">
 						<div className="space-y-0.5">
-							<Label
-								htmlFor="open-links-in-app"
-								className="text-sm font-medium"
-							>
+							<Label htmlFor="dictation" className="text-sm font-medium">
 								<HighlightText
 									text={t({
-										message: "Open links in the in-app browser",
+										message: "Dictation",
 									})}
 									query={searchQuery}
 								/>
 							</Label>
 							<p className="text-xs text-muted-foreground">
 								<Trans>
-									Open links from chat and terminal in the in-app browser
-									instead of your default browser
+									Show a microphone in the chat composer. Speech is transcribed
+									by ChatGPT when Codex is signed in to it, otherwise on your
+									Mac when possible, and otherwise by Superset's servers.
 								</Trans>
 							</p>
 						</div>
 						<Switch
-							id="open-links-in-app"
-							checked={openLinksInApp ?? false}
+							id="dictation"
+							checked={dictationEnabled}
 							onCheckedChange={(enabled) =>
-								setOpenLinksInApp.mutate({ enabled })
+								updateSetting("dictationEnabled", enabled)
 							}
-							disabled={isOpenLinksInAppLoading || setOpenLinksInApp.isPending}
 						/>
 					</div>
 				)}

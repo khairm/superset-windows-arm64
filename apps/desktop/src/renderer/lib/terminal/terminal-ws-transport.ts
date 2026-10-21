@@ -132,6 +132,9 @@ export interface TerminalTransport {
 	_humanInputDisposables: (() => void)[];
 	/** Internal: disposes the terminal.onData → socket.send wiring. */
 	_onDataDisposable: { dispose(): void } | null;
+	/** Internal: keystrokes typed while the pane was still attaching. */
+	_pendingInput: { data: string; queuedAt: number } | null;
+	_now: () => number;
 	_pendingColorReset: boolean;
 	/** Internal: title-change debounce timer; see TITLE_COALESCE_MS. */
 	_titleNotifyTimer: ReturnType<typeof setTimeout> | null;
@@ -326,6 +329,31 @@ function markSessionEnded(transport: TerminalTransport) {
 	transport._onSessionEnded?.();
 }
 
+// Input typed before an attach completes is sent once it attaches. Input older
+// than this is dropped instead, so a long outage never replays stale commands.
+const PENDING_INPUT_MAX_AGE_MS = 5_000;
+const PENDING_INPUT_MAX_CHARS = 8_192;
+
+function queuePendingInput(transport: TerminalTransport, data: string) {
+	if (transport.connectionState !== "connecting") return;
+	const pending = transport._pendingInput;
+	if (!pending) {
+		transport._pendingInput = { data, queuedAt: transport._now() };
+		return;
+	}
+	if (pending.data.length + data.length > PENDING_INPUT_MAX_CHARS) return;
+	pending.data += data;
+}
+
+function flushPendingInput(transport: TerminalTransport) {
+	const pending = transport._pendingInput;
+	transport._pendingInput = null;
+	const socket = transport._socket;
+	if (!pending || !socket || socket.readyState !== WebSocket.OPEN) return;
+	if (transport._now() - pending.queuedAt > PENDING_INPUT_MAX_AGE_MS) return;
+	socket.send(JSON.stringify({ type: "input", data: pending.data }));
+}
+
 function setConnectionState(
 	transport: TerminalTransport,
 	state: ConnectionState,
@@ -400,6 +428,7 @@ export function createTransport(
 	options: {
 		onSessionEnded?: () => void;
 		createSocket?: typeof createRelaySocket;
+		now?: () => number;
 	} = {},
 ): TerminalTransport {
 	return {
@@ -421,6 +450,8 @@ export function createTransport(
 		_lastHumanEventMs: null,
 		_humanInputDisposables: [],
 		_onDataDisposable: null,
+		_pendingInput: null,
+		_now: options.now ?? Date.now,
 		_pendingColorReset: false,
 		_titleNotifyTimer: null,
 		_writeCoalescer: null,
@@ -826,6 +857,7 @@ function attachSocketListeners(
 			sendColors(transport, terminal.options?.theme);
 			sendVisibleState(transport);
 			sendResize(transport, terminal.cols, terminal.rows);
+			flushPendingInput(transport);
 			return;
 		}
 
@@ -1017,20 +1049,26 @@ function attachSocketListeners(
 
 	transport._onDataDisposable?.dispose();
 	transport._onDataDisposable = terminal.onData((data) => {
-		if (transport.connectionState !== "open") return;
-		if (socket.readyState !== WebSocket.OPEN) return;
-		// (PUSH-PRESENCE) `human` is a claim about the ORIGIN of these bytes, and
-		// it is only ever attached when a witness proves it. See
-		// `attachHumanInputWitness` for why `onData` alone cannot answer this, and
-		// `human-input.ts` for what the host-service does with the answer. The
-		// field is OMITTED rather than sent as `false`, so an older host-service
-		// that has never heard of it parses the frame unchanged.
-		const human = isHumanInputRecent(transport, Date.now());
-		socket.send(
-			JSON.stringify(
-				human ? { type: "input", data, human: true } : { type: "input", data },
-			),
-		);
+		if (
+			transport.connectionState === "open" &&
+			socket.readyState === WebSocket.OPEN
+		) {
+			// (PUSH-PRESENCE) `human` is a claim about the ORIGIN of these bytes,
+			// and it is only ever attached when a witness proves it. See
+			// `attachHumanInputWitness` for why `onData` alone cannot answer this,
+			// and `human-input.ts` for what the host-service does with the answer.
+			// The field is OMITTED rather than sent as `false`, so an older
+			// host-service that has never heard of it parses the frame unchanged —
+			// which is also why queued input flushed later simply carries no claim.
+			const human = isHumanInputRecent(transport, Date.now());
+			socket.send(
+				JSON.stringify(
+					human ? { type: "input", data, human: true } : { type: "input", data },
+				),
+			);
+			return;
+		}
+		queuePendingInput(transport, data);
 	});
 	attachHumanInputWitness(transport, terminal);
 }
@@ -1171,6 +1209,7 @@ export function park(transport: TerminalTransport) {
 
 	transport._onDataDisposable?.dispose();
 	transport._onDataDisposable = null;
+	transport._pendingInput = null;
 	transport._writeCoalescer?.dispose();
 	transport._writeCoalescer = null;
 	if (transport.connectionState !== "disconnected") {
@@ -1205,6 +1244,7 @@ export function disconnect(transport: TerminalTransport) {
 	transport._onDataDisposable?.dispose();
 	transport._onDataDisposable = null;
 	detachHumanInputWitness(transport);
+	transport._pendingInput = null;
 	transport._writeCoalescer?.dispose();
 	transport._writeCoalescer = null;
 	transport.currentUrl = null;
@@ -1290,6 +1330,7 @@ export function disposeTransport(transport: TerminalTransport) {
 	transport._onDataDisposable?.dispose();
 	transport._onDataDisposable = null;
 	detachHumanInputWitness(transport);
+	transport._pendingInput = null;
 	transport._writeCoalescer?.dispose();
 	transport._writeCoalescer = null;
 	transport.currentUrl = null;

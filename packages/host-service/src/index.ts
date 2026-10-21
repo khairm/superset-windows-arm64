@@ -41,6 +41,7 @@ export type {
 } from "./terminal-agents";
 export type {
 	DeleteInProgressCause,
+	ProjectDirMissingCause,
 	TeardownFailureCause,
 } from "./trpc/error-types";
 export type { AppRouter } from "./trpc/router";

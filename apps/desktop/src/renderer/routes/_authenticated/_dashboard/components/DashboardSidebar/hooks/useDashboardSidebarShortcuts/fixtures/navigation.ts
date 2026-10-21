@@ -76,6 +76,8 @@ function workspace(
 		updatedAt: new Date(0),
 		taskId: null,
 		pendingTransaction: null,
+		isMine: null,
+		sandboxStatus: null,
 	};
 }
 const pinnedWorkspaces = [

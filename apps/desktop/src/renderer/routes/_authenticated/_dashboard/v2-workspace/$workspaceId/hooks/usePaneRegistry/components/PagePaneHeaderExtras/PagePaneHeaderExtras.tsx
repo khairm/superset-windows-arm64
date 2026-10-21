@@ -30,6 +30,8 @@ export function PagePaneHeaderExtras({
 		currentUserId,
 		onSetVisibility,
 		onSetSharedVersion,
+		sharing,
+		canComment,
 	} = usePageHeaderData(data);
 	const { commentsEnabled, setCommentsEnabled, shareOpen, setShareOpen } =
 		usePagePaneUi(paneId);
@@ -48,12 +50,14 @@ export function PagePaneHeaderExtras({
 					onCreateNewAgentSession={onCreateNewAgentSession}
 				/>
 			)}
-			<CommentModeButton
-				compact
-				enabled={commentsEnabled}
-				openCount={threads.filter((thread) => !thread.resolved).length}
-				onToggle={() => setCommentsEnabled(!commentsEnabled)}
-			/>
+			{canComment ? (
+				<CommentModeButton
+					compact
+					enabled={commentsEnabled}
+					openCount={threads.filter((thread) => !thread.resolved).length}
+					onToggle={() => setCommentsEnabled(!commentsEnabled)}
+				/>
+			) : null}
 			{page ? (
 				<PageShareButton
 					compact
@@ -67,6 +71,8 @@ export function PagePaneHeaderExtras({
 					onOpenChange={setShareOpen}
 					onSetVisibility={onSetVisibility}
 					onSetSharedVersion={onSetSharedVersion}
+					currentUserId={currentUserId}
+					sharing={sharing}
 				/>
 			) : null}
 		</>

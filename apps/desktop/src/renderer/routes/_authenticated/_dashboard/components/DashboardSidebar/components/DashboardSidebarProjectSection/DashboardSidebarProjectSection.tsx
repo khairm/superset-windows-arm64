@@ -82,6 +82,7 @@ export function DashboardSidebarProjectSection({
 		unsnoozeAllInProject,
 		unarchiveWorkspaces,
 	} = useDashboardSidebarState();
+	const isCloudRepo = project.kind === "cloud-repo";
 
 	const totalWorkspaceCount = flattenedCollapsedWorkspaces.length;
 
@@ -167,6 +168,7 @@ export function DashboardSidebarProjectSection({
 				projectId={project.id}
 				isPinned={project.isPinned}
 				onTogglePin={() => togglePinProject(project.id)}
+				kind={project.kind}
 				onCreateSection={handleNewSection}
 				onImportWorktrees={handleImportWorktrees}
 				onOpenInFinder={handleOpenInFinder}
@@ -201,6 +203,7 @@ export function DashboardSidebarProjectSection({
 				projectId={project.id}
 				isPinned={project.isPinned}
 				onTogglePin={() => togglePinProject(project.id)}
+				kind={project.kind}
 				onCreateSection={handleNewSection}
 				onImportWorktrees={handleImportWorktrees}
 				onOpenInFinder={handleOpenInFinder}
@@ -232,7 +235,7 @@ export function DashboardSidebarProjectSection({
 					onRenameValueChange={setRenameValue}
 					onSubmitRename={submitRename}
 					onCancelRename={cancelRename}
-					onStartRename={startRename}
+					onStartRename={isCloudRepo ? undefined : startRename}
 					onToggleCollapse={() => onToggleCollapse(project.id)}
 					onNewWorkspace={handleNewWorkspace}
 					{...(dragHandleAttributes ?? {})}

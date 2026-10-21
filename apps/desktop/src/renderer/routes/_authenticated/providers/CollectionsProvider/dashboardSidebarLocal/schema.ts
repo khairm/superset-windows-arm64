@@ -572,6 +572,15 @@ export type SidebarProjectSortMode = z.infer<
 const persistedSidebarProjectSortModeSchema =
 	sidebarProjectSortModeSchema.catch("manual");
 
+const sidebarProjectHostFilterSchema = z.enum(["all", "local", "cloud"]);
+
+export type SidebarProjectHostFilter = z.infer<
+	typeof sidebarProjectHostFilterSchema
+>;
+
+const persistedSidebarProjectHostFilterSchema =
+	sidebarProjectHostFilterSchema.catch("all");
+
 export const v2UserPreferencesSchema = z.object({
 	id: z.literal("preferences"),
 	fileLinks: linkTierMapSchema.default(DEFAULT_LINK_TIER_MAP),
@@ -608,6 +617,9 @@ export const v2UserPreferencesSchema = z.object({
 	deletedSessionsCollapsed: z.boolean().default(false),
 	// Ordering of the dashboard sidebar's Projects list; manual = drag order.
 	sidebarProjectSortMode: persistedSidebarProjectSortModeSchema,
+	// Which workspaces the Projects list shows: every row, only the ones on
+	// a device, or only cloud sandboxes.
+	sidebarProjectHostFilter: persistedSidebarProjectHostFilterSchema,
 	// Built-in (synthetic, app-shipped) presets the user hid from the preset
 	// bar. Synthetic presets have no v2TerminalPresets row, so visibility can't
 	// live on the row's pinnedToBar like user presets. Pruned against
@@ -653,6 +665,7 @@ export const DEFAULT_V2_USER_PREFERENCES: V2UserPreferencesRow = {
 	showDeletedSessions: false,
 	deletedSessionsCollapsed: false,
 	sidebarProjectSortMode: "manual",
+	sidebarProjectHostFilter: "all",
 	hiddenBuiltinPresetIds: [],
 	favoritePageIds: [],
 	hiddenTagFolders: {},
@@ -797,6 +810,9 @@ export function healV2UserPreferences(raw: unknown): V2UserPreferencesRow {
 		},
 		sidebarProjectSortMode: persistedSidebarProjectSortModeSchema.parse(
 			r.sidebarProjectSortMode,
+		),
+		sidebarProjectHostFilter: persistedSidebarProjectHostFilterSchema.parse(
+			r.sidebarProjectHostFilter,
 		),
 		// Prune retired/stray built-in ids so the array stays bounded.
 		hiddenBuiltinPresetIds: (Array.isArray(r.hiddenBuiltinPresetIds)

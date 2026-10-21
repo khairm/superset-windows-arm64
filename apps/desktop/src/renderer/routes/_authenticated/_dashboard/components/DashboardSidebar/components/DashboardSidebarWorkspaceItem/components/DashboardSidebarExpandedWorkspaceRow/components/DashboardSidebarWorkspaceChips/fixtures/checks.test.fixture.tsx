@@ -19,7 +19,7 @@ mock.module(
 // chip and its running-agents hook are not mocked here — they do not exist.
 // The portaled hover card the drag guard has to tolerate rides on the ports
 // chip instead, which is the only chip left.
-mock.module("../components/DashboardSidebarPortsChip", () => ({
+mock.module("../../DashboardSidebarPortsChip", () => ({
 	DashboardSidebarPortsChip: () => (
 		<button type="button">
 			<span>Ports</span>

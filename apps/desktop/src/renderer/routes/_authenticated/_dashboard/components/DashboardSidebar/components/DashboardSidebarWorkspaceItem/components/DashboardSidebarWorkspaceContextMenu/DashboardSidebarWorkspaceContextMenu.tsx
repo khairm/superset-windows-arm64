@@ -9,6 +9,7 @@ import {
 	ContextMenuSubTrigger,
 	ContextMenuTrigger,
 } from "@superset/ui/context-menu";
+import { useRunAfterMenuClose } from "@superset/ui/hooks/use-run-after-menu-close";
 import { useState } from "react";
 import {
 	LuArchive,
@@ -42,7 +43,6 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useDashboardSidebarPortKill } from "../../../../hooks/useDashboardSidebarPortKill";
 import { useProjectTagFolderSections } from "../../../../hooks/useProjectTagFolderSections";
-import { useRunAfterMenuClose } from "../../../../hooks/useRunAfterMenuClose";
 import { useDashboardSidebarHoverActions } from "../../../../providers/DashboardSidebarHoverProvider";
 import { useDashboardSidebarWorkspacePorts } from "../../../../providers/DashboardSidebarPortsProvider";
 import { ClaudeAccountPicker } from "../ClaudeAccountPicker";
@@ -61,6 +61,11 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	isLocalWorkspace: boolean;
 	isNonGit?: boolean;
 	isLocalMainWorkspace?: boolean;
+	/**
+	 * A cloud workspace has no host bindings to clear and is archived rather
+	 * than deleted.
+	 */
+	isCloudWorkspace?: boolean;
 	isPinned: boolean;
 	isUnread: boolean;
 	/** Set when the row lives in the Snoozed / Archived / Recycle Bin section —
@@ -79,7 +84,8 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onCopyPath: () => void;
 	onCopyBranchName: () => void;
 	onCopyWorkspaceId: () => void;
-	onRemoveFromSidebar: () => void;
+	/** Absent when the row can't leave the sidebar (your own cloud workspace). */
+	onRemoveFromSidebar?: () => void;
 	onRename?: () => void;
 	/** Default-mode Delete: a silent soft-delete to the Recycle Bin (RECYCLE-BIN).
 	 * Omitted (undefined) for mains, which are never deletable. */
@@ -167,6 +173,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	isNonGit = false,
 	isLocalMainWorkspace = false,
 	isPinned,
+	isCloudWorkspace = false,
 	isUnread,
 	sectionState,
 	hasStatus,
@@ -310,7 +317,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 						)}
 					</>
 				)}
-				{hasPullRequest && (
+				{hasPullRequest && !isCloudWorkspace && (
 					<ContextMenuItem onSelect={onRemovePullRequest}>
 						<LuUnlink className="size-4 mr-2" />
 						<Trans>Remove PR Link</Trans>
@@ -346,7 +353,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 								{sections.length > 0 && <ContextMenuSeparator />}
 								<ContextMenuItem onSelect={onCreateSection}>
 									<LuFolderPlus className="size-4 mr-2" />
-									<Trans>Create new group</Trans>
+									<Trans>New group from workspace</Trans>
 								</ContextMenuItem>
 							</ContextMenuSubContent>
 						</ContextMenuSub>

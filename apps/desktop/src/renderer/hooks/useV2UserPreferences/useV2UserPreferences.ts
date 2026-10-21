@@ -9,6 +9,7 @@ import {
 	type LinkAction,
 	type LinkTierMap,
 	type SessionSectionFlag,
+	type SidebarProjectHostFilter,
 	type SidebarProjectSortMode,
 	V2_USER_PREFERENCES_ID,
 	type V2UserPreferencesRow,
@@ -30,6 +31,7 @@ export interface V2UserPreferencesApi {
 	toggleShowPresetsBar: () => void;
 	setChangesViewMode: (next: ChangesViewMode) => void;
 	setSidebarProjectSortMode: (next: SidebarProjectSortMode) => void;
+	setSidebarProjectHostFilter: (next: SidebarProjectHostFilter) => void;
 	setBuiltinPresetHidden: (presetId: string, hidden: boolean) => void;
 	/** (SESSION-LIFECYCLE) Session-scoped twin of `setProjectSectionFlag`. */
 	setSessionSectionFlag: (flag: SessionSectionFlag, value: boolean) => void;
@@ -277,6 +279,25 @@ export function useV2UserPreferences(): V2UserPreferencesApi {
 		[collections],
 	);
 
+	const setSidebarProjectHostFilter = useCallback(
+		(next: SidebarProjectHostFilter) => {
+			const existing = collections.v2UserPreferences.get(
+				V2_USER_PREFERENCES_ID,
+			);
+			if (!existing) {
+				collections.v2UserPreferences.insert({
+					...DEFAULT_V2_USER_PREFERENCES,
+					sidebarProjectHostFilter: next,
+				});
+				return;
+			}
+			collections.v2UserPreferences.update(V2_USER_PREFERENCES_ID, (draft) => {
+				draft.sidebarProjectHostFilter = next;
+			});
+		},
+		[collections],
+	);
+
 	// (SESSION-LIFECYCLE) Reveal/collapse state for the Snoozed Sessions and
 	// Archived Sessions subsections. Mirrors setProjectSectionFlag, but the
 	// Sessions section has no project row to hang the flags off, so they live on
@@ -392,6 +413,7 @@ export function useV2UserPreferences(): V2UserPreferencesApi {
 		toggleShowPresetsBar,
 		setChangesViewMode,
 		setSidebarProjectSortMode,
+		setSidebarProjectHostFilter,
 		setBuiltinPresetHidden,
 		setSessionSectionFlag,
 		toggleSessionSectionFlag,
