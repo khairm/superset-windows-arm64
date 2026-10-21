@@ -233,7 +233,8 @@ In brief:
   upstream too. Page watch and ports come back on the const alone; PRs are
   flip-only. PRs off (`(FORK-PRS-OFF)`): no PR sweeps or gh; PR-only
   procedures refuse; stored links hidden, not deleted; branch label follows
-  checkouts via a disk HEAD read (`(FORK-PRS-OFF-BRANCH-FOLLOW)`).
+  checkouts via a disk HEAD read (`(FORK-PRS-OFF-BRANCH-FOLLOW)`); PR links
+  open in the system browser (`(FORK-PRS-OFF-LINKS)`).
 - **Alternate-screen eviction is DEFERRED** — the snapshot-restore fixes
   shipped; evicting an alternate-screen terminal from the live registry did
   not. The exemption keeping those terminals resident is intentional, not a

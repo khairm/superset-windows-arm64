@@ -1,3 +1,5 @@
+import { FORK_PULL_REQUESTS_DISABLED } from "@superset/shared/fork-disabled-features";
+
 /** A pull request by its own identity: the repository it lives in and its number. */
 export interface PullRequestRef {
 	repoFullName: string;
@@ -17,6 +19,7 @@ const BARE_PULL_REQUEST_URL =
 	/^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/pull\/\d+\/?(?:\?[^#]*)?$/;
 
 export function pullRequestRefFromBareUrl(url: string): PullRequestRef | null {
+	if (FORK_PULL_REQUESTS_DISABLED) return null; // (FORK-PRS-OFF-LINKS)
 	return BARE_PULL_REQUEST_URL.test(url) ? pullRequestRefFromUrl(url) : null;
 }
 

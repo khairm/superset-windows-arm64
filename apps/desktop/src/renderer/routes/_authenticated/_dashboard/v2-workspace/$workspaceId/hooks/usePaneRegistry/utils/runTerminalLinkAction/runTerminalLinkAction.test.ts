@@ -4,6 +4,10 @@ import {
 	type WorkspaceState,
 	type WorkspaceStore,
 } from "@superset/panes";
+import {
+	FORK_BROWSER_PANES_DISABLED,
+	FORK_PULL_REQUESTS_DISABLED,
+} from "@superset/shared/fork-disabled-features";
 import type { StoreApi } from "zustand/vanilla";
 import type { PaneViewerData } from "../../../../types";
 import {
@@ -46,7 +50,8 @@ function panesOfKind(
 }
 
 describe("runUrlLinkAction", () => {
-	it("opens a GitHub pull request URL in the pull-request pane", () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(FORK_PULL_REQUESTS_DISABLED)("opens a GitHub pull request URL in the pull-request pane", () => {
 		const store = createWorkspaceStore<PaneViewerData>({
 			initialState: workspaceState(),
 		});
@@ -59,7 +64,8 @@ describe("runUrlLinkAction", () => {
 		);
 	});
 
-	it("opens the pull request in the right pane when asked", () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(FORK_PULL_REQUESTS_DISABLED)("opens the pull request in the right pane when asked", () => {
 		const store = createWorkspaceStore<PaneViewerData>({
 			initialState: workspaceState(),
 		});
@@ -83,7 +89,8 @@ describe("runUrlLinkAction", () => {
 		expect(panesOfKind(rightStore, "pull-request")).toHaveLength(1);
 	});
 
-	it("gives a new tab to a PR opened with the new-tab action", () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(FORK_PULL_REQUESTS_DISABLED)("gives a new tab to a PR opened with the new-tab action", () => {
 		const store = createWorkspaceStore<PaneViewerData>({
 			initialState: workspaceState(),
 		});
@@ -95,7 +102,8 @@ describe("runUrlLinkAction", () => {
 		expect(Object.values(tabs[1]?.panes ?? {})[0]?.kind).toBe("pull-request");
 	});
 
-	it("keeps PR comment, file and commit links in the browser", () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(FORK_BROWSER_PANES_DISABLED)("keeps PR comment, file and commit links in the browser", () => {
 		for (const url of [
 			`${PR_URL}#discussion_r123`,
 			`${PR_URL}/files`,
@@ -119,7 +127,8 @@ describe("runUrlLinkAction", () => {
 		}
 	});
 
-	it("still opens other GitHub URLs in a browser pane", () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(FORK_BROWSER_PANES_DISABLED)("still opens other GitHub URLs in a browser pane", () => {
 		const store = createWorkspaceStore<PaneViewerData>({
 			initialState: workspaceState(),
 		});
@@ -138,7 +147,8 @@ describe("runUrlLinkAction", () => {
 describe("terminalPullRequestLinkAction", () => {
 	const click = { metaKey: false, ctrlKey: false, shiftKey: false };
 
-	it("opens the PR pane on plain click and the system browser on shift-click", () => {
+	// biome-ignore format: fork skip keeps upstream body
+	it.skipIf(FORK_PULL_REQUESTS_DISABLED)("opens the PR pane on plain click and the system browser on shift-click", () => {
 		expect(terminalPullRequestLinkAction(click, PR_URL)).toBe("pane");
 		expect(
 			terminalPullRequestLinkAction({ ...click, shiftKey: true }, PR_URL),
