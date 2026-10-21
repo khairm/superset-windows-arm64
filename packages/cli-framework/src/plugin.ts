@@ -19,6 +19,10 @@ export interface CommandsPluginOptions {
 
 const NAMESPACE = "cli-commands";
 
+export function commandPathOf(file: string): string[] {
+	return file.split(/[\\/]/).slice(0, -1);
+}
+
 function escapeRegExp(str: string): string {
 	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -71,12 +75,12 @@ export function createCommandsPlugin(opts: CommandsPluginOptions): BunPlugin {
 
 				lines.push("", "export const commands = [");
 				for (const [i, match] of commandFiles.entries()) {
-					const path = match.split("/").slice(0, -1);
+					const path = commandPathOf(match); // (CLI-WIN-PATH-SEP)
 					lines.push(`\t{ path: ${JSON.stringify(path)}, command: cmd${i} },`);
 				}
 				lines.push("];", "", "export const groups = [");
 				for (const [i, match] of metaFiles.entries()) {
-					const path = match.split("/").slice(0, -1);
+					const path = commandPathOf(match); // (CLI-WIN-PATH-SEP)
 					lines.push(`\t{ path: ${JSON.stringify(path)}, ...meta${i} },`);
 				}
 				lines.push(
